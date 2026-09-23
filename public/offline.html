@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offline · Northstar</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #f6f7f8;
+        color: #16241f;
+      }
+      .panel { max-width: 26rem; padding: 2rem; text-align: center; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+      p { margin: 0 0 1.25rem; color: #5b6b66; line-height: 1.5; }
+      button {
+        border: 0; border-radius: 0.5rem; padding: 0.6rem 1.1rem;
+        background: #2e2a6b; color: #fff; font: inherit; cursor: pointer;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0f1614; color: #e6eeea; }
+        p { color: #9db0a8; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>You are offline</h1>
+      <p>
+        Northstar needs a connection to show live attendance and payroll data.
+        Reconnect and try again.
+      </p>
+      <button onclick="location.reload()">Retry</button>
+    </div>
+  </body>
+</html>

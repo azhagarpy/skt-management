@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+server/dist/
+*.tsbuildinfo
+
+# Secrets: never commit these (plan section 69)
+.env
+.env.*
+!.env.example
+
+# Uploaded documents and generated payslips
+server/storage/
+
+# Logs and OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Company/employee data — keep local, never commit
+*.xlsx
+*.xls
+*.csv
+*.pdf
+attendance/
+
+# Scratch scripts
+server/e2e_check_tmp.mjs
