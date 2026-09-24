@@ -29,7 +29,7 @@ Thumbs.db
 *.xls
 *.csv
 *.pdf
-attendance/
+/attendance/
 
 # Scratch scripts
 server/e2e_check_tmp.mjs
