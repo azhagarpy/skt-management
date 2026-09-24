@@ -62,12 +62,14 @@ async function wageLines(
   organizationId: string,
   employeeId: string,
   onDate: string,
-): Promise<{ wages: string[]; allowances: string[] }> {
+): Promise<{ wages: string[]; allowances: string[]; basis: 'MONTHLY' | 'DAILY' | null }> {
   const assignment = await salaryRepository.findAssignmentForDate(employeeId, onDate)
-  if (!assignment) return { wages: [], allowances: [] }
+  if (!assignment) return { wages: [], allowances: [], basis: null }
 
   const structure = await salaryRepository.findStructure(assignment.salary_structure_id, organizationId)
-  if (!structure) return { wages: [], allowances: [] }
+  if (!structure) return { wages: [], allowances: [], basis: null }
+
+  const basis = structure.salary_basis === 'DAILY' ? 'DAILY' : 'MONTHLY'
 
   const resolved = resolveFullAmounts(
     toComponentInputs(structure),
@@ -85,8 +87,8 @@ async function wageLines(
 
   // A structure with no component the form would call a wage still has a wage:
   // whatever it does pay is the basic, so it is shown there rather than nowhere.
-  if (wages.length === 0 && allowances.length > 0) return { wages: allowances, allowances: [] }
-  return { wages, allowances }
+  if (wages.length === 0 && allowances.length > 0) return { wages: allowances, allowances: [], basis }
+  return { wages, allowances, basis }
 }
 
 export async function generateAppointmentLetter(
@@ -129,7 +131,7 @@ export async function generateAppointmentLetter(
     .replace(/\s+/g, ' ')
   // The wage as it stands today, not as it stood on the joining date: the
   // letter is reissued from current records and has to match the current pay.
-  const { wages, allowances } = await wageLines(auth.organizationId, employee.id, issuedOn)
+  const { wages, allowances, basis } = await wageLines(auth.organizationId, employee.id, issuedOn)
   const cleanedOtherInformation = cleanOtherInformation(otherInformation)
 
   const buffer = await renderAppointmentLetterPdf({
@@ -148,6 +150,7 @@ export async function generateAppointmentLetter(
     joiningDate: employee.joining_date,
     wageLines: wages,
     otherAllowanceLines: allowances,
+    wageBasis: basis,
     pfApplicable: employee.pf_applicable ?? false,
     esiApplicable: employee.esi_applicable ?? false,
     duties: employee.duties,

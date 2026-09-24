@@ -38,6 +38,8 @@ export interface AppointmentLetterData {
   /** Basic, dearness allowance and anything else that makes up the wage. */
   wageLines: string[]
   otherAllowanceLines: string[]
+  /** What the wage figures are per; null when the employee has no salary assigned. */
+  wageBasis: 'MONTHLY' | 'DAILY' | null
   pfApplicable: boolean
   esiApplicable: boolean
   duties: string | null
@@ -209,8 +211,9 @@ export function drawAppointmentLetter(doc: Pdf, data: AppointmentLetterData): vo
 
   y += 22
   y = ensureSpace(doc, y, 130)
+  const period = data.wageBasis === 'DAILY' ? 'a full day worked' : 'a full month'
   doc.font('Helvetica').fontSize(9.5).fillColor(COLOR.muted).text(
-    'The wages shown above are the monthly entitlement on the date of issue and are subject to attendance, statutory deductions and any subsequent revision.',
+    `The wages shown above are the entitlement for ${period} as at the date of issue, and are subject to attendance, statutory deductions and any subsequent revision.`,
     PAGE.left,
     y,
     { width: PAGE.width, align: 'justify', lineGap: 3 },
