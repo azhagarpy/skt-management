@@ -14,6 +14,7 @@ import { assertEmployeeInScope, resolveScope, scopeClause, type EmployeeScope } 
 import { buildCalendarContext } from '../calendar/calendar.service.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './attendance.repository.js'
+import { checkAbsenceStreaks } from './absence-alert.js'
 import type {
   AttendanceListQuery,
   BulkMarkAttendanceInput,
@@ -321,7 +322,7 @@ async function assertEmployedOn(employeeId: string, date: IsoDate, db: Queryable
 export async function markAttendance(auth: AuthContext, input: MarkAttendanceInput, context: AuditContext) {
   const scope = manageScope(auth)
 
-  return withTransaction(async (tx) => {
+  const saved = await withTransaction(async (tx) => {
     await assertEmployeeInScope(auth, input.employeeId, scope, tx)
     await assertEmployedOn(input.employeeId, input.attendanceDate, tx)
     await assertLeaveTypeValid(auth.organizationId, input.leaveTypeId, tx)
@@ -379,6 +380,10 @@ export async function markAttendance(auth: AuthContext, input: MarkAttendanceInp
       remarks: row.remarks,
     }
   })
+
+  // After the commit, so a rolled-back save cannot send a WhatsApp message.
+  await checkAbsenceStreaks(auth.organizationId, [input.employeeId])
+  return saved
 }
 
 export async function updateAttendance(
@@ -492,7 +497,7 @@ export async function bulkMarkAttendance(
 
   if (entries.length === 0) throw ApiError.badRequest('No employees were supplied')
 
-  return withTransaction(async (tx: TxClient) => {
+  const result = await withTransaction(async (tx: TxClient) => {
     const skipped: { employeeId: string; reason: string }[] = []
     let saved = 0
 
@@ -560,6 +565,14 @@ export async function bulkMarkAttendance(
 
     return { date: input.attendanceDate, saved, skipped }
   })
+
+  // Only the employees this batch actually wrote; a skipped row changed nothing.
+  const skippedIds = new Set(result.skipped.map((entry) => entry.employeeId))
+  await checkAbsenceStreaks(
+    auth.organizationId,
+    entries.map((entry) => entry.employeeId).filter((id) => !skippedIds.has(id)),
+  )
+  return result
 }
 
 /**

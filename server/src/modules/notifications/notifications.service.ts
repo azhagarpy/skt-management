@@ -17,6 +17,7 @@ export type NotificationType =
   | 'PAYSLIP_AVAILABLE'
   | 'PAYMENT_RECORDED'
   | 'PROFILE_INCOMPLETE'
+  | 'ABSENCE_STREAK'
   | 'GENERAL'
 
 export interface NotificationInput {

@@ -177,6 +177,18 @@ export const SCENARIO_CATALOGUE: {
     variables: ['recipientName', 'title', 'body'],
   },
   {
+    eventKey: 'ABSENCE_STREAK',
+    template: {
+      name: 'skt_absence_streak',
+      body:
+        'Hello {{1}}, an employee has stopped attending. {{2}} - {{3}} Please open the SKT app to review the attendance.',
+    },
+    name: 'Employee absent several days',
+    description:
+      'Sent to administrators and supervisors when someone has been absent for seven days in a row without approved leave.',
+    variables: ['recipientName', 'title', 'body'],
+  },
+  {
     eventKey: 'GENERAL',
     template: {
       name: 'skt_general_notice',
