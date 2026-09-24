@@ -13,8 +13,8 @@
  */
 
 const VERSION = 'v1'
-const SHELL_CACHE = `northstar-shell-${VERSION}`
-const ASSET_CACHE = `northstar-assets-${VERSION}`
+const SHELL_CACHE = `sktransport-shell-${VERSION}`
+const ASSET_CACHE = `sktransport-assets-${VERSION}`
 
 const SHELL_URLS = ['/', '/index.html', '/manifest.webmanifest', '/offline.html']
 

@@ -25,15 +25,15 @@ import { seedDefaultSlabs } from '../../modules/tax/tax-report.js'
 const DEFAULT_PASSWORD = env.SEED_DEFAULT_PASSWORD
 
 const ADMINS = [
-  { email: 'admin@northstar.example', fullName: 'Admin' },
-  { email: 'admin1@northstar.example', fullName: 'Admin One' },
+  { email: 'admin@skt.com', fullName: 'Admin' },
+  { email: 'admin1@skt.com', fullName: 'Admin One' },
 ]
 
 async function seedOrganization(tx: Queryable): Promise<string> {
   const row = await queryOne<{ id: string }>(
     tx,
     `INSERT INTO organizations (name, code, country, currency_code, timezone)
-     VALUES ('Northstar Industries', 'NSI', 'India', 'INR', 'Asia/Kolkata')
+     VALUES ('SKTRANSPORT', 'SKT', 'India', 'INR', 'Asia/Kolkata')
      ON CONFLICT (code) DO UPDATE SET name = organizations.name
      RETURNING id`,
   )

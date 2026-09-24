@@ -47,7 +47,7 @@ export default function LoginPage() {
             NS
           </span>
           <div>
-            <p className="auth-brand-name">Northstar</p>
+            <p className="auth-brand-name">SKTRANSPORT</p>
             <p className="auth-brand-tagline">People and payroll operations</p>
           </div>
         </div>

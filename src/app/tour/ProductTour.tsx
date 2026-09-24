@@ -13,7 +13,7 @@ import { tourScript, type TourStep } from './tour-steps'
  * whatever this particular user can actually reach.
  */
 
-const STORAGE_PREFIX = 'northstar.tour.v1'
+const STORAGE_PREFIX = 'sktransport.tour.v1'
 const CARD_WIDTH = 340
 const GAP = 14
 

@@ -10,13 +10,13 @@ import type { AuthContext } from '../src/types/express.js'
 import type { PermissionCode } from '../src/modules/auth/permissions.js'
 
 const ORG_ID = '05a0fa24-f487-4e76-9a98-8e1e5aed65ec'
-const ADMIN_USER_ID = '4df025aa-6a93-4957-b56e-333a88150352' // admin@northstar.example
+const ADMIN_USER_ID = '4df025aa-6a93-4957-b56e-333a88150352' // admin@skt.com
 
 const auth: AuthContext = {
   userId: ADMIN_USER_ID,
   organizationId: ORG_ID,
   role: 'SUPER_ADMIN',
-  email: 'admin@northstar.example',
+  email: 'admin@skt.com',
   fullName: 'Script',
   employeeId: null,
   permissions: new Set<PermissionCode>(),

@@ -1,4 +1,4 @@
-# Northstar — Employee Management & Payroll
+# SKTRANSPORT — Employee Management & Payroll
 
 A production-shaped Employee Management, Attendance, Leave, Salary, Payroll and
 Reporting system, built as a React PWA on an Express API and PostgreSQL.
@@ -66,10 +66,10 @@ in `SEED_DEFAULT_PASSWORD` (`Passw0rd!123` by default):
 
 | Role        | Email                            |
 | ----------- | -------------------------------- |
-| Super Admin | `admin@northstar.example`        |
-| Supervisor  | `ravi.kulkarni@northstar.example` |
-| Supervisor  | `fatima.sheikh@northstar.example` |
-| Employee    | `john.doe@northstar.example`     |
+| Super Admin | `admin@skt.com`        |
+| Supervisor  | `ravi.kulkarni@skt.com` |
+| Supervisor  | `fatima.sheikh@skt.com` |
+| Employee    | `john.doe@skt.com`     |
 
 Signing in as each shows the three different dashboards, menus and permissions.
 The seed refuses to run when `NODE_ENV=production`.

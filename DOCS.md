@@ -1,4 +1,4 @@
-# Northstar — quick reference
+# SKTRANSPORT — quick reference
 
 Minimal operating notes. `README.md` covers installation and the codebase layout;
 this file covers what the application *does*, in the order you use it.
@@ -230,7 +230,7 @@ separate script:
 | Supervisor | 19 | Team employees, documents, attendance, leave, reports, plus their own records |
 | Employee | 14 | Dashboard, calendar, and their own profile, attendance, leave, salary, payslips, documents |
 
-Seen-state is per user in `localStorage` (`northstar.tour.v1.<userId>`). Clear that key
+Seen-state is per user in `localStorage` (`sktransport.tour.v1.<userId>`). Clear that key
 to see the first-run tour again.
 
 ---
@@ -243,8 +243,8 @@ structures or payroll.
 
 | Role | Email |
 | ---- | ----- |
-| Super Admin | `admin@northstar.example` |
-| Super Admin | `admin1@northstar.example` |
+| Super Admin | `admin@skt.com` |
+| Super Admin | `admin1@skt.com` |
 
 Both use `SEED_DEFAULT_PASSWORD` (`Passw0rd!123` by default). Neither has an
 employee record, so neither sees the "My" section.
