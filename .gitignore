@@ -33,3 +33,6 @@ attendance/
 
 # Scratch scripts
 server/e2e_check_tmp.mjs
+
+# Source photo for the 2026 holiday list; the holidays live in the database
+/holidays.png

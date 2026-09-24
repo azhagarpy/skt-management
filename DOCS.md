@@ -24,11 +24,13 @@ signed-in user's permissions.
 
 Each step depends on the ones above it.
 
-1. **Organization → Profile** — name, address, tax IDs.
+1. **Organization → Profile** — name, address, tax IDs, and the establishment's
+   Labour Identification Number (printed on every Letter of Appointment).
 2. **Organization → Branding** — logo and theme colour (see below).
 3. **Organization → Departments / Sections / Locations** — every employee is filed under these.
 4. **Salary → Components**, then **→ Structures** — components first; a structure is assembled from them.
-5. **Leave → Leave types** — `isPaid`, `excludeWeeklyOff` and `excludeHolidays` are read by the payroll engine.
+5. **Leave → Leave types** — `isPaid`, `excludeWeeklyOff`, `excludeHolidays` and
+   `sandwichHolidays` are read by the payroll engine.
 6. **Calendar** — holidays and weekly offs. This defines what a working day is.
 7. **Salary → PF, ESI & policy** — statutory rates and how paid days are counted.
 8. **Employees → Add employee** — optionally creating a login at the same time.
@@ -51,6 +53,13 @@ Each step depends on the ones above it.
   Endpoints: `POST /attendance/import/preview` (dry run) and `POST /attendance/import`.
 - **Leave** — employee applies → supervisor or admin approves/rejects → an approved
   request writes back into attendance. Statuses: `PENDING` `APPROVED` `REJECTED` `CANCELLED`.
+  **Sandwich rule** (`sandwichHolidays`, on by default): a holiday with a full day of
+  leave immediately before it *and* immediately after it is charged as leave too. The
+  leave either side may belong to a different request, so a charged holiday can fall
+  outside the dates the employee asked for — a Friday request and a Monday request with
+  a holiday on the Saturday between them costs three days, not two. An unbroken run of
+  holidays counts as one sandwich; a weekly off between the leave and the holiday breaks
+  the run and nothing is charged.
 - **Bonuses** — attached to a payroll *month*, not a date. Only `APPROVED` bonuses are
   paid; `PENDING` ones are ignored by the calculator.
 - **Tax** — the tax amount for each band of wages (Tax → Tax slabs). The tax report
@@ -87,6 +96,13 @@ once the run reaches `APPROVED`.
 **What the calculator reads** — the employee's salary structure and components,
 every day of the month resolved against the calendar, whether each leave day was
 paid, approved bonuses for that month, the tax set to be deducted, and the PF and ESI rules on the salary structure.
+
+**Documents** (Payslips & letters) — payslips for any approved month, a No Objection
+Certificate, and the statutory **Letter of Appointment** under the Code on Social
+Security, 2020. The letter's sixteen particulars are filled from the employee record,
+so the profile (parent's name, category of skill, nature of duties), the Aadhaar, PF
+and ESI details, the organization's LIN and the current salary assignment all need to
+be in place before it is issued; a particular with nothing on record prints as "NA".
 
 ---
 
@@ -174,6 +190,10 @@ reversed payment will not accept new proof.
   assigned. Set it inactive instead — it leaves the pickers, history stays intact.
 - **A locked payroll run never changes.** Corrections are raised as adjustments
   (correction, reversal, arrear, recovery).
+- **A weekly off is not paid.** It counts towards the calendar days payroll divides by,
+  but earns nothing, so pay follows the days actually worked. Holidays *are* paid.
+- **A leave can charge a day outside the dates applied for.** That is the sandwich rule
+  on holidays; see Leave above.
 - **Aadhaar, PAN and bank numbers render masked** unless the viewer holds
   `sensitive.view`; unmasking is itself audited.
 - **Documents are never public URLs** — fetched with a bearer token after a
