@@ -35,18 +35,22 @@ log() { echo "$(date -Is) $*" >> "$LOG"; }
 fail() { log "FAILED: $*"; exit 1; }
 
 mkdir -p "$BACKUP_DIR"
+# Root-only: these archives hold personal and financial data.
+chmod 700 "$BACKUP_DIR"
 log "=== backup $stamp starting ==="
 
 # --- database -------------------------------------------------------------
 # Custom format: compressed, and restorable table-by-table with pg_restore.
 db_file="$BACKUP_DIR/skt-db-$stamp.dump"
-sudo -u postgres pg_dump -Fc -d "$DB_NAME" -f "$db_file" 2>>"$LOG" || fail "pg_dump"
+# Written through a redirect rather than pg_dump -f: the postgres user has no
+# write access inside /opt/skt, but this shell does.
+sudo -u postgres pg_dump -Fc -d "$DB_NAME" 2>>"$LOG" > "$db_file" || fail "pg_dump"
 [ -s "$db_file" ] || fail "pg_dump produced an empty file"
 
 # Verify the dump is readable before trusting it. A backup nobody has opened
 # is a guess, not a backup.
-sudo -u postgres pg_restore --list "$db_file" >/dev/null 2>>"$LOG" || fail "dump is not readable by pg_restore"
-log "database: $(du -h "$db_file" | cut -f1) ($(sudo -u postgres pg_restore --list "$db_file" | grep -c 'TABLE DATA') tables with data)"
+pg_restore --list "$db_file" >/dev/null 2>>"$LOG" || fail "dump is not readable by pg_restore"
+log "database: $(du -h "$db_file" | cut -f1) ($(pg_restore --list "$db_file" | grep -c 'TABLE DATA') tables with data)"
 
 # --- uploaded documents ---------------------------------------------------
 store_file="$BACKUP_DIR/skt-storage-$stamp.tar.gz"
