@@ -211,13 +211,10 @@ export async function computeLeaveDays(
 }
 
 /**
- * The holidays this request turns into leave because leave sits on both sides.
+ * Reads the leave already on record and applies the sandwich rule to it.
  *
- * A run of consecutive holidays is charged only when the day before it and the
- * day after it are both full days of leave, and at least one of those two is a
- * day this request is paying for - otherwise a sandwich formed entirely by
- * older requests would be billed again to whichever request happened to be
- * counted next.
+ * Everything that needs the database is here; the rule itself is
+ * `sandwichedHolidayDates` below.
  */
 async function sandwichedHolidays(
   employeeId: string | null,
@@ -232,11 +229,39 @@ async function sandwichedHolidays(
   const existing = new Set(
     await attendanceRepository.findFullDayLeaveDates(employeeId, addDays(scanFrom, -1), addDays(scanTo, 1), db),
   )
+  return sandwichedHolidayDates({ charged, existing, kindOf, scanFrom, scanTo })
+}
+
+export interface SandwichInput {
+  /** Days this request is already paying for. */
+  charged: Set<IsoDate>
+  /** Days the employee was already on full-day leave, from other requests. */
+  existing: Set<IsoDate>
+  kindOf: (date: IsoDate) => 'WORKING' | 'WEEKLY_OFF' | 'HOLIDAY'
+  scanFrom: IsoDate
+  scanTo: IsoDate
+}
+
+/**
+ * The holidays a request turns into leave because leave sits on both sides.
+ *
+ * A run of consecutive holidays is charged only when the day before it and the
+ * day after it are both full days of leave, and at least one of those two is a
+ * day this request is paying for - otherwise a sandwich formed entirely by
+ * older requests would be billed again to whichever request happened to be
+ * counted next. A weekly off between the leave and the holiday breaks the run:
+ * only an unbroken stretch of holidays is charged, which keeps the rule one a
+ * supervisor can check by eye.
+ */
+export function sandwichedHolidayDates({ charged, existing, kindOf, scanFrom, scanTo }: SandwichInput): IsoDate[] {
   const isLeaveDay = (date: IsoDate): boolean => charged.has(date) || existing.has(date)
 
   // Runs of consecutive holidays that nothing has charged yet: a two-day
-  // festival between two days of leave is one sandwich, not two.
-  const isFreeHoliday = (date: IsoDate): boolean => kindOf(date) === 'HOLIDAY' && !charged.has(date)
+  // festival between two days of leave is one sandwich, not two. A holiday an
+  // earlier request already sandwiched is not free either - it is leave now,
+  // so it brackets the next run rather than being charged a second time.
+  const isFreeHoliday = (date: IsoDate): boolean =>
+    kindOf(date) === 'HOLIDAY' && !charged.has(date) && !existing.has(date)
   const runs: IsoDate[][] = []
   let run: IsoDate[] = []
   for (const date of datesBetween(scanFrom, scanTo)) {
