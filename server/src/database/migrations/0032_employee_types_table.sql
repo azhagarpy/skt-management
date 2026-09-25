@@ -57,12 +57,35 @@ UPDATE employees e
 ALTER TABLE employees ALTER COLUMN employee_type_id SET NOT NULL;
 CREATE INDEX employees_employee_type_id_idx ON employees (organization_id, employee_type_id);
 
+-- Job history records the type an employee was on at the time, so it moves to
+-- the new table as well - otherwise DROP TYPE below fails on the dependency,
+-- and the history would still be describing types by a name nothing else uses.
+ALTER TABLE employee_job_history
+  ADD COLUMN employee_type_id UUID REFERENCES employee_types (id) ON DELETE SET NULL;
+
+UPDATE employee_job_history h
+   SET employee_type_id = t.id
+  FROM employee_types t
+ WHERE t.organization_id = h.organization_id
+   AND t.code = h.employee_type::text
+   AND h.employee_type IS NOT NULL;
+
+ALTER TABLE employee_job_history DROP COLUMN employee_type;
+
 ALTER TABLE employees DROP COLUMN employee_type;
 DROP TYPE employee_type;
 
 -- +migrate Down
 CREATE TYPE employee_type AS ENUM ('SUPPLY', 'PSR');
 ALTER TABLE employees ADD COLUMN employee_type employee_type NOT NULL DEFAULT 'SUPPLY';
+ALTER TABLE employee_job_history ADD COLUMN employee_type employee_type;
+
+UPDATE employee_job_history h
+   SET employee_type = CASE WHEN t.code = 'PSR' THEN 'PSR'::employee_type ELSE 'SUPPLY'::employee_type END
+  FROM employee_types t
+ WHERE t.id = h.employee_type_id;
+
+ALTER TABLE employee_job_history DROP COLUMN employee_type_id;
 
 -- Only the two original codes map back; anything added since becomes SUPPLY,
 -- which is the column's own default and the safer of the two (no money moves).
