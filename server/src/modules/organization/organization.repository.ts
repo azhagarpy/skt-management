@@ -14,8 +14,8 @@ export interface OrganizationRow {
   state: string | null
   country: string
   pincode: string | null
-  tax_id: string | null
-  registration_no: string | null
+  pf_number: string | null
+  esi_number: string | null
   /** LIN of the establishment, printed on the statutory Letter of Appointment. */
   labour_identification_number: string | null
   logo_path: string | null

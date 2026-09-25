@@ -62,8 +62,8 @@ export interface OrganizationProfile {
   city: string | null
   state: string | null
   pincode: string | null
-  taxId: string | null
-  registrationNo: string | null
+  pfNumber: string | null
+  esiNumber: string | null
   labourIdentificationNumber: string | null
   /** The logo key is never sent; it is fetched from /organization/logo. */
   hasLogo: boolean

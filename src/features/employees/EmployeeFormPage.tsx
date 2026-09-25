@@ -1,11 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Save } from 'lucide-react'
-import { ApiError, get, patch, post } from '../../lib/api'
+import { Save, Upload, X } from 'lucide-react'
+import { ApiError, get, patch, post, upload } from '../../lib/api'
 import { useToast } from '../../app/providers/ToastProvider'
 import { Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea } from '../../components/ui'
 import {
@@ -200,16 +200,67 @@ export default function EmployeeFormPage() {
     })
   }, [existing, reset])
 
+  // The photo endpoint is /employees/:id/photo, so on a new employee there is
+  // no id to post to yet. The file is held here and uploaded once the employee
+  // has been created, which keeps it one action for whoever fills the form in.
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!photoFile) {
+      setPhotoPreview(null)
+      return
+    }
+    const url = URL.createObjectURL(photoFile)
+    setPhotoPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [photoFile])
+
+  function choosePhoto(file: File | null) {
+    if (!file) {
+      setPhotoFile(null)
+      return
+    }
+    // Matches the employees_photo_mime_type check on the table.
+    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+      toast.error('Choose a PNG or JPEG image')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('That photo is larger than 5 MB')
+      return
+    }
+    setPhotoFile(file)
+  }
+
   const mutation = useMutation({
     mutationFn: (values: FormValues) =>
       isEdit
         ? patch<EmployeeDetail>(`/employees/${id}`, toPayload(values, true))
         : post<EmployeeDetail>('/employees', toPayload(values, false)),
     onSuccess: async (response) => {
+      const employeeId = response.data.id ?? id
       toast.success(isEdit ? 'Employee updated' : 'Employee created')
+
+      // A failed photo must not lose the employee that was just saved, so it is
+      // reported on its own and the form still moves on.
+      if (photoFile && employeeId) {
+        try {
+          const formData = new FormData()
+          formData.append('file', photoFile)
+          await upload(`/employees/${employeeId}/photo`, formData)
+        } catch (photoError) {
+          toast.error(
+            'The employee was saved, but the photo did not upload',
+            photoError instanceof Error ? photoError.message : undefined,
+          )
+        }
+      }
+
       await queryClient.invalidateQueries({ queryKey: ['employees'] })
       await queryClient.invalidateQueries({ queryKey: ['employee', id] })
-      navigate(`/employees/${response.data.id ?? id}`)
+      navigate(`/employees/${employeeId}`)
     },
     onError: (error: Error) => {
       // Server-side field errors are folded back into the form.
@@ -453,6 +504,74 @@ export default function EmployeeFormPage() {
                 <span>This employee supervises others</span>
               </label>
             </Field>
+          </div>
+        </Card>
+
+        <Card
+          title="Photo"
+          description={
+            isEdit
+              ? 'Replacing the photo here takes effect when you save.'
+              : 'Optional. Uploaded as soon as the employee is created.'
+          }
+        >
+          <div className="row" style={{ gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {photoPreview ? (
+              <img
+                src={photoPreview}
+                alt="Selected employee photo"
+                style={{
+                  width: 96,
+                  height: 96,
+                  objectFit: 'cover',
+                  borderRadius: '50%',
+                  border: '1px solid var(--border)',
+                }}
+              />
+            ) : (
+              <div
+                aria-hidden="true"
+                style={{
+                  width: 96,
+                  height: 96,
+                  borderRadius: '50%',
+                  border: '1px dashed var(--border)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  color: 'var(--muted)',
+                }}
+              >
+                <Upload size={20} />
+              </div>
+            )}
+
+            <div className="stack" style={{ gap: '0.5rem' }}>
+              <input
+                ref={photoInputRef}
+                id="employeePhoto"
+                type="file"
+                accept="image/png,image/jpeg"
+                style={{ display: 'none' }}
+                onChange={(event) => {
+                  choosePhoto(event.target.files?.[0] ?? null)
+                  // Clear the input so re-picking the same file still fires onChange.
+                  event.target.value = ''
+                }}
+              />
+              <div className="row" style={{ gap: '0.5rem' }}>
+                <Button type="button" variant="secondary" onClick={() => photoInputRef.current?.click()}>
+                  <Upload size={16} /> {photoFile ? 'Choose another' : 'Choose a photo'}
+                </Button>
+                {photoFile ? (
+                  <Button type="button" variant="secondary" onClick={() => choosePhoto(null)}>
+                    <X size={16} /> Remove
+                  </Button>
+                ) : null}
+              </div>
+              <p className="muted" style={{ margin: 0, fontSize: '0.85rem' }}>
+                {photoFile ? photoFile.name : 'PNG or JPEG, up to 5 MB.'}
+              </p>
+            </div>
           </div>
         </Card>
 

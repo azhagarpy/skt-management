@@ -145,8 +145,8 @@ interface OrganizationRow {
   phone: string | null
   email: string | null
   website: string | null
-  tax_id: string | null
-  registration_no: string | null
+  pf_number: string | null
+  esi_number: string | null
   logo_path: string | null
 }
 
@@ -154,7 +154,7 @@ export async function loadLetterhead(organizationId: string, db: Queryable = poo
   const row = await queryOne<OrganizationRow>(
     db,
     `SELECT name, legal_name, address_line1, address_line2, city, state, pincode, phone, email, website,
-            tax_id, registration_no, logo_path
+            pf_number, esi_number, logo_path
        FROM organizations WHERE id = $1`,
     [organizationId],
   )
@@ -175,7 +175,7 @@ export async function loadLetterhead(organizationId: string, db: Queryable = poo
     name: row.legal_name?.trim() || row.name,
     addressLines: [[row.address_line1, row.address_line2].filter(Boolean).join(', '), cityLine].filter(Boolean),
     contactLine: [row.phone, row.email, row.website].filter(Boolean).join('   |   '),
-    identifiers: [row.registration_no ? `Reg. No: ${row.registration_no}` : '', row.tax_id ? `Tax ID: ${row.tax_id}` : ''].filter(Boolean),
+    identifiers: [row.pf_number ? `PF No: ${row.pf_number}` : '', row.esi_number ? `ESI No: ${row.esi_number}` : ''].filter(Boolean),
     city: row.city,
     logo,
   }

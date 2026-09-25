@@ -36,8 +36,8 @@ export function presentOrganization(row: repository.OrganizationRow) {
     state: row.state,
     country: row.country,
     pincode: row.pincode,
-    taxId: row.tax_id,
-    registrationNo: row.registration_no,
+    pfNumber: row.pf_number,
+    esiNumber: row.esi_number,
     labourIdentificationNumber: row.labour_identification_number,
     /**
      * The key itself is never sent: the logo is fetched through the
@@ -127,8 +127,8 @@ export async function updateOrganization(
     state: input.state,
     country: input.country,
     pincode: input.pincode,
-    tax_id: input.taxId,
-    registration_no: input.registrationNo,
+    pf_number: input.pfNumber,
+    esi_number: input.esiNumber,
     labour_identification_number: input.labourIdentificationNumber,
     currency_code: input.currencyCode,
     timezone: input.timezone,

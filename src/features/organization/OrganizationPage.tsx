@@ -72,8 +72,8 @@ const profileSchema = z.object({
   city: z.string().trim().max(100).optional().or(z.literal('')),
   state: z.string().trim().max(100).optional().or(z.literal('')),
   pincode: z.string().trim().optional().or(z.literal('')),
-  taxId: z.string().trim().max(40).optional().or(z.literal('')),
-  registrationNo: z.string().trim().max(60).optional().or(z.literal('')),
+  pfNumber: z.string().trim().max(40).optional().or(z.literal('')),
+  esiNumber: z.string().trim().max(60).optional().or(z.literal('')),
   labourIdentificationNumber: z.string().trim().max(40).optional().or(z.literal('')),
 })
 
@@ -107,8 +107,8 @@ function ProfileTab({ canManage }: { canManage: boolean }) {
       city: data.city ?? '',
       state: data.state ?? '',
       pincode: data.pincode ?? '',
-      taxId: data.taxId ?? '',
-      registrationNo: data.registrationNo ?? '',
+      pfNumber: data.pfNumber ?? '',
+      esiNumber: data.esiNumber ?? '',
       labourIdentificationNumber: data.labourIdentificationNumber ?? '',
     })
   }, [data, reset])
@@ -126,8 +126,8 @@ function ProfileTab({ canManage }: { canManage: boolean }) {
         city: blank(values.city),
         state: blank(values.state),
         pincode: blank(values.pincode),
-        taxId: blank(values.taxId),
-        registrationNo: blank(values.registrationNo),
+        pfNumber: blank(values.pfNumber),
+        esiNumber: blank(values.esiNumber),
         labourIdentificationNumber: blank(values.labourIdentificationNumber),
       })
     },
@@ -171,11 +171,11 @@ function ProfileTab({ canManage }: { canManage: boolean }) {
           <Field label="Pincode" htmlFor="org-pincode">
             <Input id="org-pincode" disabled={!canManage} {...register('pincode')} />
           </Field>
-          <Field label="Tax ID" htmlFor="org-tax">
-            <Input id="org-tax" disabled={!canManage} {...register('taxId')} />
+          <Field label="PF number" htmlFor="org-pf">
+            <Input id="org-pf" disabled={!canManage} {...register('pfNumber')} />
           </Field>
-          <Field label="Registration number" htmlFor="org-registration">
-            <Input id="org-registration" disabled={!canManage} {...register('registrationNo')} />
+          <Field label="ESI number" htmlFor="org-esi">
+            <Input id="org-esi" disabled={!canManage} {...register('esiNumber')} />
           </Field>
           <Field
             label="Labour Identification Number"
