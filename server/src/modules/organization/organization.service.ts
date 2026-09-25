@@ -8,11 +8,13 @@ import * as repository from './organization.repository.js'
 import type {
   DepartmentInput,
   DesignationInput,
+  EmployeeTypeInput,
   ListQuery,
   LocationInput,
   SettingsUpsertInput,
   UpdateDepartmentInput,
   UpdateDesignationInput,
+  UpdateEmployeeTypeInput,
   UpdateLocationInput,
   UpdateOrganizationInput,
 } from './organization.validation.js'
@@ -345,6 +347,122 @@ export async function deleteDepartment(organizationId: string, id: string, conte
 // ---------------------------------------------------------------------------
 // Designations
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Employee (supply) types
+// ---------------------------------------------------------------------------
+
+function presentEmployeeType(row: repository.EmployeeTypeRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    description: row.description,
+    overtimeHandling: row.overtime_handling,
+    displayOrder: row.display_order,
+    isActive: row.is_active,
+    employeeCount: row.employee_count === undefined ? undefined : Number(row.employee_count),
+  }
+}
+
+export async function listEmployeeTypes(organizationId: string, filters: ListQuery) {
+  const rows = await repository.listEmployeeTypes(organizationId, filters)
+  return rows.map(presentEmployeeType)
+}
+
+export async function getEmployeeType(organizationId: string, id: string) {
+  const row = await repository.findEmployeeType(id, organizationId)
+  if (!row) throw ApiError.notFound('Supply type')
+  return presentEmployeeType(row)
+}
+
+export async function createEmployeeType(organizationId: string, input: EmployeeTypeInput, context: AuditContext) {
+  const row = await repository.insertEmployeeType({
+    organization_id: organizationId,
+    name: input.name,
+    code: input.code,
+    description: input.description ?? null,
+    overtime_handling: input.overtimeHandling,
+    display_order: input.displayOrder ?? 0,
+    is_active: input.isActive ?? true,
+  })
+
+  await recordAudit({
+    ...context,
+    action: 'EMPLOYEE_TYPE_CREATED',
+    entityType: 'employee_type',
+    entityId: row.id,
+    newValues: presentEmployeeType(row),
+  })
+
+  return presentEmployeeType(row)
+}
+
+export async function updateEmployeeType(
+  organizationId: string,
+  id: string,
+  input: UpdateEmployeeTypeInput,
+  context: AuditContext,
+) {
+  const existing = await repository.findEmployeeType(id, organizationId)
+  if (!existing) throw ApiError.notFound('Supply type')
+
+  // Changing how overtime is handled changes what people are owed, so it is
+  // refused while anyone is on the type rather than silently re-rating them.
+  if (input.overtimeHandling && input.overtimeHandling !== existing.overtime_handling) {
+    const employeeCount = await repository.countEmployeesWithType(id)
+    if (employeeCount > 0) {
+      throw ApiError.businessRule(
+        `${employeeCount} employee(s) are on this type, and changing how overtime is handled would change what they are paid. Move them to another type first, or add a new type instead.`,
+      )
+    }
+  }
+
+  const updates = {
+    name: input.name,
+    code: input.code,
+    description: input.description,
+    overtime_handling: input.overtimeHandling,
+    display_order: input.displayOrder,
+    is_active: input.isActive,
+  }
+
+  const updated = await repository.updateEmployeeType(id, organizationId, updates)
+  if (!updated) throw ApiError.notFound('Supply type')
+
+  const diff = diffValues(existing as unknown as Record<string, unknown>, updates as Record<string, unknown>)
+  await recordAudit({
+    ...context,
+    action: 'EMPLOYEE_TYPE_UPDATED',
+    entityType: 'employee_type',
+    entityId: id,
+    oldValues: diff.old,
+    newValues: diff.new,
+  })
+
+  return presentEmployeeType(updated)
+}
+
+export async function deleteEmployeeType(organizationId: string, id: string, context: AuditContext) {
+  const existing = await repository.findEmployeeType(id, organizationId)
+  if (!existing) throw ApiError.notFound('Supply type')
+
+  const employeeCount = await repository.countEmployeesWithType(id)
+  if (employeeCount > 0) {
+    throw ApiError.businessRule(
+      `This type is assigned to ${employeeCount} employee(s). Reassign them first, or deactivate it instead.`,
+    )
+  }
+
+  await repository.deleteEmployeeType(id, organizationId)
+  await recordAudit({
+    ...context,
+    action: 'EMPLOYEE_TYPE_DELETED',
+    entityType: 'employee_type',
+    entityId: id,
+    oldValues: presentEmployeeType(existing),
+  })
+}
 
 export async function listDesignations(organizationId: string, filters: ListQuery) {
   const rows = await repository.listDesignations(organizationId, filters)

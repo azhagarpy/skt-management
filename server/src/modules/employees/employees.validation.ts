@@ -14,7 +14,8 @@ export const employmentTypeSchema = z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT'
 export const employmentStatusSchema = z.enum(['ACTIVE', 'INACTIVE', 'ON_NOTICE', 'RESIGNED', 'TERMINATED'])
 export const salaryBasisSchema = z.enum(['MONTHLY', 'DAILY'])
 export const roleSchema = z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE'])
-export const employeeTypeSchema = z.enum(['SUPPLY', 'PSR'])
+/** The supply type is a managed row now, so the form sends its id. */
+export const employeeTypeIdSchema = z.string().uuid()
 export const plantSchema = z.enum(['ULTRATECH', 'ICL'])
 /** Skill classification printed on the statutory Letter of Appointment. */
 export const skillCategorySchema = z.enum(['UNSKILLED', 'SEMI_SKILLED', 'SKILLED', 'HIGHLY_SKILLED'])
@@ -65,7 +66,7 @@ export const createEmployeeSchema = z
     employmentType: employmentTypeSchema.default('FULL_TIME'),
     employmentStatus: employmentStatusSchema.default('ACTIVE'),
     salaryBasis: salaryBasisSchema.default('MONTHLY'),
-    employeeType: employeeTypeSchema.default('SUPPLY'),
+    employeeTypeId: employeeTypeIdSchema,
     plant: plantSchema.nullish(),
     skillCategory: skillCategorySchema.nullish(),
     duties: z.string().trim().max(1000).nullish(),
@@ -129,7 +130,7 @@ export const updateEmployeeSchema = z.object({
   employmentType: employmentTypeSchema.optional(),
   employmentStatus: employmentStatusSchema.optional(),
   salaryBasis: salaryBasisSchema.optional(),
-  employeeType: employeeTypeSchema.optional(),
+  employeeTypeId: employeeTypeIdSchema.optional(),
   plant: plantSchema.nullish(),
   skillCategory: skillCategorySchema.nullish(),
   duties: z.string().trim().max(1000).nullish(),
@@ -165,7 +166,7 @@ export const employeeListQuerySchema = paginationSchema.extend({
   employmentStatus: employmentStatusSchema.optional(),
   employmentType: employmentTypeSchema.optional(),
   salaryBasis: salaryBasisSchema.optional(),
-  employeeType: employeeTypeSchema.optional(),
+  employeeTypeId: employeeTypeIdSchema.optional(),
   plant: plantSchema.optional(),
   isSupervisor: z
     .union([z.boolean(), z.enum(['true', 'false'])])

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -15,12 +15,13 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Spinner,
   StatusBadge,
   Tabs,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import type { Department, Designation, Location, OrganizationProfile } from '../../types/api'
+import type { Department, Designation, EmployeeType, Location, OrganizationProfile } from '../../types/api'
 import {
   DEFAULT_THEME_COLOR,
   THEME_PRESETS,
@@ -43,6 +44,7 @@ export default function OrganizationPage() {
           { key: 'branding', label: 'Branding' },
           { key: 'departments', label: 'Departments' },
           { key: 'designations', label: 'Sections' },
+          { key: 'employeeTypes', label: 'Supply types' },
           { key: 'locations', label: 'Locations' },
         ]}
         active={tab}
@@ -53,6 +55,7 @@ export default function OrganizationPage() {
       {tab === 'branding' ? <BrandingTab canManage={can('org.manage')} /> : null}
       {tab === 'departments' ? <DepartmentsTab canManage={can('department.manage')} /> : null}
       {tab === 'designations' ? <DesignationsTab canManage={can('designation.manage')} /> : null}
+      {tab === 'employeeTypes' ? <EmployeeTypesTab canManage={can('employeeType.manage')} /> : null}
       {tab === 'locations' ? <LocationsTab canManage={can('location.manage')} /> : null}
     </div>
   )
@@ -454,6 +457,8 @@ function SimpleCrudTab<T extends SimpleEntity>({
   queryKey,
   canManage,
   extraColumns = [],
+  extraDefaults,
+  renderExtraFields,
 }: {
   title: string
   description: string
@@ -461,13 +466,20 @@ function SimpleCrudTab<T extends SimpleEntity>({
   queryKey: string
   canManage: boolean
   extraColumns?: Column<T>[]
+  /** Extra payload fields, with the values a new row starts on. */
+  extraDefaults?: Record<string, unknown>
+  /** Inputs for those fields, rendered under name/code in the modal. */
+  renderExtraFields?: (
+    values: Record<string, unknown>,
+    set: (next: Record<string, unknown>) => void,
+  ) => ReactNode
 }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<T | null>(null)
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<T | null>(null)
-  const [form, setForm] = useState({ name: '', code: '', isActive: true })
+  const [form, setForm] = useState<Record<string, unknown>>({ name: '', code: '', isActive: true, ...extraDefaults })
 
   const { data, isFetching, error, refetch } = useQuery({
     queryKey: [queryKey, 'manage'],
@@ -476,7 +488,12 @@ function SimpleCrudTab<T extends SimpleEntity>({
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const payload = { name: form.name, code: form.code.toUpperCase(), isActive: form.isActive }
+      const payload = {
+        ...form,
+        name: form.name,
+        code: String(form.code ?? '').toUpperCase(),
+        isActive: form.isActive,
+      }
       return editing ? patch(`${endpoint}/${editing.id}`, payload) : post(endpoint, payload)
     },
     onSuccess: async () => {
@@ -532,7 +549,7 @@ function SimpleCrudTab<T extends SimpleEntity>({
                   size="sm"
                   variant="ghost"
                   onClick={() => {
-                    setForm({ name: row.name, code: row.code, isActive: row.isActive })
+                    setForm({ ...extraDefaults, ...(row as unknown as Record<string, unknown>), name: row.name, code: row.code, isActive: row.isActive })
                     setEditing(row)
                   }}
                 >
@@ -556,7 +573,7 @@ function SimpleCrudTab<T extends SimpleEntity>({
             size="sm"
             icon={<Plus size={14} />}
             onClick={() => {
-              setForm({ name: '', code: '', isActive: true })
+              setForm({ name: '', code: '', isActive: true, ...extraDefaults })
               setCreating(true)
             }}
           >
@@ -603,20 +620,29 @@ function SimpleCrudTab<T extends SimpleEntity>({
       >
         <div className="stack">
           <Field label="Name" htmlFor="entity-name" required>
-            <Input id="entity-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            <Input
+              id="entity-name"
+              value={String(form.name ?? '')}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+            />
           </Field>
           <Field label="Code" htmlFor="entity-code" required>
             <Input
               id="entity-code"
-              value={form.code}
+              value={String(form.code ?? '')}
               style={{ textTransform: 'uppercase' }}
               onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })}
             />
           </Field>
           <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
-            <input type="checkbox" checked={form.isActive} onChange={(event) => setForm({ ...form, isActive: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={Boolean(form.isActive)}
+              onChange={(event) => setForm({ ...form, isActive: event.target.checked })}
+            />
             <span>Active</span>
           </label>
+          {renderExtraFields ? renderExtraFields(form, setForm) : null}
         </div>
       </Modal>
 
@@ -654,6 +680,64 @@ function DesignationsTab({ canManage }: { canManage: boolean }) {
       endpoint="/designations"
       queryKey="designations"
       canManage={canManage}
+    />
+  )
+}
+
+const OVERTIME_HANDLING_LABELS: Record<string, string> = {
+  OFF_IN_LIEU: 'Converts to weekly offs',
+  PAID_HOURLY: 'Paid per hour',
+}
+
+/**
+ * Supply types.
+ *
+ * Unlike the other lists, a type is not just a label: overtime branches on the
+ * rule it carries, so the rule is a required choice rather than something the
+ * code guesses from the name.
+ */
+function EmployeeTypesTab({ canManage }: { canManage: boolean }) {
+  return (
+    <SimpleCrudTab<EmployeeType>
+      title="Supply types"
+      description="How an employee's overtime is treated. Every type must say which rule applies."
+      endpoint="/employee-types"
+      queryKey="employee-types"
+      canManage={canManage}
+      extraDefaults={{ overtimeHandling: 'OFF_IN_LIEU', description: '' }}
+      extraColumns={[
+        {
+          key: 'overtimeHandling',
+          header: 'Overtime',
+          render: (row) => OVERTIME_HANDLING_LABELS[row.overtimeHandling] ?? row.overtimeHandling,
+        },
+      ]}
+      renderExtraFields={(values, set) => (
+        <>
+          <Field
+            label="Overtime handling"
+            htmlFor="entity-overtime"
+            required
+            hint="This decides what overtime is worth. It cannot be changed once employees are on the type."
+          >
+            <Select
+              id="entity-overtime"
+              value={String(values.overtimeHandling ?? 'OFF_IN_LIEU')}
+              onChange={(event) => set({ ...values, overtimeHandling: event.target.value })}
+            >
+              <option value="OFF_IN_LIEU">Converts to extra weekly offs (8 hours per off)</option>
+              <option value="PAID_HOURLY">Paid at the employee's hourly rate</option>
+            </Select>
+          </Field>
+          <Field label="Description" htmlFor="entity-description">
+            <Input
+              id="entity-description"
+              value={String(values.description ?? '')}
+              onChange={(event) => set({ ...values, description: event.target.value })}
+            />
+          </Field>
+        </>
+      )}
     />
   )
 }

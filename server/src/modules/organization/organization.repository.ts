@@ -217,6 +217,110 @@ export async function deleteDepartment(id: string, organizationId: string, db: Q
 // Designations
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Employee (supply) types
+// ---------------------------------------------------------------------------
+
+export interface EmployeeTypeRow {
+  id: string
+  organization_id: string
+  name: string
+  code: string
+  description: string | null
+  overtime_handling: string
+  is_active: boolean
+  display_order: number
+  created_at: Date
+  updated_at: Date
+  employee_count?: string
+}
+
+export async function listEmployeeTypes(
+  organizationId: string,
+  filters: { search?: string; isActive?: boolean },
+  db: Queryable = pool,
+): Promise<EmployeeTypeRow[]> {
+  const conditions = ['t.organization_id = $1']
+  const params: unknown[] = [organizationId]
+  if (filters.search) {
+    params.push(`%${filters.search}%`)
+    conditions.push(`(t.name ILIKE $${params.length} OR t.code ILIKE $${params.length})`)
+  }
+  if (filters.isActive !== undefined) {
+    params.push(filters.isActive)
+    conditions.push(`t.is_active = $${params.length}`)
+  }
+  return queryRows<EmployeeTypeRow>(
+    db,
+    `SELECT t.*, (SELECT count(*)::text FROM employees e WHERE e.employee_type_id = t.id) AS employee_count
+       FROM employee_types t
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY t.display_order, t.name`,
+    params,
+  )
+}
+
+export async function findEmployeeType(
+  id: string,
+  organizationId: string,
+  db: Queryable = pool,
+): Promise<EmployeeTypeRow | null> {
+  return queryOne<EmployeeTypeRow>(db, 'SELECT * FROM employee_types WHERE id = $1 AND organization_id = $2', [
+    id,
+    organizationId,
+  ])
+}
+
+export async function insertEmployeeType(
+  values: Record<string, unknown>,
+  db: Queryable = pool,
+): Promise<EmployeeTypeRow> {
+  const row = await queryOne<EmployeeTypeRow>(
+    db,
+    `INSERT INTO employee_types (organization_id, name, code, description, overtime_handling, display_order, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [
+      values.organization_id,
+      values.name,
+      values.code,
+      values.description ?? null,
+      values.overtime_handling,
+      values.display_order ?? 0,
+      values.is_active ?? true,
+    ],
+  )
+  return row as EmployeeTypeRow
+}
+
+export async function updateEmployeeType(
+  id: string,
+  organizationId: string,
+  updates: Record<string, unknown>,
+  db: Queryable = pool,
+): Promise<EmployeeTypeRow | null> {
+  const { assignments, params } = buildUpdate(updates, 3)
+  if (assignments.length === 0) return findEmployeeType(id, organizationId, db)
+  return queryOne<EmployeeTypeRow>(
+    db,
+    `UPDATE employee_types SET ${assignments.join(', ')} WHERE id = $1 AND organization_id = $2 RETURNING *`,
+    [id, organizationId, ...params],
+  )
+}
+
+export async function countEmployeesWithType(id: string, db: Queryable = pool): Promise<number> {
+  const row = await queryOne<{ count: string }>(
+    db,
+    'SELECT count(*)::text AS count FROM employees WHERE employee_type_id = $1',
+    [id],
+  )
+  return Number(row?.count ?? 0)
+}
+
+export async function deleteEmployeeType(id: string, organizationId: string, db: Queryable = pool): Promise<boolean> {
+  const result = await db.query('DELETE FROM employee_types WHERE id = $1 AND organization_id = $2', [id, organizationId])
+  return (result.rowCount ?? 0) > 0
+}
+
 export async function listDesignations(
   organizationId: string,
   filters: { search?: string; isActive?: boolean; includeCounts?: boolean },

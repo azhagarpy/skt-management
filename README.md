@@ -275,5 +275,3 @@ calculator's input is a plain data structure, so a new earning or deduction is a
 new component rather than a new code path.
 
 
-bulk employeee add
-id auto increment

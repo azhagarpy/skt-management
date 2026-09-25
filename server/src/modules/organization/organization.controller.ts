@@ -8,11 +8,13 @@ import * as service from './organization.service.js'
 import type {
   DepartmentInput,
   DesignationInput,
+  EmployeeTypeInput,
   ListQuery,
   LocationInput,
   SettingsUpsertInput,
   UpdateDepartmentInput,
   UpdateDesignationInput,
+  UpdateEmployeeTypeInput,
   UpdateLocationInput,
   UpdateOrganizationInput,
 } from './organization.validation.js'
@@ -96,6 +98,43 @@ export const deleteDepartment = asyncHandler(async (req: Request, res: Response)
   const auth = requireAuth(req)
   await service.deleteDepartment(auth.organizationId, req.params.id as string, auditContextFrom(req))
   return sendNoContent(res, 'Department deleted successfully')
+})
+
+export const listEmployeeTypes = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  return sendSuccess(res, await service.listEmployeeTypes(auth.organizationId, req.query as unknown as ListQuery))
+})
+
+export const getEmployeeType = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  return sendSuccess(res, await service.getEmployeeType(auth.organizationId, req.params.id as string))
+})
+
+export const createEmployeeType = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const data = await service.createEmployeeType(
+    auth.organizationId,
+    req.body as EmployeeTypeInput,
+    auditContextFrom(req),
+  )
+  return sendCreated(res, data, 'Supply type created successfully')
+})
+
+export const updateEmployeeType = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const data = await service.updateEmployeeType(
+    auth.organizationId,
+    req.params.id as string,
+    req.body as UpdateEmployeeTypeInput,
+    auditContextFrom(req),
+  )
+  return sendSuccess(res, data, 'Supply type updated successfully')
+})
+
+export const deleteEmployeeType = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  await service.deleteEmployeeType(auth.organizationId, req.params.id as string, auditContextFrom(req))
+  return sendNoContent(res, 'Supply type deleted successfully')
 })
 
 export const listDesignations = asyncHandler(async (req: Request, res: Response) => {

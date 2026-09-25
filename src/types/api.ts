@@ -10,7 +10,19 @@ export type EmploymentType = 'FULL_TIME' | 'PART_TIME' | 'CONTRACT' | 'TEMPORARY
 
 export type SalaryBasis = 'MONTHLY' | 'DAILY'
 
-export type EmployeeType = 'SUPPLY' | 'PSR'
+export type OvertimeHandling = 'OFF_IN_LIEU' | 'PAID_HOURLY'
+
+/** A managed supply type. The overtime rule it carries is what payroll branches on. */
+export interface EmployeeType {
+  id: string
+  name: string
+  code: string
+  description: string | null
+  overtimeHandling: OvertimeHandling
+  displayOrder: number
+  isActive: boolean
+  employeeCount?: number
+}
 
 export type PlantType = 'ULTRATECH' | 'ICL'
 
@@ -128,7 +140,9 @@ export interface EmployeeSummary {
   employmentType: EmploymentType
   employmentStatus: EmploymentStatus
   salaryBasis: SalaryBasis
-  employeeType: EmployeeType
+  employeeTypeId: string
+  employeeTypeName: string | null
+  employeeTypeCode: string | null
   plant: PlantType | null
   overtimeRateOverride: number | null
   joiningDate: string

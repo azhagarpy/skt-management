@@ -531,11 +531,11 @@ export async function calculateRun(
 
         const employeeAdjustments = adjustmentsByEmployee.get(employee.id) ?? []
 
-        // PSR overtime is paid; Supply overtime converts to extra weekly offs
+        // Paid-hourly overtime is money; off-in-lieu overtime converts to extra weekly offs
         // instead (overtime.service.ts) and never reaches payroll at all. There
         // is no organization-wide default rate: it is set per employee.
         let overtime: CalculatorInput['overtime'] = null
-        if (employee.employee_type === 'PSR') {
+        if (employee.overtime_handling === 'PAID_HOURLY') {
           const hours = overtimeHoursByEmployee.get(employee.id) ?? 0
           const rateMinor = employee.overtime_rate_override_minor ?? null
           if (hours > 0) {

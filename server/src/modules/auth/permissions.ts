@@ -16,6 +16,8 @@ export const PERMISSIONS = {
   ORG_MANAGE: 'org.manage',
   DEPARTMENT_VIEW: 'department.view',
   DEPARTMENT_MANAGE: 'department.manage',
+  EMPLOYEE_TYPE_VIEW: 'employeeType.view',
+  EMPLOYEE_TYPE_MANAGE: 'employeeType.manage',
   DESIGNATION_VIEW: 'designation.view',
   DESIGNATION_MANAGE: 'designation.manage',
   LOCATION_VIEW: 'location.view',
@@ -153,6 +155,8 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.ORG_MANAGE, 'organization', 'Update organization profile'),
   define(PERMISSIONS.DEPARTMENT_VIEW, 'organization', 'View departments'),
   define(PERMISSIONS.DEPARTMENT_MANAGE, 'organization', 'Create, update and delete departments'),
+  define(PERMISSIONS.EMPLOYEE_TYPE_VIEW, 'organization', 'View supply types'),
+  define(PERMISSIONS.EMPLOYEE_TYPE_MANAGE, 'organization', 'Create, update and delete supply types'),
   define(PERMISSIONS.DESIGNATION_VIEW, 'organization', 'View sections'),
   define(PERMISSIONS.DESIGNATION_MANAGE, 'organization', 'Create, update and delete sections'),
   define(PERMISSIONS.LOCATION_VIEW, 'organization', 'View locations'),
@@ -269,6 +273,7 @@ const SUPERVISOR_PERMISSIONS: PermissionCode[] = [
   PERMISSIONS.ORG_VIEW,
   PERMISSIONS.DEPARTMENT_VIEW,
   PERMISSIONS.DESIGNATION_VIEW,
+  PERMISSIONS.EMPLOYEE_TYPE_VIEW,
   PERMISSIONS.LOCATION_VIEW,
 
   PERMISSIONS.EMPLOYEE_VIEW_TEAM,
@@ -309,6 +314,7 @@ const EMPLOYEE_PERMISSIONS: PermissionCode[] = [
   PERMISSIONS.ORG_VIEW,
   PERMISSIONS.DEPARTMENT_VIEW,
   PERMISSIONS.DESIGNATION_VIEW,
+  PERMISSIONS.EMPLOYEE_TYPE_VIEW,
 
   PERMISSIONS.EMPLOYEE_VIEW_SELF,
   PERMISSIONS.EMPLOYEE_UPDATE_SELF,

@@ -678,7 +678,7 @@ export interface PayrollEmployeeRow {
   employment_status: string
   pf_applicable: boolean | null
   esi_applicable: boolean | null
-  employee_type: string
+  overtime_handling: string
   overtime_rate_override_minor: number | null
 }
 
@@ -711,11 +711,12 @@ export async function listEmployeesForPeriod(
             e.joining_date,
             e.exit_date,
             e.employment_status::text AS employment_status,
-            e.employee_type::text AS employee_type,
+            t.overtime_handling::text AS overtime_handling,
             e.overtime_rate_override_minor,
             pf.pf_applicable,
             esi.esi_applicable
        FROM employees e
+       JOIN employee_types t ON t.id = e.employee_type_id
        LEFT JOIN departments  d ON d.id = e.department_id
        LEFT JOIN designations g ON g.id = e.designation_id
        LEFT JOIN employees    s ON s.id = e.supervisor_id

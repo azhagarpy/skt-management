@@ -32,7 +32,9 @@ export interface EmployeeRow {
   employment_type: string
   employment_status: string
   salary_basis: string
-  employee_type: string
+  employee_type_id: string
+  employee_type_name: string | null
+  employee_type_code: string | null
   plant: string | null
   skill_category: string | null
   duties: string | null
@@ -65,7 +67,9 @@ const LIST_COLUMNS = `
        ELSE trim(s.first_name || ' ' || coalesce(s.last_name, '')) END AS supervisor_name,
   u.email AS user_email,
   u.role  AS user_role,
-  u.status AS user_status
+  u.status AS user_status,
+  t.name AS employee_type_name,
+  t.code AS employee_type_code
 `
 
 const LIST_JOINS = `
@@ -75,6 +79,7 @@ const LIST_JOINS = `
   LEFT JOIN locations    l ON l.id = e.location_id
   LEFT JOIN employees    s ON s.id = e.supervisor_id
   LEFT JOIN users        u ON u.id = e.user_id
+  LEFT JOIN employee_types t ON t.id = e.employee_type_id
 `
 
 const SORTABLE_COLUMNS: Record<string, string> = {
@@ -125,7 +130,7 @@ function buildFilters(scope: ScopeClause, filters: EmployeeListQuery): { clause:
   if (filters.employmentStatus) conditions.push(`e.employment_status = $${push(filters.employmentStatus)}`)
   if (filters.employmentType) conditions.push(`e.employment_type = $${push(filters.employmentType)}`)
   if (filters.salaryBasis) conditions.push(`e.salary_basis = $${push(filters.salaryBasis)}`)
-  if (filters.employeeType) conditions.push(`e.employee_type = $${push(filters.employeeType)}`)
+  if (filters.employeeTypeId) conditions.push(`e.employee_type_id = $${push(filters.employeeTypeId)}`)
   if (filters.plant) conditions.push(`e.plant = $${push(filters.plant)}`)
   if (filters.isSupervisor !== undefined) conditions.push(`e.is_supervisor = $${push(filters.isSupervisor)}`)
   if (filters.joinedFrom) conditions.push(`e.joining_date >= $${push(filters.joinedFrom)}`)
@@ -192,7 +197,7 @@ export async function insertEmployee(values: Record<string, unknown>, db: Querya
        gender, date_of_birth, marital_status, blood_group, parent_name, personal_email, work_email,
        mobile_number, alternate_number, department_id, designation_id, location_id,
        supervisor_id, is_supervisor, employment_type, employment_status, salary_basis,
-       employee_type, plant, skill_category, duties, overtime_rate_override_minor,
+       employee_type_id, plant, skill_category, duties, overtime_rate_override_minor,
        joining_date, confirmation_date, created_by, updated_by
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
@@ -222,7 +227,7 @@ export async function insertEmployee(values: Record<string, unknown>, db: Querya
       values.employment_type ?? 'FULL_TIME',
       values.employment_status ?? 'ACTIVE',
       values.salary_basis ?? 'MONTHLY',
-      values.employee_type ?? 'SUPPLY',
+      values.employee_type_id,
       values.plant ?? null,
       values.skill_category ?? null,
       values.duties ?? null,
@@ -380,7 +385,7 @@ export interface JobHistoryRow {
   supervisor_id: string | null
   employment_type: string | null
   employment_status: string | null
-  employee_type: string | null
+  employee_type_id: string | null
   plant: string | null
   notes: string | null
   created_at: Date
@@ -411,7 +416,7 @@ export async function insertJobHistory(values: Record<string, unknown>, db: Quer
   await db.query(
     `INSERT INTO employee_job_history
        (organization_id, employee_id, change_type, effective_from, department_id, designation_id,
-        location_id, supervisor_id, employment_type, employment_status, employee_type, plant, notes, created_by)
+        location_id, supervisor_id, employment_type, employment_status, employee_type_id, plant, notes, created_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       values.organization_id,
@@ -424,7 +429,7 @@ export async function insertJobHistory(values: Record<string, unknown>, db: Quer
       values.supervisor_id ?? null,
       values.employment_type ?? null,
       values.employment_status ?? null,
-      values.employee_type ?? null,
+      values.employee_type_id ?? null,
       values.plant ?? null,
       values.notes ?? null,
       values.created_by ?? null,

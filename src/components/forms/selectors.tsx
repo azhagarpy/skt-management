@@ -5,7 +5,7 @@ import { Upload, X } from 'lucide-react'
 import { get, getWithMeta, upload } from '../../lib/api'
 import { formatFileSize } from '../../lib/format'
 import { Button, Select } from '../ui'
-import type { Department, Designation, EmployeeDetail, EmployeeSummary, LeaveType, Location, SalaryStructure, Shift } from '../../types/api'
+import type { Department, Designation, EmployeeDetail, EmployeeSummary, EmployeeType, LeaveType, Location, SalaryStructure, Shift } from '../../types/api'
 
 /**
  * Reusable pickers.
@@ -28,6 +28,14 @@ export function useDesignations() {
   return useQuery({
     queryKey: ['designations', 'options'],
     queryFn: () => get<Designation[]>('/designations', { isActive: true }),
+    staleTime: REFERENCE_DATA_STALE_TIME,
+  })
+}
+
+export function useEmployeeTypes() {
+  return useQuery({
+    queryKey: ['employee-types', 'options'],
+    queryFn: () => get<EmployeeType[]>('/employee-types', { isActive: true }),
     staleTime: REFERENCE_DATA_STALE_TIME,
   })
 }
@@ -104,6 +112,20 @@ export function DesignationSelector({ value, onChange, id, includeAll = true, al
       {(data ?? []).map((designation) => (
         <option key={designation.id} value={designation.id}>
           {designation.name}
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+export function EmployeeTypeSelector({ value, onChange, id, includeAll = true, allLabel = 'All types', disabled }: SelectorProps) {
+  const { data, isLoading } = useEmployeeTypes()
+  return (
+    <Select id={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled || isLoading}>
+      {includeAll ? <option value="">{allLabel}</option> : <option value="">Select a type</option>}
+      {(data ?? []).map((type) => (
+        <option key={type.id} value={type.id}>
+          {type.name}
         </option>
       ))}
     </Select>

@@ -10,6 +10,7 @@ import { useToast } from '../../app/providers/ToastProvider'
 import { Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea } from '../../components/ui'
 import {
   DepartmentSelector,
+  EmployeeTypeSelector,
   DesignationSelector,
   LocationSelector,
   SupervisorSelector,
@@ -48,7 +49,7 @@ const schema = z.object({
   employmentType: z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT', 'TEMPORARY', 'INTERN']),
   employmentStatus: z.enum(['ACTIVE', 'INACTIVE', 'ON_NOTICE', 'RESIGNED', 'TERMINATED']),
   salaryBasis: z.enum(['MONTHLY', 'DAILY']),
-  employeeType: z.enum(['SUPPLY', 'PSR']),
+  employeeTypeId: z.string().uuid('Choose a supply type'),
   plant: z.enum(['ULTRATECH', 'ICL']).optional().or(z.literal('')),
   skillCategory: z.enum(['UNSKILLED', 'SEMI_SKILLED', 'SKILLED', 'HIGHLY_SKILLED']).optional().or(z.literal('')),
   duties: z.string().trim().max(1000).optional().or(z.literal('')),
@@ -86,7 +87,7 @@ function toPayload(values: FormValues, isEdit: boolean): Record<string, unknown>
     employmentType: values.employmentType,
     employmentStatus: values.employmentStatus,
     salaryBasis: values.salaryBasis,
-    employeeType: values.employeeType,
+    employeeTypeId: values.employeeTypeId,
     plant: values.plant || null,
     skillCategory: values.skillCategory || null,
     duties: blank(values.duties),
@@ -152,7 +153,7 @@ export default function EmployeeFormPage() {
       employmentType: 'FULL_TIME',
       employmentStatus: 'ACTIVE',
       salaryBasis: 'MONTHLY',
-      employeeType: 'SUPPLY',
+      employeeTypeId: '',
       plant: '',
       overtimeRateOverride: '',
       joiningDate: '',
@@ -186,7 +187,7 @@ export default function EmployeeFormPage() {
       employmentType: existing.employmentType,
       employmentStatus: existing.employmentStatus,
       salaryBasis: existing.salaryBasis,
-      employeeType: existing.employeeType,
+      employeeTypeId: existing.employeeTypeId,
       plant: existing.plant ?? '',
       skillCategory: (existing.skillCategory as FormValues['skillCategory']) ?? '',
       duties: existing.duties ?? '',
@@ -378,14 +379,18 @@ export default function EmployeeFormPage() {
             </Field>
 
             <Field
-              label="Employee type"
-              htmlFor="employeeType"
-              hint="Supply employees convert overtime into extra weekly offs; PSR employees are paid for overtime."
+              label="Supply type"
+              htmlFor="employeeTypeId"
+              hint="The type decides whether overtime becomes extra weekly offs or is paid per hour. Manage the list under Organization."
+              error={errors.employeeTypeId?.message}
+              required
             >
-              <Select id="employeeType" {...register('employeeType')}>
-                <option value="SUPPLY">Supply</option>
-                <option value="PSR">PSR</option>
-              </Select>
+              <EmployeeTypeSelector
+                id="employeeTypeId"
+                includeAll={false}
+                value={watch('employeeTypeId') ?? ''}
+                onChange={(next) => setValue('employeeTypeId', next, { shouldValidate: true, shouldDirty: true })}
+              />
             </Field>
 
             <Field label="Plant" htmlFor="plant">

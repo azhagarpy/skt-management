@@ -59,6 +59,24 @@ export const departmentSchema = z.object({
 
 export const updateDepartmentSchema = departmentSchema.partial()
 
+/**
+ * A supply type declares how its overtime is treated. There is no default:
+ * whoever adds a type has to say which rule applies, because a type the rules
+ * do not cover would lose its employees' overtime silently.
+ */
+export const employeeTypeSchema = z.object({
+  name: z.string().trim().min(2, 'Type name is required').max(120),
+  code: codeSchema,
+  description: z.string().trim().max(500).nullish(),
+  overtimeHandling: z.enum(['OFF_IN_LIEU', 'PAID_HOURLY'], {
+    required_error: 'Choose how overtime is handled for this type',
+  }),
+  displayOrder: z.coerce.number().int().min(0).max(999).optional().default(0),
+  isActive: z.boolean().optional().default(true),
+})
+
+export const updateEmployeeTypeSchema = employeeTypeSchema.partial()
+
 export const designationSchema = z.object({
   name: z.string().trim().min(2, 'Section name is required').max(120),
   code: codeSchema,
@@ -112,6 +130,8 @@ export const settingsUpsertSchema = z.object({
 export type UpdateOrganizationInput = z.infer<typeof updateOrganizationSchema>
 export type DepartmentInput = z.infer<typeof departmentSchema>
 export type UpdateDepartmentInput = z.infer<typeof updateDepartmentSchema>
+export type EmployeeTypeInput = z.infer<typeof employeeTypeSchema>
+export type UpdateEmployeeTypeInput = z.infer<typeof updateEmployeeTypeSchema>
 export type DesignationInput = z.infer<typeof designationSchema>
 export type UpdateDesignationInput = z.infer<typeof updateDesignationSchema>
 export type LocationInput = z.infer<typeof locationSchema>

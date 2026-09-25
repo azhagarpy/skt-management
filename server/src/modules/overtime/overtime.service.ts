@@ -17,8 +17,9 @@ import type { OvertimeListQuery, RecordOvertimeInput, UpdateOvertimeInput } from
  * Supply employees never see OT as money: every 8 hours accumulated in a week
  * converts to one extra weekly off, capped at 2/week (16 hours). PSR employees
  * never see OT as days off: hours are paid at a per-hour rate in payroll
- * (payroll.service.ts). employee_type is what branches between the two - it is
- * never inferred from anything else.
+ * (payroll.service.ts). The employee's type carries which of the two applies
+ * as `overtime_handling`, so a type added later has to declare its behaviour
+ * rather than falling through both branches.
  */
 
 const SUPPLY_HOURS_PER_OFF = 8
@@ -50,7 +51,7 @@ function manageScope(auth: AuthContext): EmployeeScope {
 
 interface EmployeeOvertimeContext {
   id: string
-  employee_type: string
+  overtime_handling: string
   department_id: string | null
   location_id: string | null
 }
@@ -58,7 +59,10 @@ interface EmployeeOvertimeContext {
 async function loadEmployeeContext(employeeId: string, db: Queryable): Promise<EmployeeOvertimeContext> {
   const row = await queryOne<EmployeeOvertimeContext>(
     db,
-    'SELECT id, employee_type, department_id, location_id FROM employees WHERE id = $1',
+    `SELECT e.id, t.overtime_handling, e.department_id, e.location_id
+       FROM employees e
+       JOIN employee_types t ON t.id = e.employee_type_id
+      WHERE e.id = $1`,
     [employeeId],
   )
   if (!row) throw ApiError.notFound('Employee')
@@ -197,7 +201,7 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
     )
 
     let conversion: WeekConversionSummary | null = null
-    if (employee.employee_type === 'SUPPLY') {
+    if (employee.overtime_handling === 'OFF_IN_LIEU') {
       conversion = await reconcileSupplyConversion(auth, employee, input.workDate, tx)
     }
 
@@ -249,7 +253,7 @@ export async function updateOvertime(
     )
 
     let conversion: WeekConversionSummary | null = null
-    if (employee.employee_type === 'SUPPLY') {
+    if (employee.overtime_handling === 'OFF_IN_LIEU') {
       conversion = await reconcileSupplyConversion(auth, employee, existing.work_date, tx)
     }
 
@@ -286,7 +290,7 @@ export async function deleteOvertime(auth: AuthContext, id: string, context: Aud
     await repository.deleteOvertime(id, auth.organizationId, tx)
 
     let conversion: WeekConversionSummary | null = null
-    if (employee.employee_type === 'SUPPLY') {
+    if (employee.overtime_handling === 'OFF_IN_LIEU') {
       conversion = await reconcileSupplyConversion(auth, employee, existing.work_date, tx)
     }
 
@@ -319,7 +323,7 @@ export async function getWeekSummary(auth: AuthContext, employeeId: string, date
   await assertEmployeeInScope(auth, employeeId, scope)
 
   const employee = await loadEmployeeContext(employeeId, pool)
-  if (employee.employee_type !== 'SUPPLY') return null
+  if (employee.overtime_handling !== 'OFF_IN_LIEU') return null
 
   const weekStart = startOfIsoWeek(date)
   const weekEnd = addDays(weekStart, 6)

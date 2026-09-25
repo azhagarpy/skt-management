@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { sendSuccess } from './utils/http.js'
 import { authRouter } from './modules/auth/auth.routes.js'
-import { departmentRouter, designationRouter, locationRouter, organizationRouter } from './modules/organization/organization.routes.js'
+import { departmentRouter, designationRouter, employeeTypeRouter, locationRouter, organizationRouter } from './modules/organization/organization.routes.js'
 import { employeeRouter } from './modules/employees/employees.routes.js'
 import { notificationRouter } from './modules/notifications/notifications.routes.js'
 import { calendarRouter, holidayRouter, shiftRouter, weeklyOffRouter } from './modules/calendar/calendar.routes.js'
@@ -37,6 +37,7 @@ apiRouter.use('/auth', authRouter)
 apiRouter.use('/organization', organizationRouter)
 apiRouter.use('/departments', departmentRouter)
 apiRouter.use('/designations', designationRouter)
+apiRouter.use('/employee-types', employeeTypeRouter)
 apiRouter.use('/locations', locationRouter)
 apiRouter.use('/employees', employeeRouter)
 apiRouter.use('/notifications', notificationRouter)

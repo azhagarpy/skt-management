@@ -9,11 +9,13 @@ import * as controller from './organization.controller.js'
 import {
   departmentSchema,
   designationSchema,
+  employeeTypeSchema,
   listQuerySchema,
   locationSchema,
   settingsUpsertSchema,
   updateDepartmentSchema,
   updateDesignationSchema,
+  updateEmployeeTypeSchema,
   updateLocationSchema,
   updateOrganizationSchema,
   uuidParam,
@@ -100,6 +102,40 @@ departmentRouter.delete(
 // ---------------------------------------------------------------------------
 // Designations
 // ---------------------------------------------------------------------------
+export const employeeTypeRouter = Router()
+employeeTypeRouter.use(authenticate)
+
+employeeTypeRouter.get(
+  '/',
+  requirePermissions(PERMISSIONS.EMPLOYEE_TYPE_VIEW),
+  validate({ query: listQuerySchema }),
+  controller.listEmployeeTypes,
+)
+employeeTypeRouter.post(
+  '/',
+  requirePermissions(PERMISSIONS.EMPLOYEE_TYPE_MANAGE),
+  validate({ body: employeeTypeSchema }),
+  controller.createEmployeeType,
+)
+employeeTypeRouter.get(
+  '/:id',
+  requirePermissions(PERMISSIONS.EMPLOYEE_TYPE_VIEW),
+  validate({ params: idParam }),
+  controller.getEmployeeType,
+)
+employeeTypeRouter.patch(
+  '/:id',
+  requirePermissions(PERMISSIONS.EMPLOYEE_TYPE_MANAGE),
+  validate({ params: idParam, body: updateEmployeeTypeSchema }),
+  controller.updateEmployeeType,
+)
+employeeTypeRouter.delete(
+  '/:id',
+  requirePermissions(PERMISSIONS.EMPLOYEE_TYPE_MANAGE),
+  validate({ params: idParam }),
+  controller.deleteEmployeeType,
+)
+
 export const designationRouter = Router()
 designationRouter.use(authenticate)
 
