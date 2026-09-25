@@ -6,6 +6,7 @@ import { ApiError } from '../../utils/api-error.js'
 import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as service from './employees.service.js'
+import * as importService from './employee-import.service.js'
 import { assertEmployeeInScope, requireOwnEmployeeId, resolveScope } from './employee-access.js'
 import type {
   AddressInput,
@@ -161,4 +162,24 @@ export const addJobHistory = asyncHandler(async (req: Request, res: Response) =>
   if (!employeeId || employeeId === 'me') throw ApiError.badRequest('An employee id is required')
   const data = await service.addJobHistory(auth, employeeId, req.body as JobHistoryInput, auditContextFrom(req))
   return sendCreated(res, data, 'Job history entry added')
+})
+
+// ---------------------------------------------------------------------------
+// Bulk import and code suggestion
+// ---------------------------------------------------------------------------
+
+export const suggestEmployeeCode = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  return sendSuccess(res, await service.suggestNextEmployeeCode(auth.organizationId))
+})
+
+export const previewEmployeeImport = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  return sendSuccess(res, await importService.previewImport(auth, req.file))
+})
+
+export const commitEmployeeImport = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const result = await importService.commitImport(auth, req.file, auditContextFrom(req))
+  return sendSuccess(res, result, `${result.created} employee(s) imported`)
 })

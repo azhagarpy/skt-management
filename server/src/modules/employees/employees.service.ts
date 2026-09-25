@@ -2,10 +2,11 @@ import { ApiError } from '../../utils/api-error.js'
 import { buildPaginated, type Paginated } from '../../utils/pagination.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 import { withTransaction } from '../../database/tx.js'
-import { pool, queryOne, type Queryable } from '../../database/pool.js'
+import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
 import { recordAudit, diffValues, type AuditContext } from '../audit/audit.service.js'
 import { hashPassword } from '../auth/password.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
+import { nextEmployeeCode } from './employee-code.js'
 import { buildStorageKey, sniffContentType } from '../../utils/files.js'
 import { storage } from '../documents/storage.service.js'
 import { logger } from '../../utils/logger.js'
@@ -899,4 +900,19 @@ export async function listSupervisors(auth: AuthContext) {
     employmentStatus: 'ACTIVE',
   } as EmployeeListQuery)
   return rows.map(presentEmployeeSummary)
+}
+
+/**
+ * The code to offer on a blank employee form: the highest in use plus one.
+ *
+ * A suggestion only - the unique index on (organization_id, employee_code) is
+ * what actually prevents a clash if two people create an employee at once.
+ */
+export async function suggestNextEmployeeCode(organizationId: string): Promise<{ nextCode: string }> {
+  const rows = await queryRows<{ employee_code: string }>(
+    pool,
+    'SELECT employee_code FROM employees WHERE organization_id = $1',
+    [organizationId],
+  )
+  return { nextCode: nextEmployeeCode(rows.map((row) => row.employee_code)) }
 }

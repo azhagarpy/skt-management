@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { authenticate } from '../../middleware/authenticate.js'
 import { requireAnyPermission, requirePermissions } from '../../middleware/authorize.js'
-import { uploadSingleImage } from '../../middleware/upload.js'
+import { uploadAttendanceSheet, uploadSingleImage } from '../../middleware/upload.js'
 import { validate } from '../../middleware/validate.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { documentRouter } from '../documents/documents.routes.js'
@@ -33,6 +33,27 @@ const canViewEmployees = requireAnyPermission(
 )
 
 employeeRouter.get('/', canViewEmployees, validate({ query: employeeListQuerySchema }), controller.listEmployees)
+
+/**
+ * Bulk upload, in the Employee Master export layout.
+ *
+ * Preview first: it reports every bad row at once so the sheet can be fixed in
+ * one pass. The commit refuses unless the file is clean, so an import is all
+ * or nothing.
+ */
+employeeRouter.get('/next-code', requirePermissions(PERMISSIONS.EMPLOYEE_CREATE), controller.suggestEmployeeCode)
+employeeRouter.post(
+  '/import/preview',
+  requirePermissions(PERMISSIONS.EMPLOYEE_CREATE),
+  uploadAttendanceSheet,
+  controller.previewEmployeeImport,
+)
+employeeRouter.post(
+  '/import',
+  requirePermissions(PERMISSIONS.EMPLOYEE_CREATE),
+  uploadAttendanceSheet,
+  controller.commitEmployeeImport,
+)
 employeeRouter.get('/supervisors', canViewEmployees, controller.listSupervisors)
 
 employeeRouter.post(

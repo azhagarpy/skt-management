@@ -81,6 +81,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     filters: ['departmentId', 'supervisorId', 'locationId', 'employmentStatus'],
     columns: [
       ...EMPLOYEE_COLUMNS,
+      { key: 'employee_type_name', label: 'Supply Type', format: 'text' },
       { key: 'supervisor_name', label: 'Supervisor', format: 'text' },
       { key: 'employment_type', label: 'Employment Type', format: 'text' },
       { key: 'employment_status', label: 'Status', format: 'text' },
@@ -95,6 +96,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
+             t.name AS employee_type_name,
              CASE WHEN s.id IS NULL THEN NULL
                   ELSE trim(s.first_name || ' ' || coalesce(s.last_name, '')) END AS supervisor_name,
              e.employment_type::text AS employment_type,
@@ -108,6 +110,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN departments  d ON d.id = e.department_id
         LEFT JOIN designations g ON g.id = e.designation_id
         LEFT JOIN employees    s ON s.id = e.supervisor_id
+        LEFT JOIN employee_types t ON t.id = e.employee_type_id
        WHERE {{scope}} {{filters}}
     `,
     orderBy: 'e.employee_code',

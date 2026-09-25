@@ -129,6 +129,7 @@ export default function EmployeeFormPage() {
     reset,
     watch,
     setValue,
+    getValues,
     setError,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
@@ -200,6 +201,23 @@ export default function EmployeeFormPage() {
       temporaryPassword: '',
     })
   }, [existing, reset])
+
+  // On a new employee, offer the next code in the series rather than a blank
+  // box. It is only a suggestion and stays editable; the unique constraint is
+  // what actually prevents a clash.
+  const { data: suggestedCode } = useQuery({
+    queryKey: ['employees', 'next-code'],
+    queryFn: () => get<{ nextCode: string }>('/employees/next-code'),
+    enabled: !isEdit,
+    staleTime: 0,
+  })
+
+  useEffect(() => {
+    if (isEdit || !suggestedCode?.nextCode) return
+    // Never overwrite something already typed.
+    if (getValues('employeeCode')) return
+    setValue('employeeCode', suggestedCode.nextCode)
+  }, [isEdit, suggestedCode, getValues, setValue])
 
   // The photo endpoint is /employees/:id/photo, so on a new employee there is
   // no id to post to yet. The file is held here and uploaded once the employee
