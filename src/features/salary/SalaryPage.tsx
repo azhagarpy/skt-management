@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
-import { del, get, post, put } from '../../lib/api'
+import { AlertCircle, Pencil, Plus, Trash2 } from 'lucide-react'
+import { ApiError, del, get, post, put } from '../../lib/api'
 import { formatCurrency, formatDate, humanise } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
@@ -93,6 +93,15 @@ function emptyStructureForm(): StructureForm {
   }
 }
 
+/** A server validation message that has no single `Field` to sit under. */
+function FormError({ message }: { message: string }) {
+  return (
+    <p className="field-message field-message-error" role="alert">
+      <AlertCircle size={12} aria-hidden /> {message}
+    </p>
+  )
+}
+
 function StructuresTab({ canManage }: { canManage: boolean }) {
   const toast = useToast()
   const queryClient = useQueryClient()
@@ -110,9 +119,24 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
   })
 
   const [form, setForm] = useState<StructureForm>(emptyStructureForm())
+  // Validation lives on the server; its per-field messages are shown here,
+  // keyed by form field (component rows as `rows.<index>.<field>`).
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+
+  const updateForm = (changes: Partial<StructureForm>, ...clear: string[]): void => {
+    setForm({ ...form, ...changes })
+    if (clear.some((key) => fieldErrors[key])) {
+      setFieldErrors((current) => {
+        const next = { ...current }
+        for (const key of clear) delete next[key]
+        return next
+      })
+    }
+  }
 
   const openCreate = (): void => {
     setForm(emptyStructureForm())
+    setFieldErrors({})
     setCreating(true)
   }
 
@@ -134,11 +158,24 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
       esiEmployerRate: String(structure.esiEmployerRate),
       esiWageLimit: String(structure.esiWageLimit),
     })
+    setFieldErrors({})
     setEditing(structure)
+  }
+
+  // Empty component rows are not sent, so payload positions are mapped back to
+  // form rows when the server reports an error on `components.<n>`.
+  const sentRowIndexes = form.rows.flatMap((row, index) => (row.salaryComponentId ? [index] : []))
+
+  const toFormField = (field: string): string => {
+    const match = /^components\.(\d+)(?:\.(\w+))?$/.exec(field)
+    if (!match) return field
+    const rowIndex = sentRowIndexes[Number(match[1])]
+    return rowIndex === undefined ? 'components' : `rows.${rowIndex}.${match[2] ?? 'salaryComponentId'}`
   }
 
   const saveMutation = useMutation({
     mutationFn: () => {
+      setFieldErrors({})
       const payload = {
         name: form.name,
         code: form.code.toUpperCase(),
@@ -171,7 +208,19 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
       setEditing(null)
       await queryClient.invalidateQueries({ queryKey: ['salary-structures'] })
     },
-    onError: (mutationError: Error) => toast.error('Could not save the structure', mutationError.message),
+    onError: (mutationError: Error) => {
+      if (mutationError instanceof ApiError && mutationError.details.length > 0) {
+        const errors: Record<string, string> = {}
+        for (const detail of mutationError.details) {
+          const key = detail.field ? toFormField(detail.field) : 'form'
+          errors[key] ??= detail.message
+        }
+        setFieldErrors(errors)
+        toast.error('Could not save the structure', mutationError.details.map((detail) => detail.message).join('. '))
+        return
+      }
+      toast.error('Could not save the structure', mutationError.message)
+    },
   })
 
   const columns: Column<SalaryStructure>[] = [
@@ -262,40 +311,44 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
             >
               Cancel
             </Button>
-            <Button
-              loading={saveMutation.isPending}
-              disabled={!form.name || !form.code || form.rows.filter((row) => row.salaryComponentId).length === 0}
-              onClick={() => saveMutation.mutate()}
-            >
+            <Button loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
               Save structure
             </Button>
           </>
         }
       >
         <div className="stack">
+          {fieldErrors.form ? <FormError message={fieldErrors.form} /> : null}
           <div className="grid grid-2">
-            <Field label="Name" htmlFor="structure-name" required>
-              <Input id="structure-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            <Field label="Name" htmlFor="structure-name" required error={fieldErrors.name}>
+              <Input id="structure-name" value={form.name} onChange={(event) => updateForm({ name: event.target.value }, 'name')} />
             </Field>
-            <Field label="Code" htmlFor="structure-code" required>
+            <Field
+              label="Code"
+              htmlFor="structure-code"
+              required
+              error={fieldErrors.code}
+              hint="Up to 24 letters, digits, hyphens or underscores - no spaces."
+            >
               <Input
                 id="structure-code"
                 value={form.code}
                 disabled={Boolean(editing)}
                 style={{ textTransform: 'uppercase' }}
-                onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })}
+                onChange={(event) => updateForm({ code: event.target.value.toUpperCase() }, 'code')}
               />
             </Field>
             <Field
               label="Salary basis"
               htmlFor="structure-basis"
+              error={fieldErrors.salaryBasis}
               hint="Daily structures hold per-day amounts multiplied by paid days."
             >
               <Select
                 id="structure-basis"
                 value={form.salaryBasis}
                 disabled={Boolean(editing)}
-                onChange={(event) => setForm({ ...form, salaryBasis: event.target.value as 'MONTHLY' | 'DAILY' })}
+                onChange={(event) => updateForm({ salaryBasis: event.target.value as 'MONTHLY' | 'DAILY' }, 'salaryBasis')}
               >
                 <option value="MONTHLY">Monthly</option>
                 <option value="DAILY">Daily</option>
@@ -305,48 +358,63 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
 
           <div>
             <p className="field-label">Components</p>
+            {fieldErrors.components ? <FormError message={fieldErrors.components} /> : null}
             <div className="stack" style={{ gap: '0.5rem', marginTop: '0.4rem' }}>
               {form.rows.map((row, index) => (
-                <div key={index} className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
-                  <Select
-                    value={row.salaryComponentId}
-                    aria-label={`Component ${index + 1}`}
-                    onChange={(event) => {
-                      const rows = [...form.rows]
-                      rows[index] = { ...(rows[index] as { salaryComponentId: string; amount: string }), salaryComponentId: event.target.value }
-                      setForm({ ...form, rows })
-                    }}
-                  >
-                    <option value="">Select a component</option>
-                    {(components ?? []).map((component) => (
-                      <option key={component.id} value={component.id}>
-                        {component.name}
-                      </option>
-                    ))}
-                  </Select>
+                <div key={index}>
+                  <div className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                    <Select
+                      value={row.salaryComponentId}
+                      aria-label={`Component ${index + 1}`}
+                      onChange={(event) => {
+                        const rows = [...form.rows]
+                        rows[index] = { ...(rows[index] as { salaryComponentId: string; amount: string }), salaryComponentId: event.target.value }
+                        updateForm({ rows }, `rows.${index}.salaryComponentId`, 'components')
+                      }}
+                    >
+                      <option value="">Select a component</option>
+                      {(components ?? []).map((component) => (
+                        <option key={component.id} value={component.id}>
+                          {component.name}
+                        </option>
+                      ))}
+                    </Select>
 
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    style={{ maxWidth: 160 }}
-                    placeholder="Amount"
-                    aria-label={`Amount for component ${index + 1}`}
-                    value={row.amount}
-                    onChange={(event) => {
-                      const rows = [...form.rows]
-                      rows[index] = { ...(rows[index] as { salaryComponentId: string; amount: string }), amount: event.target.value }
-                      setForm({ ...form, rows })
-                    }}
-                  />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      style={{ maxWidth: 160 }}
+                      placeholder="Amount"
+                      aria-label={`Amount for component ${index + 1}`}
+                      value={row.amount}
+                      onChange={(event) => {
+                        const rows = [...form.rows]
+                        rows[index] = { ...(rows[index] as { salaryComponentId: string; amount: string }), amount: event.target.value }
+                        updateForm({ rows }, `rows.${index}.amount`)
+                      }}
+                    />
 
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setForm({ ...form, rows: form.rows.filter((_, position) => position !== index) })}
-                  >
-                    Remove
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setForm({ ...form, rows: form.rows.filter((_, position) => position !== index) })
+                        // Row positions shift, so stale row errors no longer line up.
+                        setFieldErrors((current) =>
+                          Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith('rows.'))),
+                        )
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                  {fieldErrors[`rows.${index}.salaryComponentId`] ? (
+                    <FormError message={fieldErrors[`rows.${index}.salaryComponentId`] as string} />
+                  ) : null}
+                  {fieldErrors[`rows.${index}.amount`] ? (
+                    <FormError message={`Amount: ${fieldErrors[`rows.${index}.amount`] as string}`} />
+                  ) : null}
                 </div>
               ))}
 
@@ -354,7 +422,7 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
                 variant="secondary"
                 size="sm"
                 icon={<Plus size={13} />}
-                onClick={() => setForm({ ...form, rows: [...form.rows, { salaryComponentId: '', amount: '' }] })}
+                onClick={() => updateForm({ rows: [...form.rows, { salaryComponentId: '', amount: '' }] }, 'components')}
               >
                 Add component
               </Button>
@@ -376,7 +444,7 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
               Rs 21,000 or below.
             </p>
             <div className="grid grid-2" style={{ marginTop: '0.4rem' }}>
-              <Field label="PF - employee %" htmlFor="pf-employee-rate">
+              <Field label="PF - employee %" htmlFor="pf-employee-rate" error={fieldErrors.pfEmployeeRate}>
                 <Input
                   id="pf-employee-rate"
                   type="number"
@@ -384,10 +452,10 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
                   min="0"
                   max="100"
                   value={form.pfEmployeeRate}
-                  onChange={(event) => setForm({ ...form, pfEmployeeRate: event.target.value })}
+                  onChange={(event) => updateForm({ pfEmployeeRate: event.target.value }, 'pfEmployeeRate')}
                 />
               </Field>
-              <Field label="PF - employer %" htmlFor="pf-employer-rate">
+              <Field label="PF - employer %" htmlFor="pf-employer-rate" error={fieldErrors.pfEmployerRate}>
                 <Input
                   id="pf-employer-rate"
                   type="number"
@@ -395,10 +463,10 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
                   min="0"
                   max="100"
                   value={form.pfEmployerRate}
-                  onChange={(event) => setForm({ ...form, pfEmployerRate: event.target.value })}
+                  onChange={(event) => updateForm({ pfEmployerRate: event.target.value }, 'pfEmployerRate')}
                 />
               </Field>
-              <Field label="ESI - employee %" htmlFor="esi-employee-rate">
+              <Field label="ESI - employee %" htmlFor="esi-employee-rate" error={fieldErrors.esiEmployeeRate}>
                 <Input
                   id="esi-employee-rate"
                   type="number"
@@ -406,10 +474,10 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
                   min="0"
                   max="100"
                   value={form.esiEmployeeRate}
-                  onChange={(event) => setForm({ ...form, esiEmployeeRate: event.target.value })}
+                  onChange={(event) => updateForm({ esiEmployeeRate: event.target.value }, 'esiEmployeeRate')}
                 />
               </Field>
-              <Field label="ESI - employer %" htmlFor="esi-employer-rate">
+              <Field label="ESI - employer %" htmlFor="esi-employer-rate" error={fieldErrors.esiEmployerRate}>
                 <Input
                   id="esi-employer-rate"
                   type="number"
@@ -417,7 +485,7 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
                   min="0"
                   max="100"
                   value={form.esiEmployerRate}
-                  onChange={(event) => setForm({ ...form, esiEmployerRate: event.target.value })}
+                  onChange={(event) => updateForm({ esiEmployerRate: event.target.value }, 'esiEmployerRate')}
                 />
               </Field>
             </div>
