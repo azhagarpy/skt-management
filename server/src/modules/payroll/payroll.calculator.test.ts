@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculatePayrollItem, summariseAttendance, type CalculatorInput, type ComponentInput, type DayInput, type PolicyInput } from './payroll.calculator.js'
+import { calculatePayrollItem, forfeitedHolidayDates, summariseAttendance, type CalculatorInput, type ComponentInput, type DayInput, type PolicyInput } from './payroll.calculator.js'
 import { datesInMonth, weekdayOf, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 
@@ -164,6 +164,21 @@ describe('summariseAttendance', () => {
     expect(summary.paidDays).toBe(30)
   })
 
+  it('does not pay a holiday flagged as forfeited, and counts it as absent', () => {
+    const summary = summariseAttendance(
+      septemberDays({
+        '2026-09-02': { dayKind: 'HOLIDAY', status: 'HOLIDAY', holidayForfeited: true },
+        '2026-09-01': { status: 'ABSENT' },
+        '2026-09-03': { status: 'ABSENT' },
+      }),
+      DEFAULT_POLICY,
+    )
+
+    expect(summary.holidayDays).toBe(0)
+    expect(summary.absentDays).toBe(3)
+    expect(summary.paidDays).toBe(27)
+  })
+
   it('treats an unmarked working day as unpaid and reports it', () => {
     const summary = summariseAttendance(septemberDays({ '2026-09-03': { status: null } }), DEFAULT_POLICY)
 
@@ -180,6 +195,90 @@ describe('summariseAttendance', () => {
     expect(summary.workingDays).toBe(22)
     expect(summary.payableDaysBasis).toBe(22)
     expect(summary.paidDays).toBe(21)
+  })
+})
+
+describe('forfeitedHolidayDates', () => {
+  // 2026-09-02 (Wed) is the holiday; 09-01 and 09-03 are the days either side.
+  const HOLIDAY = '2026-09-02'
+  const holiday = { dayKind: 'HOLIDAY', status: 'HOLIDAY' } as const
+  const forfeited = (overrides: Partial<Record<IsoDate, Partial<DayInput>>>) =>
+    [...forfeitedHolidayDates(septemberDays(overrides))]
+
+  it('forfeits a holiday with an absence on both sides', () => {
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': { status: 'ABSENT' }, '2026-09-03': { status: 'ABSENT' } })).toEqual([
+      HOLIDAY,
+    ])
+  })
+
+  it('also forfeits a holiday nobody marked', () => {
+    expect(
+      forfeited({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: null }, '2026-09-01': { status: 'ABSENT' }, '2026-09-03': { status: 'ABSENT' } }),
+    ).toEqual([HOLIDAY])
+  })
+
+  it('counts unpaid leave as an absence, but not paid leave', () => {
+    const unpaid = { status: 'ON_LEAVE', leaveIsPaid: false } as const
+    const paid = { status: 'ON_LEAVE', leaveIsPaid: true } as const
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': unpaid, '2026-09-03': { status: 'ABSENT' } })).toEqual([HOLIDAY])
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': paid, '2026-09-03': { status: 'ABSENT' } })).toEqual([])
+  })
+
+  it('keeps the holiday paid when only one side is absent', () => {
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': { status: 'ABSENT' } })).toEqual([])
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-03': { status: 'ABSENT' } })).toEqual([])
+  })
+
+  it('never forfeits a holiday that was worked', () => {
+    expect(
+      forfeited({
+        [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'PRESENT', holidayExtraPay: true },
+        '2026-09-01': { status: 'ABSENT' },
+        '2026-09-03': { status: 'ABSENT' },
+      }),
+    ).toEqual([])
+  })
+
+  it('judges a run of holidays by the days either side of the whole run', () => {
+    expect(
+      forfeited({
+        '2026-09-02': holiday,
+        '2026-09-03': holiday,
+        '2026-09-01': { status: 'ABSENT' },
+        '2026-09-04': { status: 'ABSENT' },
+      }),
+    ).toEqual(['2026-09-02', '2026-09-03'])
+  })
+
+  it('does not forfeit when a weekly off sits between the absence and the holiday', () => {
+    // 09-07 (Mon) holiday; 09-05/06 are the weekend, 09-04 (Fri) and 09-08 absent.
+    expect(
+      forfeited({ '2026-09-07': holiday, '2026-09-04': { status: 'ABSENT' }, '2026-09-08': { status: 'ABSENT' } }),
+    ).toEqual([])
+  })
+
+  it('does not forfeit a holiday at the edge of the days it was given', () => {
+    expect(forfeited({ '2026-09-01': holiday, '2026-09-02': { status: 'ABSENT' } })).toEqual([])
+  })
+})
+
+describe('calculatePayrollItem - forfeited holiday', () => {
+  it('pays neither the absences nor the holiday between them', () => {
+    const paid = calculatePayrollItem(baseInput({ days: septemberDays({ '2026-09-02': { dayKind: 'HOLIDAY', status: 'HOLIDAY' } }) }))
+    const skipped = calculatePayrollItem(
+      baseInput({
+        days: septemberDays({
+          '2026-09-01': { status: 'ABSENT' },
+          '2026-09-02': { dayKind: 'HOLIDAY', status: 'HOLIDAY', holidayForfeited: true },
+          '2026-09-03': { status: 'ABSENT' },
+        }),
+      }),
+    )
+
+    expect(paid.attendance.paidDays).toBe(30)
+    expect(skipped.attendance.paidDays).toBe(27)
+    // 42,000 over 30 days: three unpaid days cost 4,200.
+    expect(toMajor(paid.grossEarningsMinor - skipped.grossEarningsMinor)).toBe(4200)
   })
 })
 

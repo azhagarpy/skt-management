@@ -49,6 +49,11 @@ export interface DayInput {
   holidayExtraPay?: boolean
   /** The holiday's name, shown beside the extra pay it earned. */
   holidayName?: string | null
+  /**
+   * A holiday not worked, with an unpaid absence on the day before and the day
+   * after: it is not paid (see `forfeitedHolidayDates`).
+   */
+  holidayForfeited?: boolean
 }
 
 export type ComponentType = 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
@@ -252,6 +257,52 @@ export interface CalculatorOutput {
 // Attendance
 // ---------------------------------------------------------------------------
 
+/** A holiday the employee did not work: marked as one, or never marked. */
+function isRestedHoliday(day: DayInput): boolean {
+  return day.status === 'HOLIDAY' || (day.status === null && day.dayKind === 'HOLIDAY')
+}
+
+/** A full day that earns nothing: absent, or on unpaid leave. */
+function isUnpaidAbsence(day: DayInput): boolean {
+  return day.status === 'ABSENT' || (day.status === 'ON_LEAVE' && day.leaveIsPaid === false)
+}
+
+/**
+ * The payroll side of the sandwich rule: a holiday is paid only to someone who
+ * did not skip both the day before and the day after it. A run of consecutive
+ * holidays is judged as one, by the days either side of the whole run; a
+ * weekly off, a worked day or any paid day next to it breaks the sandwich. A
+ * holiday that was worked is never forfeited - it keeps its pay and any extra
+ * holiday-work pay.
+ *
+ * Paid leave either side is not an absence here: the leave module's own
+ * sandwich rule already charges such a holiday as leave (leave.service.ts).
+ *
+ * `days` must be consecutive and in date order, and should reach a few days
+ * beyond the payroll period so a holiday at either edge has its neighbours.
+ */
+export function forfeitedHolidayDates(days: DayInput[]): Set<IsoDate> {
+  const forfeited = new Set<IsoDate>()
+  let index = 0
+  while (index < days.length) {
+    const day = days[index] as DayInput
+    if (!isRestedHoliday(day)) {
+      index += 1
+      continue
+    }
+    let end = index
+    while (end + 1 < days.length && isRestedHoliday(days[end + 1] as DayInput)) end += 1
+
+    const before = days[index - 1]
+    const after = days[end + 1]
+    if (before && after && isUnpaidAbsence(before) && isUnpaidAbsence(after)) {
+      for (let position = index; position <= end; position += 1) forfeited.add((days[position] as DayInput).date)
+    }
+    index = end + 1
+  }
+  return forfeited
+}
+
 /** Rounds a day count to two decimals so half days stay exact. */
 function roundDays(value: number): number {
   return Math.round(value * 100) / 100
@@ -328,6 +379,12 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
         break
 
       case 'HOLIDAY':
+        if (day.holidayForfeited) {
+          // Absent either side: the holiday is an unpaid absence too.
+          absentDays += 1
+          dayPaid = 0
+          break
+        }
         holidayDays += 1
         dayPaid = policy.countHolidaysAsPaid ? 1 : 0
         break

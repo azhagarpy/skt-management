@@ -2,6 +2,7 @@ import { ApiError } from '../../utils/api-error.js'
 import { withAdvisoryLock, withTransaction, type TxClient } from '../../database/tx.js'
 import { buildPaginated, type Paginated } from '../../utils/pagination.js'
 import {
+  addDays,
   datesBetween,
   monthLabel,
   payCycleFor,
@@ -26,6 +27,7 @@ import type { AuthContext } from '../../types/express.js'
 import * as repository from './payroll.repository.js'
 import {
   calculatePayrollItem,
+  forfeitedHolidayDates,
   type AdjustmentInput,
   type TaxInput,
   type LwfInput,
@@ -67,6 +69,9 @@ const DEFAULT_POLICY: PolicyInput = {
   prorateOnExit: true,
   netRoundingDecimals: 2,
 }
+
+/** Days read either side of a payroll period to judge the holidays at its edges. */
+const HOLIDAY_CONTEXT_DAYS = 7
 
 // ---------------------------------------------------------------------------
 // Presenters
@@ -365,11 +370,17 @@ export async function calculateRun(
 
       const policy = DEFAULT_POLICY
 
+      // Attendance, leave and the calendar are read a little beyond the period,
+      // so a holiday at either edge can be judged by the days around it
+      // (forfeitedHolidayDates).
+      const contextStart = addDays(periodStart, -HOLIDAY_CONTEXT_DAYS)
+      const contextEnd = addDays(periodEnd, HOLIDAY_CONTEXT_DAYS)
+
       const [calendar, attendanceRows, leaveRows, assignments, bonuses, taxDeductions, lwfContributions, plWagesCredits, adjustments, overtimeHoursByEmployee] =
         await Promise.all([
-          buildCalendarContext(auth.organizationId, periodStart, periodEnd, tx),
-          attendanceRepository.listAttendanceForEmployees(employeeIds, periodStart, periodEnd, tx),
-          leaveRepository.listApprovedLeaveForPeriod(employeeIds, periodStart, periodEnd, tx),
+          buildCalendarContext(auth.organizationId, contextStart, contextEnd, tx),
+          attendanceRepository.listAttendanceForEmployees(employeeIds, contextStart, contextEnd, tx),
+          leaveRepository.listApprovedLeaveForPeriod(employeeIds, contextStart, contextEnd, tx),
           salaryRepository.findAssignmentsForDate(employeeIds, periodEnd, tx),
           listApprovedBonusesForPeriod(employeeIds, run.year, run.month, tx),
           listTaxDeductionsForPeriod(employeeIds, run.year, run.month, tx),
@@ -405,7 +416,7 @@ export async function calculateRun(
       const leavePaidByEmployeeDate = new Map<string, Map<IsoDate, boolean>>()
       for (const leave of leaveRows) {
         const byDate = leavePaidByEmployeeDate.get(leave.employee_id) ?? new Map()
-        for (const date of datesBetween(periodStart, periodEnd)) {
+        for (const date of datesBetween(contextStart, contextEnd)) {
           if (date >= leave.from_date && date <= leave.to_date) byDate.set(date, leave.is_paid)
         }
         leavePaidByEmployeeDate.set(leave.employee_id, byDate)
@@ -471,7 +482,7 @@ export async function calculateRun(
       await repository.clearAppliedAdjustmentsForRun(runId, tx)
       await repository.deleteRunItems(runId, tx)
 
-      const periodDates = datesBetween(periodStart, periodEnd)
+      const contextDates = datesBetween(contextStart, contextEnd)
       const skipped: CalculationSummary['skipped'] = []
       const warnings: CalculationSummary['warnings'] = []
       const appliedAdjustmentIds: string[] = []
@@ -503,7 +514,7 @@ export async function calculateRun(
         const leaveByDate = leavePaidByEmployeeDate.get(employee.id) ?? new Map()
         const scope = { departmentId: employee.department_id, locationId: employee.location_id, employeeId: employee.id }
 
-        const days: DayInput[] = periodDates.map((date) => {
+        const contextDays: DayInput[] = contextDates.map((date) => {
           const calendarDay = calendar.dayFor(date, scope)
           const record = attendanceByDate.get(date)
 
@@ -528,6 +539,10 @@ export async function calculateRun(
             holidayName: calendarDay.holidayName,
           }
         })
+        const forfeited = forfeitedHolidayDates(contextDays)
+        const days = contextDays
+          .filter((day) => day.date >= periodStart && day.date <= periodEnd)
+          .map((day) => (forfeited.has(day.date) ? { ...day, holidayForfeited: true } : day))
 
         const employeeAdjustments = adjustmentsByEmployee.get(employee.id) ?? []
 
