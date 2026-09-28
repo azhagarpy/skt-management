@@ -18,6 +18,7 @@ function calendar(days: Record<string, Kind>): (date: IsoDate) => Kind {
 const run = (input: {
   charged?: string[]
   existing?: string[]
+  halfDays?: string[]
   days?: Record<string, Kind>
   from: IsoDate
   to: IsoDate
@@ -25,6 +26,7 @@ const run = (input: {
   sandwichedHolidayDates({
     charged: new Set(input.charged ?? []),
     existing: new Set(input.existing ?? []),
+    halfDays: new Set(input.halfDays ?? []),
     kindOf: calendar(input.days ?? {}),
     scanFrom: input.from,
     scanTo: input.to,
@@ -130,6 +132,43 @@ describe('sandwichedHolidayDates', () => {
         days: { '2026-10-02': 'HOLIDAY' },
         from: '2026-09-28',
         to: '2026-10-09',
+      }),
+    ).toEqual([])
+  })
+
+  it('charges a holiday with a half day before it and this leave after it', () => {
+    // Worked half of Thursday, Friday is a holiday, Saturday taken as leave.
+    expect(
+      run({
+        charged: ['2026-10-03'],
+        halfDays: ['2026-10-01'],
+        days: { '2026-10-02': 'HOLIDAY' },
+        from: '2026-09-28',
+        to: '2026-10-06',
+      }),
+    ).toEqual(['2026-10-02'])
+  })
+
+  it('charges a holiday with this leave before it and a half day after it', () => {
+    expect(
+      run({
+        charged: ['2026-10-01'],
+        halfDays: ['2026-10-03'],
+        days: { '2026-10-02': 'HOLIDAY' },
+        from: '2026-09-28',
+        to: '2026-10-06',
+      }),
+    ).toEqual(['2026-10-02'])
+  })
+
+  it('does not charge a holiday worked for half a day', () => {
+    expect(
+      run({
+        charged: ['2026-10-01', '2026-10-03'],
+        halfDays: ['2026-10-02'],
+        days: { '2026-10-02': 'HOLIDAY' },
+        from: '2026-09-28',
+        to: '2026-10-06',
       }),
     ).toEqual([])
   })

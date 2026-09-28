@@ -268,15 +268,25 @@ function isUnpaidAbsence(day: DayInput): boolean {
 }
 
 /**
+ * A day that brackets a holiday for the sandwich rule: an unpaid absence, or a
+ * half day - working only half the day before or after a holiday counts the
+ * same as taking it off.
+ */
+function isSandwichSide(day: DayInput): boolean {
+  return isUnpaidAbsence(day) || day.status === 'HALF_DAY_LEAVE'
+}
+
+/**
  * The payroll side of the sandwich rule: a holiday is paid only to someone who
- * did not skip both the day before and the day after it. A run of consecutive
- * holidays is judged as one, by the days either side of the whole run; a
- * weekly off, a worked day or any paid day next to it breaks the sandwich. A
- * holiday that was worked is never forfeited - it keeps its pay and any extra
- * holiday-work pay.
+ * did not skip both the day before and the day after it, where a half day
+ * counts as skipped. A run of consecutive holidays is judged as one, by the
+ * days either side of the whole run; a weekly off, a full worked day or any
+ * paid full day next to it breaks the sandwich. A holiday that was worked is
+ * never forfeited - a full day keeps its pay and any extra holiday-work pay,
+ * and a half day is paid as the half day it is (see `summariseAttendance`).
  *
- * Paid leave either side is not an absence here: the leave module's own
- * sandwich rule already charges such a holiday as leave (leave.service.ts).
+ * Paid full-day leave either side is not an absence here: the leave module's
+ * own sandwich rule already charges such a holiday as leave (leave.service.ts).
  *
  * `days` must be consecutive and in date order, and should reach a few days
  * beyond the payroll period so a holiday at either edge has its neighbours.
@@ -295,7 +305,7 @@ export function forfeitedHolidayDates(days: DayInput[]): Set<IsoDate> {
 
     const before = days[index - 1]
     const after = days[end + 1]
-    if (before && after && isUnpaidAbsence(before) && isUnpaidAbsence(after)) {
+    if (before && after && isSandwichSide(before) && isSandwichSide(after)) {
       for (let position = index; position <= end; position += 1) forfeited.add((days[position] as DayInput).date)
     }
     index = end + 1
@@ -372,6 +382,13 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
 
       case 'HALF_DAY_LEAVE':
         halfDayLeaveDays += 1
+        if (day.dayKind === 'HOLIDAY') {
+          // Half a holiday worked earns that half day; any extra pay the holiday
+          // carries is added as holiday work pay in calculatePayrollItem.
+          dayPaid = 0.5
+          unpaidLeaveDays += 0.5
+          break
+        }
         // The worked half plus whatever the policy grants for the leave half.
         dayPaid = day.leaveIsPaid ? policy.halfDayPaidFraction : policy.halfDayUnpaidFraction
         if (day.leaveIsPaid) paidLeaveDays += 0.5
@@ -753,12 +770,17 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // structure's earnings at the same daily rate its proration uses, so it agrees
   // with the rest of the payslip. It is wages earned in the month, so it counts
   // toward gross earnings and toward the PF and ESI wage (unlike overtime and
-  // bonuses).
+  // bonuses). A holiday worked for half a day earns half of that: its worked
+  // half is paid through the paid days, and the extra pay is half a day more.
   // ------------------------------------------------------------------
   const holidaysWorked = input.days.filter(
-    (day) => day.isEmployed && day.status === 'PRESENT' && day.dayKind === 'HOLIDAY' && day.holidayExtraPay,
+    (day) =>
+      day.isEmployed &&
+      (day.status === 'PRESENT' || day.status === 'HALF_DAY_LEAVE') &&
+      day.dayKind === 'HOLIDAY' &&
+      day.holidayExtraPay,
   )
-  const holidayWorkedDays = holidaysWorked.length
+  const holidayWorkedDays = holidaysWorked.reduce((total, day) => total + (day.status === 'PRESENT' ? 1 : 0.5), 0)
   if (holidayWorkedDays > 0) {
     for (const entry of resolved) {
       if (entry.input.componentType !== 'EARNING' || !entry.input.prorate) continue
@@ -783,7 +805,10 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
         referenceId: null,
         // Which holidays were worked, so the payslip line explains itself.
         notes: `Worked ${holidaysWorked
-          .map((day) => (day.holidayName ? `${day.holidayName} (${formatDayMonthYear(day.date)})` : formatDayMonthYear(day.date)))
+          .map((day) => {
+            const label = day.holidayName ? `${day.holidayName} (${formatDayMonthYear(day.date)})` : formatDayMonthYear(day.date)
+            return day.status === 'HALF_DAY_LEAVE' ? `${label} - half day` : label
+          })
           .join(', ')}`,
       })
     }

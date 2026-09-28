@@ -175,7 +175,8 @@ export async function computeLeaveDays(
   dayPortion: 'FULL_DAY' | 'HALF_DAY',
   db: Queryable = pool,
 ): Promise<LeaveDayBreakdown> {
-  // A half day is never part of a sandwich: the employee worked half of it.
+  // A half-day request never charges a holiday itself; a half day already on
+  // record does bracket one for a full-day request (see sandwichedHolidayDates).
   const applySandwich = leaveType.sandwich_holidays && dayPortion === 'FULL_DAY'
   const scanFrom = applySandwich ? addDays(from, -SANDWICH_SCAN_DAYS) : from
   const scanTo = applySandwich ? addDays(to, SANDWICH_SCAN_DAYS) : to
@@ -226,10 +227,18 @@ async function sandwichedHolidays(
 ): Promise<IsoDate[]> {
   if (!employeeId) return []
 
-  const existing = new Set(
-    await attendanceRepository.findFullDayLeaveDates(employeeId, addDays(scanFrom, -1), addDays(scanTo, 1), db),
-  )
-  return sandwichedHolidayDates({ charged, existing, kindOf, scanFrom, scanTo })
+  const [existing, halfDays] = await Promise.all([
+    attendanceRepository.findFullDayLeaveDates(employeeId, addDays(scanFrom, -1), addDays(scanTo, 1), db),
+    attendanceRepository.findHalfDayDates(employeeId, addDays(scanFrom, -1), addDays(scanTo, 1), db),
+  ])
+  return sandwichedHolidayDates({
+    charged,
+    existing: new Set(existing),
+    halfDays: new Set(halfDays),
+    kindOf,
+    scanFrom,
+    scanTo,
+  })
 }
 
 export interface SandwichInput {
@@ -237,6 +246,8 @@ export interface SandwichInput {
   charged: Set<IsoDate>
   /** Days the employee was already on full-day leave, from other requests. */
   existing: Set<IsoDate>
+  /** Days the employee worked only half of (half-day leave or a muster half day). */
+  halfDays?: Set<IsoDate>
   kindOf: (date: IsoDate) => 'WORKING' | 'WEEKLY_OFF' | 'HOLIDAY'
   scanFrom: IsoDate
   scanTo: IsoDate
@@ -246,22 +257,31 @@ export interface SandwichInput {
  * The holidays a request turns into leave because leave sits on both sides.
  *
  * A run of consecutive holidays is charged only when the day before it and the
- * day after it are both full days of leave, and at least one of those two is a
- * day this request is paying for - otherwise a sandwich formed entirely by
- * older requests would be billed again to whichever request happened to be
- * counted next. A weekly off between the leave and the holiday breaks the run:
- * only an unbroken stretch of holidays is charged, which keeps the rule one a
- * supervisor can check by eye.
+ * day after it are both leave - a full day, or a day worked only half, which
+ * counts the same - and at least one of those two is a day this request is
+ * paying for - otherwise a sandwich formed entirely by older requests would be
+ * billed again to whichever request happened to be counted next. A weekly off
+ * between the leave and the holiday breaks the run: only an unbroken stretch
+ * of holidays is charged, which keeps the rule one a supervisor can check by
+ * eye.
  */
-export function sandwichedHolidayDates({ charged, existing, kindOf, scanFrom, scanTo }: SandwichInput): IsoDate[] {
-  const isLeaveDay = (date: IsoDate): boolean => charged.has(date) || existing.has(date)
+export function sandwichedHolidayDates({
+  charged,
+  existing,
+  halfDays = new Set(),
+  kindOf,
+  scanFrom,
+  scanTo,
+}: SandwichInput): IsoDate[] {
+  const isLeaveDay = (date: IsoDate): boolean => charged.has(date) || existing.has(date) || halfDays.has(date)
 
   // Runs of consecutive holidays that nothing has charged yet: a two-day
   // festival between two days of leave is one sandwich, not two. A holiday an
   // earlier request already sandwiched is not free either - it is leave now,
-  // so it brackets the next run rather than being charged a second time.
+  // so it brackets the next run rather than being charged a second time. A
+  // holiday worked for half a day is paid as that half day, never charged.
   const isFreeHoliday = (date: IsoDate): boolean =>
-    kindOf(date) === 'HOLIDAY' && !charged.has(date) && !existing.has(date)
+    kindOf(date) === 'HOLIDAY' && !charged.has(date) && !existing.has(date) && !halfDays.has(date)
   const runs: IsoDate[][] = []
   let run: IsoDate[] = []
   for (const date of datesBetween(scanFrom, scanTo)) {

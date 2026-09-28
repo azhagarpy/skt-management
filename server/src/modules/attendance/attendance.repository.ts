@@ -534,8 +534,8 @@ export async function deleteAttendanceByIds(ids: string[], db: Queryable = pool)
  *
  * The sandwich rule in leave.service.ts needs to know whether the day either
  * side of a holiday was taken as leave, and that leave usually belongs to a
- * different request than the one being counted. A half day is deliberately not
- * included: the employee worked part of it, so it does not bracket anything.
+ * different request than the one being counted. Half days are read separately
+ * (`findHalfDayDates`).
  */
 export async function findFullDayLeaveDates(
   employeeId: string,
@@ -547,6 +547,27 @@ export async function findFullDayLeaveDates(
     db,
     `SELECT attendance_date FROM attendance
       WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3 AND status = 'ON_LEAVE'
+      ORDER BY attendance_date`,
+    [employeeId, from, to],
+  )
+  return rows.map((row) => row.attendance_date)
+}
+
+/**
+ * The dates in a window on which one employee worked only half the day, whether
+ * as a half-day leave or a half day read from the Face ID muster. The sandwich
+ * rule counts such a day as leave when it sits beside a holiday.
+ */
+export async function findHalfDayDates(
+  employeeId: string,
+  from: IsoDate,
+  to: IsoDate,
+  db: Queryable = pool,
+): Promise<IsoDate[]> {
+  const rows = await queryRows<{ attendance_date: IsoDate }>(
+    db,
+    `SELECT attendance_date FROM attendance
+      WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3 AND status = 'HALF_DAY_LEAVE'
       ORDER BY attendance_date`,
     [employeeId, from, to],
   )

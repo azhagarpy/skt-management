@@ -260,6 +260,28 @@ describe('forfeitedHolidayDates', () => {
   it('does not forfeit a holiday at the edge of the days it was given', () => {
     expect(forfeited({ '2026-09-01': holiday, '2026-09-02': { status: 'ABSENT' } })).toEqual([])
   })
+
+  it('counts a half day either side as skipped: a half day before and leave after forfeits the holiday', () => {
+    const halfDay = { status: 'HALF_DAY_LEAVE', leaveIsPaid: false } as const
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': halfDay, '2026-09-03': { status: 'ABSENT' } })).toEqual([HOLIDAY])
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': { status: 'ABSENT' }, '2026-09-03': halfDay })).toEqual([HOLIDAY])
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': halfDay, '2026-09-03': halfDay })).toEqual([HOLIDAY])
+  })
+
+  it('keeps the holiday paid when a half day sits on one side and a full day worked on the other', () => {
+    const halfDay = { status: 'HALF_DAY_LEAVE', leaveIsPaid: false } as const
+    expect(forfeited({ [HOLIDAY]: holiday, '2026-09-01': halfDay })).toEqual([])
+  })
+
+  it('never forfeits a holiday worked for half a day', () => {
+    expect(
+      forfeited({
+        [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HALF_DAY_LEAVE', leaveIsPaid: false },
+        '2026-09-01': { status: 'ABSENT' },
+        '2026-09-03': { status: 'ABSENT' },
+      }),
+    ).toEqual([])
+  })
 })
 
 describe('calculatePayrollItem - forfeited holiday', () => {
@@ -279,6 +301,21 @@ describe('calculatePayrollItem - forfeited holiday', () => {
     expect(skipped.attendance.paidDays).toBe(27)
     // 42,000 over 30 days: three unpaid days cost 4,200.
     expect(toMajor(paid.grossEarningsMinor - skipped.grossEarningsMinor)).toBe(4200)
+  })
+
+  it('with a half day before and an absence after, pays only the worked half of the three days', () => {
+    const contextDays = septemberDays({
+      '2026-09-01': { status: 'HALF_DAY_LEAVE', leaveIsPaid: false },
+      '2026-09-02': { dayKind: 'HOLIDAY', status: 'HOLIDAY' },
+      '2026-09-03': { status: 'ABSENT' },
+    })
+    const forfeited = forfeitedHolidayDates(contextDays)
+    const result = calculatePayrollItem(
+      baseInput({ days: contextDays.map((day) => (forfeited.has(day.date) ? { ...day, holidayForfeited: true } : day)) }),
+    )
+
+    expect(result.attendance.paidDays).toBe(27.5)
+    expect(result.attendance.absentDays).toBe(2)
   })
 })
 
@@ -648,6 +685,37 @@ describe('calculatePayrollItem - PF and ESI', () => {
         baseInput({ days: septemberDays({ ...worked, '2026-09-21': { isEmployed: false } }) }),
       )
       expect(earning(withUnemployed, 'HOLIDAY_WORK')?.amountMinor).toBe(earning(withoutFlag, 'HOLIDAY_WORK')?.amountMinor)
+    })
+
+    it('pays a holiday worked for half a day as a half day, plus half a day extra when the option is on', () => {
+      const half = { status: 'HALF_DAY_LEAVE', leaveIsPaid: false } as const
+      const withExtra = calculatePayrollItem(
+        baseInput({ days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', holidayExtraPay: true, ...half } }) }),
+      )
+      const withoutExtra = calculatePayrollItem(
+        baseInput({ days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', holidayExtraPay: false, ...half } }) }),
+      )
+
+      // 1,400 a day: the worked half is 700 through the paid days...
+      expect(withoutExtra.attendance.paidDays).toBe(29.5)
+      expect(toMajor(withoutExtra.grossEarningsMinor)).toBe(41_300)
+      expect(earning(withoutExtra, 'HOLIDAY_WORK')).toBeUndefined()
+      // ...and the extra pay is another 700, two half days in all.
+      expect(withExtra.attendance.paidDays).toBe(29.5)
+      expect(toMajor(earning(withExtra, 'HOLIDAY_WORK')?.amountMinor ?? 0)).toBe(700)
+      expect(toMajor(withExtra.grossEarningsMinor)).toBe(42_000)
+      expect(earning(withExtra, 'HOLIDAY_WORK')?.notes).toBe('Worked 7 Sep 2026 - half day')
+    })
+
+    it('pays a half-worked holiday as a half day even under a paid leave type', () => {
+      const result = calculatePayrollItem(
+        baseInput({
+          days: septemberDays({
+            [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HALF_DAY_LEAVE', leaveIsPaid: true, holidayExtraPay: false },
+          }),
+        }),
+      )
+      expect(result.attendance.paidDays).toBe(29.5)
     })
 
     it('pays a daily-rate employee one more day at the daily rate', () => {
