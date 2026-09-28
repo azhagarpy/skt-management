@@ -24,7 +24,7 @@ import {
   StatusBadge,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import type { PayrollItem, PayrollRun } from '../../types/api'
 
 interface CalculationResult {
@@ -50,7 +50,7 @@ export default function PayrollRunPage() {
 
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [paymentStatus, setPaymentStatus] = useState('')
   const [confirm, setConfirm] = useState<null | 'approve' | 'lock' | 'delete'>(null)
   const [calculation, setCalculation] = useState<CalculationResult | null>(null)
@@ -70,7 +70,7 @@ export default function PayrollRunPage() {
     page,
     pageSize: 25,
     search: search || undefined,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     paymentStatus: paymentStatus || undefined,
   }
 
@@ -456,7 +456,7 @@ export default function PayrollRunPage() {
           <SearchInput value={search} onChange={setSearch} placeholder="Employee name or code" />
 
           <Field label="Department" htmlFor="run-department">
-            <DepartmentSelector id="run-department" value={departmentId} onChange={setDepartmentId} />
+            <DepartmentMultiSelector id="run-department" value={departmentIds} onChange={setDepartmentIds} />
           </Field>
 
           <Field label="Payment status" htmlFor="run-payment-status">

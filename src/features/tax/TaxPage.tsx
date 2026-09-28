@@ -7,7 +7,7 @@ import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
 import { Button, Card, ConfirmDialog, Field, Input, PageHeader, Select, Spinner, StatTile, Tabs } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import { MonthRangeFields, type MonthRange } from '../../components/forms/MonthRange'
 
 /**
@@ -439,7 +439,7 @@ function ReportTab({ canManage, onDeducted }: { canManage: boolean; onDeducted: 
   const years = Array.from({ length: 6 }, (_, index) => now.getFullYear() - index)
 
   const [period, setPeriod] = useState<MonthRange>(() => lastHalfYear(now))
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [exporting, setExporting] = useState(false)
   // The month the tax comes out of pay: by default the month after the period ends.
   const [payroll, setPayroll] = useState<{ year: number; month: number }>(() => {
@@ -451,7 +451,7 @@ function ReportTab({ canManage, onDeducted }: { canManage: boolean; onDeducted: 
   const length = (period.toYear * 12 + period.toMonth) - (period.fromYear * 12 + period.fromMonth) + 1
   const valid = length >= 1 && length <= 12
 
-  const params = { ...period, departmentId: departmentId || undefined }
+  const params = { ...period, departmentId: idsParam(departmentIds) }
 
   const { data, isFetching, error } = useQuery({
     queryKey: ['tax', 'report', params],
@@ -558,7 +558,7 @@ function ReportTab({ canManage, onDeducted }: { canManage: boolean; onDeducted: 
               </Select>
             </Field>
             <Field label="Department" htmlFor="tax-department" hint="Leave on all to get a sheet for every department.">
-              <DepartmentSelector id="tax-department" value={departmentId} onChange={setDepartmentId} />
+              <DepartmentMultiSelector id="tax-department" value={departmentIds} onChange={setDepartmentIds} />
             </Field>
           </div>
           <MonthRangeFields

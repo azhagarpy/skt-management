@@ -376,7 +376,7 @@ export async function listLeaveRequests(
   if (filters.status) conditions.push(`r.status = $${push(filters.status)}`)
   if (filters.employeeId) conditions.push(`r.employee_id = $${push(filters.employeeId)}`)
   if (filters.leaveTypeId) conditions.push(`r.leave_type_id = $${push(filters.leaveTypeId)}`)
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.from) conditions.push(`r.to_date >= $${push(filters.from)}`)
   if (filters.to) conditions.push(`r.from_date <= $${push(filters.to)}`)
 

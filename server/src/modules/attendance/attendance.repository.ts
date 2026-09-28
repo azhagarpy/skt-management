@@ -64,7 +64,7 @@ export interface DailySheetRow {
 export async function dailySheet(
   scope: ScopeClause,
   date: IsoDate,
-  filters: { departmentId?: string; supervisorId?: string; locationId?: string; search?: string; status?: string; unmarkedOnly?: boolean },
+  filters: { departmentId?: string[]; supervisorId?: string; locationId?: string; search?: string; status?: string; unmarkedOnly?: boolean },
   db: Queryable = pool,
 ): Promise<DailySheetRow[]> {
   const params: unknown[] = [...scope.params]
@@ -82,7 +82,7 @@ export async function dailySheet(
     `e.employment_status <> 'INACTIVE'`,
   ]
 
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)
   if (filters.locationId) conditions.push(`e.location_id = $${push(filters.locationId)}`)
   if (filters.search) {
@@ -153,7 +153,7 @@ export async function calendarEmployees(
   scope: ScopeClause,
   from: IsoDate,
   to: IsoDate,
-  filters: { departmentId?: string; supervisorId?: string; employeeId?: string; search?: string },
+  filters: { departmentId?: string[]; supervisorId?: string; employeeId?: string; search?: string },
   db: Queryable = pool,
 ): Promise<CalendarEmployeeRow[]> {
   const params: unknown[] = [...scope.params]
@@ -168,7 +168,7 @@ export async function calendarEmployees(
     `(e.exit_date IS NULL OR e.exit_date >= $${push(from)})`,
     `e.employment_status <> 'INACTIVE'`,
   ]
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)
   if (filters.employeeId) conditions.push(`e.id = $${push(filters.employeeId)}`)
   if (filters.search) {
@@ -206,7 +206,7 @@ export async function calendarEmployees(
 
 export async function listAttendance(
   scope: ScopeClause,
-  filters: { from: IsoDate; to: IsoDate; employeeId?: string; departmentId?: string; supervisorId?: string; status?: string },
+  filters: { from: IsoDate; to: IsoDate; employeeId?: string; departmentId?: string[]; supervisorId?: string; status?: string },
   db: Queryable = pool,
 ): Promise<AttendanceWithEmployeeRow[]> {
   const params: unknown[] = [...scope.params]
@@ -218,7 +218,7 @@ export async function listAttendance(
   const conditions = [`(${scope.sql})`, `a.attendance_date >= $${push(filters.from)}`, `a.attendance_date <= $${push(filters.to)}`]
 
   if (filters.employeeId) conditions.push(`a.employee_id = $${push(filters.employeeId)}`)
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)
   if (filters.status) conditions.push(`a.status = $${push(filters.status)}`)
 

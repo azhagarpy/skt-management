@@ -565,7 +565,7 @@ export interface WeeklyOffCalendarEmployeeRow {
 
 export async function listEmployeesForWeeklyOffCalendar(
   scope: { sql: string; params: unknown[] },
-  filters: { departmentId?: string; supervisorId?: string; search?: string },
+  filters: { departmentId?: string[]; supervisorId?: string; search?: string },
   db: Queryable = pool,
 ): Promise<WeeklyOffCalendarEmployeeRow[]> {
   const params: unknown[] = [...scope.params]
@@ -575,7 +575,7 @@ export async function listEmployeesForWeeklyOffCalendar(
   }
 
   const conditions = [`(${scope.sql})`, `e.employment_status <> 'INACTIVE'`]
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)
   if (filters.search) {
     const index = push(`%${filters.search}%`)

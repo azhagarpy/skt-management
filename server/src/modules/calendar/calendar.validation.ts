@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { codeSchema } from '../organization/organization.validation.js'
+import { idListParam } from '../../utils/query-params.js'
 
 export const weekdaySchema = z.enum([
   'SUNDAY',
@@ -140,7 +141,7 @@ export const weeklyOffCalendarQuerySchema = z.object({
   weekStart: isoDateSchema,
   /** Defaults to one week; the full-screen month calendar asks for a whole visible grid at once. */
   days: z.coerce.number().int().min(1).max(42).default(7),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   supervisorId: z.string().uuid().optional(),
   search: z.string().trim().max(120).optional(),
 })

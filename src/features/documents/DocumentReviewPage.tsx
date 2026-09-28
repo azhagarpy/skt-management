@@ -17,7 +17,7 @@ import {
   StatTile,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import type { EmployeeSummary } from '../../types/api'
 
 /**
@@ -33,14 +33,14 @@ export default function DocumentReviewPage() {
 
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [completeness, setCompleteness] = useState('incomplete')
 
   const filters = {
     page,
     pageSize: 25,
     search: search || undefined,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     employmentStatus: 'ACTIVE',
   }
 
@@ -129,7 +129,7 @@ export default function DocumentReviewPage() {
               onClick={() =>
                 void download('/reports/employee-document-status/export', 'document-status.xlsx', {
                   format: 'xlsx',
-                  departmentId: departmentId || undefined,
+                  departmentId: idsParam(departmentIds),
                 })
               }
             >
@@ -149,7 +149,7 @@ export default function DocumentReviewPage() {
           <SearchInput value={search} onChange={setSearch} placeholder="Name or employee ID" />
 
           <Field label="Department" htmlFor="doc-department">
-            <DepartmentSelector id="doc-department" value={departmentId} onChange={setDepartmentId} />
+            <DepartmentMultiSelector id="doc-department" value={departmentIds} onChange={setDepartmentIds} />
           </Field>
 
           <Field label="Show" htmlFor="doc-completeness">

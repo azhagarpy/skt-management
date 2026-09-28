@@ -129,7 +129,7 @@ function buildFilters(scope: ScopeClause, filters: EmployeeListQuery): { clause:
       OR g.name ILIKE $${index}
     )`)
   }
-  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   if (filters.designationId) conditions.push(`e.designation_id = $${push(filters.designationId)}`)
   if (filters.locationId) conditions.push(`e.location_id = $${push(filters.locationId)}`)
   if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)

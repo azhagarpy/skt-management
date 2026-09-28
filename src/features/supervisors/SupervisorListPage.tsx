@@ -5,7 +5,7 @@ import { getWithMeta } from '../../lib/api'
 import { formatDate } from '../../lib/format'
 import { Avatar, Badge, Card, Field, PageHeader, Pagination, ProgressBar, SearchInput, StatTile, StatusBadge } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import type { EmployeeSummary } from '../../types/api'
 
 /**
@@ -19,13 +19,13 @@ export default function SupervisorListPage() {
 
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
 
   const filters = {
     page,
     pageSize: 25,
     search: search || undefined,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     isSupervisor: true,
   }
 
@@ -140,7 +140,7 @@ export default function SupervisorListPage() {
         <div className="filter-bar">
           <SearchInput value={search} onChange={setSearch} placeholder="Name or employee ID" />
           <Field label="Department" htmlFor="supervisor-department">
-            <DepartmentSelector id="supervisor-department" value={departmentId} onChange={setDepartmentId} />
+            <DepartmentMultiSelector id="supervisor-department" value={departmentIds} onChange={setDepartmentIds} />
           </Field>
         </div>
 

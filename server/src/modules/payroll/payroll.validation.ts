@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { paginationSchema } from '../../utils/pagination.js'
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { countDaysBetween } from '../../utils/dates.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /** The longest a single payroll run may cover; a month is the norm, this leaves room for odd cycles. */
 export const MAX_RUN_DAYS = 93
@@ -55,7 +56,7 @@ export const runListQuerySchema = paginationSchema.extend({
 
 export const itemListQuerySchema = paginationSchema.extend({
   search: z.string().trim().max(120).optional(),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   paymentStatus: z.enum(['PENDING', 'PARTIALLY_PAID', 'PAID']).optional(),
 })
 

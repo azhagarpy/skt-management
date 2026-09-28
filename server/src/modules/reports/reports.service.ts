@@ -12,6 +12,7 @@ import {
   type FilterKey,
   type ReportDefinition,
 } from './report-definitions.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /**
  * The generic report runner.
@@ -27,7 +28,7 @@ export const reportFilterSchema = z.object({
   to: isoDateSchema.optional(),
   year: z.coerce.number().int().min(1970).max(2200).optional(),
   month: z.coerce.number().int().min(1).max(12).optional(),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   supervisorId: z.string().uuid().optional(),
   employeeId: z.string().uuid().optional(),
   locationId: z.string().uuid().optional(),
@@ -60,7 +61,7 @@ export type ExportQuery = z.infer<typeof exportQuerySchema>
 // Period filters (from/to/year/month) are not listed here: they resolve against
 // each report's own date columns via DATE_COLUMN_BY_REPORT below.
 const FILTER_SQL: Partial<Record<FilterKey, (paramIndex: number) => string>> = {
-  departmentId: (index) => `e.department_id = $${index}`,
+  departmentId: (index) => `e.department_id = ANY($${index}::uuid[])`,
   supervisorId: (index) => `e.supervisor_id = $${index}`,
   employeeId: (index) => `e.id = $${index}`,
   locationId: (index) => `e.location_id = $${index}`,
@@ -120,6 +121,7 @@ function buildQuery(
   for (const filterKey of definition.filters) {
     const value = filters[filterKey as keyof ReportFilters]
     if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value) && value.length === 0) continue
 
     // Period filters resolve against the report's own date columns.
     if (filterKey === 'from' && dateColumns.from) {

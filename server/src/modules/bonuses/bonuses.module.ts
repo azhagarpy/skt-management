@@ -18,6 +18,7 @@ import {
   toStatementExcel,
   type StatementQuery,
 } from './bonus-statement.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /**
  * Bonuses (plan section 25).
@@ -107,7 +108,7 @@ export const bonusListQuerySchema = z.object({
   payrollYear: z.coerce.number().int().min(1970).max(2200).optional(),
   payrollMonth: z.coerce.number().int().min(1).max(12).optional(),
   status: bonusStatusSchema.optional(),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
 })
 
 export type BonusInput = z.infer<typeof bonusSchema>
@@ -259,7 +260,7 @@ bonusRouter.get(
     if (filters.payrollYear) conditions.push(`b.payroll_year = $${push(filters.payrollYear)}`)
     if (filters.payrollMonth) conditions.push(`b.payroll_month = $${push(filters.payrollMonth)}`)
     if (filters.status) conditions.push(`b.status = $${push(filters.status)}`)
-    if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+    if (filters.departmentId?.length) conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
 
     const rows = await queryRows<BonusRow>(
       pool,

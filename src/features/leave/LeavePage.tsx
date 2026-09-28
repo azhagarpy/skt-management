@@ -21,7 +21,7 @@ import {
   Textarea,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import { LeaveTypesTab } from './LeaveTypesTab'
 import type { LeaveRequest } from '../../types/api'
 
@@ -37,7 +37,7 @@ export default function LeavePage() {
   const [tab, setTab] = useState('requests')
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('PENDING')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [decision, setDecision] = useState<{ request: LeaveRequest; action: 'approve' | 'reject' } | null>(null)
@@ -50,7 +50,7 @@ export default function LeavePage() {
     page,
     pageSize: 25,
     status: status || undefined,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     from: from || undefined,
     to: to || undefined,
     sortBy: 'createdAt',
@@ -203,11 +203,11 @@ export default function LeavePage() {
               </Field>
 
               <Field label="Department" htmlFor="leave-department">
-                <DepartmentSelector
+                <DepartmentMultiSelector
                   id="leave-department"
-                  value={departmentId}
-                  onChange={(value) => {
-                    setDepartmentId(value)
+                  value={departmentIds}
+                  onChange={(ids) => {
+                    setDepartmentIds(ids)
                     setPage(1)
                   }}
                 />

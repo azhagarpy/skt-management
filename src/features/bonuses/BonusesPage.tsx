@@ -21,7 +21,7 @@ import {
   Textarea,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector, useDepartments } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, DepartmentSelector, idsParam, useDepartments } from '../../components/forms/selectors'
 import { MonthRangeFields, type MonthRange } from '../../components/forms/MonthRange'
 import type { Bonus, EmployeeSummary } from '../../types/api'
 
@@ -83,7 +83,7 @@ export default function BonusesPage() {
   const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState<number | ''>('')
   const [status, setStatus] = useState('')
-  const [departmentFilter, setDepartmentFilter] = useState('')
+  const [departmentFilter, setDepartmentFilter] = useState<string[]>([])
   const [adding, setAdding] = useState(false)
   const [tab, setTab] = useState('bonuses')
   const [deleteTarget, setDeleteTarget] = useState<Bonus | null>(null)
@@ -92,7 +92,7 @@ export default function BonusesPage() {
     payrollYear: year,
     payrollMonth: month === '' ? undefined : month,
     status: status || undefined,
-    departmentId: departmentFilter || undefined,
+    departmentId: idsParam(departmentFilter),
   }
 
   const { data, isFetching, error, refetch } = useQuery({
@@ -232,7 +232,7 @@ export default function BonusesPage() {
           </Field>
 
           <Field label="Department" htmlFor="bonus-department-filter">
-            <DepartmentSelector id="bonus-department-filter" value={departmentFilter} onChange={setDepartmentFilter} />
+            <DepartmentMultiSelector id="bonus-department-filter" value={departmentFilter} onChange={setDepartmentFilter} />
           </Field>
 
           <Field label="Status" htmlFor="bonus-status">
@@ -554,14 +554,14 @@ function EmployeePicker({
   onChange: (next: Map<string, EmployeeSummary>) => void
 }) {
   const [search, setSearch] = useState('')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
 
   const { data, isFetching } = useQuery({
-    queryKey: ['employees', 'bonus-picker', search.trim(), departmentId],
+    queryKey: ['employees', 'bonus-picker', search.trim(), departmentIds],
     queryFn: () =>
       getWithMeta<EmployeeSummary[]>('/employees', {
         search: search.trim() || undefined,
-        departmentId: departmentId || undefined,
+        departmentId: idsParam(departmentIds),
         employmentStatus: 'ACTIVE',
         pageSize: 200,
       }),
@@ -598,7 +598,7 @@ function EmployeePicker({
             placeholder="Search by name or employee ID"
             onChange={(event) => setSearch(event.target.value)}
           />
-          <DepartmentSelector value={departmentId} onChange={setDepartmentId} />
+          <DepartmentMultiSelector value={departmentIds} onChange={setDepartmentIds} />
         </div>
 
         <div
@@ -664,7 +664,7 @@ function BonusStatementTab({ years }: { years: number[] }) {
   const [period, setPeriod] = useState<MonthRange>({ fromYear: range.fromYear, fromMonth: 4, toYear: range.toYear, toMonth: 3 })
   const [percentage, setPercentage] = useState('8.33')
   const [minManDays, setMinManDays] = useState('30')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [exporting, setExporting] = useState(false)
 
   const length = monthsInRange(period.fromYear, period.fromMonth, period.toYear, period.toMonth)
@@ -674,7 +674,7 @@ function BonusStatementTab({ years }: { years: number[] }) {
     ...period,
     percentage: Number(percentage),
     minManDays: Number(minManDays) || 0,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
   }
 
   const { data, isFetching, error } = useQuery({
@@ -754,7 +754,7 @@ function BonusStatementTab({ years }: { years: number[] }) {
               />
             </Field>
             <Field label="Department" htmlFor="statement-department">
-              <DepartmentSelector id="statement-department" value={departmentId} onChange={setDepartmentId} />
+              <DepartmentMultiSelector id="statement-department" value={departmentIds} onChange={setDepartmentIds} />
             </Field>
           </div>
         </div>

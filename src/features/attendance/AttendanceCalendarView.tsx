@@ -5,7 +5,7 @@ import { get, patch, post } from '../../lib/api'
 import { MONTH_NAMES, todayIso } from '../../lib/format'
 import { useToast } from '../../app/providers/ToastProvider'
 import { Avatar, Button, ErrorState, Field, Modal, SearchInput, Select, Spinner, Tabs, Textarea } from '../../components/ui'
-import { DepartmentSelector, EmployeeSelector, SupervisorSelector, useLeaveTypes } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, EmployeeSelector, SupervisorSelector, idsParam, useLeaveTypes } from '../../components/forms/selectors'
 import type { AttendanceCalendar, AttendanceCalendarDay, AttendanceStatus, CalendarStatus } from '../../types/api'
 
 /**
@@ -868,7 +868,7 @@ export function AttendanceCalendarView({
   const today = todayIso()
   const [mode, setMode] = useState<Mode>('month')
   const [anchor, setAnchor] = useState(today)
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [supervisorId, setSupervisorId] = useState('')
   const [employeeId, setEmployeeId] = useState(initialEmployeeId ?? '')
   const [openDate, setOpenDate] = useState<string | null>(null)
@@ -879,7 +879,7 @@ export function AttendanceCalendarView({
   const params = {
     from,
     to,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     supervisorId: supervisorId || undefined,
     employeeId: employeeId || undefined,
   }
@@ -972,7 +972,7 @@ export function AttendanceCalendarView({
 
       <div className="filter-bar att-filters">
         <Field label="Department" htmlFor="calendar-department">
-          <DepartmentSelector id="calendar-department" value={departmentId} onChange={setDepartmentId} />
+          <DepartmentMultiSelector id="calendar-department" value={departmentIds} onChange={setDepartmentIds} />
         </Field>
         <Field label="Supervisor" htmlFor="calendar-supervisor">
           <SupervisorSelector id="calendar-supervisor" value={supervisorId} onChange={setSupervisorId} />

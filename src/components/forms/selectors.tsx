@@ -99,6 +99,214 @@ interface SelectorProps {
   required?: boolean
 }
 
+/** The query value for a multi-select filter: ids joined by commas, or nothing when none are picked. */
+export function idsParam(ids: string[]): string | undefined {
+  return ids.length > 0 ? ids.join(',') : undefined
+}
+
+interface MultiSelectOption {
+  value: string
+  label: string
+}
+
+/**
+ * A dropdown of checkboxes for filters that take several values.
+ *
+ * Nothing picked means "all". The panel is drawn on <body> and placed from the
+ * field's box, like EmployeeSelector's menu, so a card or modal that hides
+ * overflow cannot clip it.
+ */
+export function MultiSelect({
+  id,
+  options,
+  value,
+  onChange,
+  allLabel,
+  searchPlaceholder = 'Search',
+  disabled,
+}: {
+  id?: string
+  options: MultiSelectOption[]
+  value: string[]
+  onChange: (values: string[]) => void
+  allLabel: string
+  searchPlaceholder?: string
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({})
+  const fieldRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  const selected = useMemo(() => new Set(value), [value])
+  const labelOf = useMemo(() => new Map(options.map((option) => [option.value, option.label])), [options])
+  const picked = value.map((entry) => labelOf.get(entry)).filter((label): label is string => Boolean(label))
+  const summary =
+    picked.length === 0 ? allLabel : picked.length === 1 ? picked[0] : `${picked[0]} +${picked.length - 1} more`
+
+  const term = search.trim().toLowerCase()
+  const visible = term ? options.filter((option) => option.label.toLowerCase().includes(term)) : options
+
+  useLayoutEffect(() => {
+    if (!open) return undefined
+    const place = (): void => {
+      const field = fieldRef.current
+      if (!field) return
+      const box = field.getBoundingClientRect()
+      const below = window.innerHeight - box.bottom - 12
+      const above = box.top - 12
+      const openUp = below < 220 && above > below
+      setPanelStyle({
+        left: Math.min(box.left, window.innerWidth - Math.max(box.width, 260) - 8),
+        width: Math.max(box.width, 260),
+        top: openUp ? 'auto' : box.bottom + 4,
+        bottom: openUp ? window.innerHeight - box.top + 4 : 'auto',
+        maxHeight: Math.max(160, Math.min(340, openUp ? above : below)),
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onMouseDown = (event: MouseEvent): void => {
+      const target = event.target as Node
+      if (fieldRef.current?.contains(target) || panelRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) setSearch('')
+  }, [open])
+
+  const toggle = (option: string): void => {
+    // Keep the options' own order rather than the order they were clicked in.
+    const next = new Set(selected)
+    if (next.has(option)) next.delete(option)
+    else next.add(option)
+    onChange(options.filter((entry) => next.has(entry.value)).map((entry) => entry.value))
+  }
+
+  return (
+    <div className="multiselect" ref={fieldRef}>
+      <button
+        ref={triggerRef}
+        id={id}
+        type="button"
+        className={`input select multiselect-trigger${picked.length > 0 ? ' has-value' : ''}`}
+        aria-haspopup="true"
+        aria-expanded={open}
+        disabled={disabled}
+        title={picked.length > 1 ? picked.join(', ') : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="multiselect-summary">{summary}</span>
+        {picked.length > 1 ? <span className="multiselect-count">{picked.length}</span> : null}
+      </button>
+      {picked.length > 0 && !disabled ? (
+        <button type="button" className="combobox-clear multiselect-clear" aria-label={`Clear: show ${allLabel.toLowerCase()}`} onClick={() => onChange([])}>
+          <X size={14} />
+        </button>
+      ) : null}
+
+      {open
+        ? createPortal(
+            <div className="multiselect-panel" ref={panelRef} style={panelStyle} role="group" aria-label={allLabel}>
+              {options.length > 6 ? (
+                <input
+                  className="input multiselect-search"
+                  type="search"
+                  placeholder={searchPlaceholder}
+                  value={search}
+                  autoFocus
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              ) : null}
+              <div className="multiselect-actions">
+                <span className="subtle">{picked.length === 0 ? 'None picked: showing all' : `${picked.length} selected`}</span>
+                <span>
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => onChange(options.map((option) => option.value))}
+                    disabled={selected.size === options.length}
+                  >
+                    Select all
+                  </button>
+                  <button type="button" className="link-button" onClick={() => onChange([])} disabled={selected.size === 0}>
+                    Clear
+                  </button>
+                </span>
+              </div>
+              <div className="multiselect-options">
+                {visible.map((option) => (
+                  <label key={option.value} className={`multiselect-option${selected.has(option.value) ? ' is-selected' : ''}`}>
+                    <input type="checkbox" checked={selected.has(option.value)} onChange={() => toggle(option.value)} />
+                    <span>{option.label}</span>
+                  </label>
+                ))}
+                {visible.length === 0 ? <p className="combobox-empty">Nothing matches that search.</p> : null}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  )
+}
+
+/** Pick any number of departments; none picked means all of them. */
+export function DepartmentMultiSelector({
+  value,
+  onChange,
+  id,
+  allLabel = 'All departments',
+  disabled,
+}: {
+  value: string[]
+  onChange: (ids: string[]) => void
+  id?: string
+  allLabel?: string
+  disabled?: boolean
+}) {
+  const { data, isLoading } = useDepartments()
+  const options = useMemo(
+    () => (data ?? []).map((department) => ({ value: department.id, label: department.name })),
+    [data],
+  )
+  return (
+    <MultiSelect
+      id={id}
+      options={options}
+      value={value}
+      onChange={onChange}
+      allLabel={allLabel}
+      searchPlaceholder="Search departments"
+      disabled={disabled || isLoading}
+    />
+  )
+}
+
 export function DepartmentSelector({ value, onChange, id, includeAll = true, allLabel = 'All departments', disabled, required }: SelectorProps) {
   const { data, isLoading } = useDepartments()
   return (

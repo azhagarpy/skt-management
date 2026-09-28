@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs'
 import { z } from 'zod'
 import { pool, queryRows, type Queryable } from '../../database/pool.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /**
  * The bonus statement: what each employee earned month by month over a range,
@@ -31,7 +32,7 @@ export const statementQuerySchema = z
     toMonth: z.coerce.number().int().min(1).max(12),
     percentage: z.coerce.number().gt(0, 'Enter a percentage greater than zero').max(100).default(8.33),
     minManDays: z.coerce.number().min(0).max(366).default(30),
-    departmentId: z.string().uuid().optional(),
+    departmentId: idListParam.optional(),
   })
   .superRefine((value, ctx) => {
     const from = monthIndex(value.fromYear, value.fromMonth)
@@ -123,9 +124,9 @@ export async function buildStatement(
     'r.organization_id = $1',
     '(r.year * 12 + r.month - 1) BETWEEN $2 AND $3',
   ]
-  if (query.departmentId) {
+  if (query.departmentId?.length) {
     params.push(query.departmentId)
-    conditions.push(`e.department_id = $${params.length}`)
+    conditions.push(`e.department_id = ANY($${params.length}::uuid[])`)
   }
   if (scope.employeeIds) {
     params.push(scope.employeeIds)

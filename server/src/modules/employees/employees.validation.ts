@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { paginationSchema } from '../../utils/pagination.js'
 import { isIsoDate } from '../../utils/dates.js'
 import { codeSchema, phoneSchema, pincodeSchema } from '../organization/organization.validation.js'
+import { idListParam } from '../../utils/query-params.js'
 
 export const isoDateSchema = z
   .string()
@@ -164,7 +165,8 @@ export const updateOwnProfileSchema = z.object({
 
 export const employeeListQuerySchema = paginationSchema.extend({
   search: z.string().trim().max(160).optional(),
-  departmentId: z.string().uuid().optional(),
+  /** One or more departments. */
+  departmentId: idListParam.optional(),
   designationId: z.string().uuid().optional(),
   locationId: z.string().uuid().optional(),
   supervisorId: z.string().uuid().optional(),

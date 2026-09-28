@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { paginationSchema } from '../../utils/pagination.js'
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { codeSchema } from '../organization/organization.validation.js'
+import { idListParam } from '../../utils/query-params.js'
 
 export const leaveRequestStatusSchema = z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'])
 
@@ -96,7 +97,7 @@ export const leaveRequestListQuerySchema = paginationSchema.extend({
   status: leaveRequestStatusSchema.optional(),
   employeeId: z.union([z.literal('me'), z.string().uuid()]).optional(),
   leaveTypeId: z.string().uuid().optional(),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   from: isoDateSchema.optional(),
   to: isoDateSchema.optional(),
 })

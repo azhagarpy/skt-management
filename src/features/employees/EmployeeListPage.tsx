@@ -8,7 +8,7 @@ import { useAuth } from '../../app/providers/AuthProvider'
 import { Avatar, Badge, Button, Card, Field, Modal, PageHeader, Pagination, ProgressBar, SearchInput, Select, StatusBadge } from '../../components/ui'
 import { useToast } from '../../app/providers/ToastProvider'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector, SupervisorSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, SupervisorSelector, idsParam } from '../../components/forms/selectors'
 import type { EmployeeSummary } from '../../types/api'
 
 /**
@@ -77,7 +77,7 @@ export default function EmployeeListPage() {
 
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [supervisorId, setSupervisorId] = useState('')
   const [employmentStatus, setEmploymentStatus] = useState('ACTIVE')
   const [sortBy, setSortBy] = useState('employeeCode')
@@ -87,7 +87,7 @@ export default function EmployeeListPage() {
     page,
     pageSize: 25,
     search: search || undefined,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     supervisorId: supervisorId || undefined,
     employmentStatus: employmentStatus || undefined,
     sortBy,
@@ -186,7 +186,7 @@ export default function EmployeeListPage() {
   const handleExport = async (): Promise<void> => {
     await download('/reports/employee-master/export', 'employee-master.csv', {
       format: 'csv',
-      departmentId: departmentId || undefined,
+      departmentId: idsParam(departmentIds),
       supervisorId: supervisorId || undefined,
       employmentStatus: employmentStatus || undefined,
     })
@@ -223,7 +223,7 @@ export default function EmployeeListPage() {
           <SearchInput value={search} onChange={resetToFirstPage(setSearch)} placeholder="Name, code, email or phone" />
 
           <Field label="Department" htmlFor="filter-department">
-            <DepartmentSelector id="filter-department" value={departmentId} onChange={resetToFirstPage(setDepartmentId)} />
+            <DepartmentMultiSelector id="filter-department" value={departmentIds} onChange={resetToFirstPage(setDepartmentIds)} />
           </Field>
 
           <Field label="Supervisor" htmlFor="filter-supervisor">

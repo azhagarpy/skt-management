@@ -21,7 +21,7 @@ import {
   StatTile,
   Tabs,
 } from '../../components/ui'
-import { DepartmentSelector, SupervisorSelector, useLeaveTypes, useShifts } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, SupervisorSelector, idsParam, useLeaveTypes, useShifts } from '../../components/forms/selectors'
 import type { AttendanceStatus, DailySheet } from '../../types/api'
 import AttendanceImportModal from './AttendanceImportModal'
 import { AttendanceCalendarView } from './AttendanceCalendarView'
@@ -60,7 +60,7 @@ export default function AttendancePage() {
   const { data: shifts } = useShifts()
 
   const [date, setDate] = useState(todayIso())
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [supervisorId, setSupervisorId] = useState('')
   const [search, setSearch] = useState('')
   const [pending, setPending] = useState<Record<string, PendingEntry>>({})
@@ -85,7 +85,7 @@ export default function AttendancePage() {
 
   const filters = {
     date,
-    departmentId: departmentId || undefined,
+    departmentId: idsParam(departmentIds),
     supervisorId: supervisorId || undefined,
     search: search || undefined,
   }
@@ -99,7 +99,7 @@ export default function AttendancePage() {
   // silently applying them to a different day.
   useEffect(() => {
     setPending({})
-  }, [date, departmentId, supervisorId])
+  }, [date, departmentIds, supervisorId])
 
   const canManage = can('attendance.manage.all') || can('attendance.manage.team')
 
@@ -287,7 +287,7 @@ export default function AttendancePage() {
             </Field>
 
             <Field label="Department" htmlFor="attendance-department">
-              <DepartmentSelector id="attendance-department" value={departmentId} onChange={setDepartmentId} />
+              <DepartmentMultiSelector id="attendance-department" value={departmentIds} onChange={setDepartmentIds} />
             </Field>
 
             <Field label="Supervisor" htmlFor="attendance-supervisor">

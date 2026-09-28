@@ -5,7 +5,7 @@ import { requireAnyPermission, requirePermissions } from '../../middleware/autho
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendSuccess } from '../../utils/http.js'
-import { pool, queryOne } from '../../database/pool.js'
+import { pool, queryOne, queryRows } from '../../database/pool.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as service from './reports.service.js'
@@ -74,6 +74,17 @@ reportRouter.get(
       [auth.organizationId],
     )
 
+    // The export's header names the departments picked rather than their ids.
+    const summaryFilters: Record<string, unknown> = { ...query }
+    if (query.departmentId?.length) {
+      const departments = await queryRows<{ name: string }>(
+        pool,
+        'SELECT name FROM departments WHERE id = ANY($1::uuid[]) AND organization_id = $2 ORDER BY name',
+        [query.departmentId, auth.organizationId],
+      )
+      summaryFilters.departmentId = departments.map((department) => department.name).join(', ')
+    }
+
     const payload: ExportPayload = {
       definition,
       rows,
@@ -81,7 +92,7 @@ reportRouter.get(
       organizationName: organization?.name ?? 'Organization',
       currencyCode: organization?.currency_code ?? 'INR',
       generatedAt: new Date(),
-      filterSummary: describeFilters(query as unknown as Record<string, unknown>),
+      filterSummary: describeFilters(summaryFilters),
     }
 
     let buffer: Buffer

@@ -398,7 +398,7 @@ export async function insertItemComponents(
 export async function listItems(
   runId: string,
   organizationId: string,
-  filters: { search?: string; departmentId?: string; paymentStatus?: string; page: number; pageSize: number },
+  filters: { search?: string; departmentId?: string[]; paymentStatus?: string; page: number; pageSize: number },
   db: Queryable = pool,
 ): Promise<{ rows: PayrollItemRow[]; total: number }> {
   const conditions = ['i.payroll_run_id = $1', 'i.organization_id = $2']
@@ -412,8 +412,8 @@ export async function listItems(
     const index = push(`%${filters.search}%`)
     conditions.push(`(i.employee_code ILIKE $${index} OR i.employee_name ILIKE $${index})`)
   }
-  if (filters.departmentId) {
-    conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.departmentId?.length) {
+    conditions.push(`e.department_id = ANY($${push(filters.departmentId)}::uuid[])`)
   }
   if (filters.paymentStatus) conditions.push(`i.payment_status = $${push(filters.paymentStatus)}`)
 

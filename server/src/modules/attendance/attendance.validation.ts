@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { isoDateSchema } from '../employees/employees.validation.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /**
  * Status-based attendance only (plan section 4). There is deliberately no
@@ -89,7 +90,7 @@ export const updateAttendanceSchema = z
 /** The daily marking sheet: one row per employee for a single date. */
 export const dailySheetQuerySchema = z.object({
   date: isoDateSchema,
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   supervisorId: z.string().uuid().optional(),
   locationId: z.string().uuid().optional(),
   search: z.string().trim().max(120).optional(),
@@ -104,7 +105,7 @@ export const attendanceListQuerySchema = z.object({
   from: isoDateSchema,
   to: isoDateSchema,
   employeeId: z.string().uuid().optional(),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
   supervisorId: z.string().uuid().optional(),
   status: attendanceStatusSchema.optional(),
 })
@@ -125,7 +126,7 @@ export const calendarQuerySchema = z
   .object({
     from: isoDateSchema,
     to: isoDateSchema,
-    departmentId: z.string().uuid().optional(),
+    departmentId: idListParam.optional(),
     supervisorId: z.string().uuid().optional(),
     employeeId: z.string().uuid().optional(),
     search: z.string().trim().max(120).optional(),

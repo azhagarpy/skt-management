@@ -17,7 +17,7 @@ import {
   Spinner,
   StatusBadge,
 } from '../../components/ui'
-import { DepartmentSelector, SupervisorSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, SupervisorSelector } from '../../components/forms/selectors'
 import type { ReportColumn, ReportDescriptor } from '../../types/api'
 
 /**
@@ -246,10 +246,10 @@ export default function ReportsPage() {
 
           {report?.filters.includes('departmentId') ? (
             <Field label="Department" htmlFor="report-department">
-              <DepartmentSelector
+              <DepartmentMultiSelector
                 id="report-department"
-                value={filters.departmentId ?? ''}
-                onChange={(value) => setFilter('departmentId', value)}
+                value={filters.departmentId ? filters.departmentId.split(',') : []}
+                onChange={(ids) => setFilter('departmentId', ids.join(','))}
               />
             </Field>
           ) : null}

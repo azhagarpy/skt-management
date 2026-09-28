@@ -24,7 +24,7 @@ import {
   Textarea,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { DepartmentSelector, SupervisorSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, SupervisorSelector, idsParam } from '../../components/forms/selectors'
 import type { Holiday, WeeklyOffCalendar } from '../../types/api'
 
 /**
@@ -313,7 +313,7 @@ function WeeklyOffAssignmentsTab() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [range, setRange] = useState<VisibleRange | null>(null)
-  const [departmentId, setDepartmentId] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [supervisorId, setSupervisorId] = useState('')
   const [search, setSearch] = useState('')
   const [target, setTarget] = useState<AssignTarget | null>(null)
@@ -330,7 +330,7 @@ function WeeklyOffAssignmentsTab() {
     ? {
         weekStart: range.start,
         days: range.days,
-        departmentId: departmentId || undefined,
+        departmentId: idsParam(departmentIds),
         supervisorId: supervisorId || undefined,
         search: search || undefined,
       }
@@ -421,7 +421,7 @@ function WeeklyOffAssignmentsTab() {
     >
       <div className="filter-bar">
         <Field label="Department" htmlFor="woa-department">
-          <DepartmentSelector id="woa-department" value={departmentId} onChange={setDepartmentId} />
+          <DepartmentMultiSelector id="woa-department" value={departmentIds} onChange={setDepartmentIds} />
         </Field>
         <Field label="Supervisor" htmlFor="woa-supervisor">
           <SupervisorSelector id="woa-supervisor" value={supervisorId} onChange={setSupervisorId} />

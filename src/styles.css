@@ -741,6 +741,117 @@ textarea {
   color: var(--text-subtle);
 }
 
+/* Multi-select: a field that opens a panel of checkboxes (see MultiSelect). */
+.multiselect {
+  position: relative;
+}
+
+.multiselect-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.multiselect-trigger.has-value {
+  padding-right: 3.4rem;
+}
+
+.multiselect-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multiselect-count {
+  flex-shrink: 0;
+  padding: 0.05rem 0.45rem;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--brand-500) 14%, transparent);
+  color: var(--brand-500);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.multiselect-clear {
+  top: 50%;
+  right: 1.75rem;
+  transform: translateY(-50%);
+}
+
+.multiselect-panel {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.multiselect-search {
+  width: 100%;
+}
+
+.multiselect-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+}
+
+.multiselect-actions .link-button + .link-button {
+  margin-left: 0.8rem;
+}
+
+.link-button:disabled {
+  color: var(--text-subtle);
+  text-decoration: none;
+  cursor: default;
+}
+
+.multiselect-options {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.multiselect-option:hover {
+  background: var(--surface-sunken);
+}
+
+.multiselect-option.is-selected {
+  font-weight: 550;
+}
+
+.multiselect-option input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--brand-500);
+}
+
 .password-rules {
   display: flex;
   flex-wrap: wrap;

@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs'
 import { z } from 'zod'
 import { pool, type Queryable } from '../../database/pool.js'
 import { buildStatement, type StatementMonth } from '../bonuses/bonus-statement.js'
+import { idListParam } from '../../utils/query-params.js'
 
 /**
  * Tax slabs and the tax report.
@@ -138,7 +139,7 @@ const taxPeriodShape = {
   fromMonth: z.coerce.number().int().min(1).max(12),
   toYear: z.coerce.number().int().min(1970).max(2200),
   toMonth: z.coerce.number().int().min(1).max(12),
-  departmentId: z.string().uuid().optional(),
+  departmentId: idListParam.optional(),
 }
 
 /** Rejects a backwards period, or one longer than a year. */
