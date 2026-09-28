@@ -141,71 +141,191 @@ export async function toExcel(payload: ExportPayload): Promise<Buffer> {
   return Buffer.from(buffer)
 }
 
+const PDF_MARGIN = 30
+const CELL_PAD_X = 3
+const CELL_PAD_Y = 3
+const PDF_FONT_SIZES = [7.5, 7, 6.5, 6]
+
+function isNumericFormat(format: ReportColumn['format']): boolean {
+  return format === 'currency' || format === 'number' || format === 'days' || format === 'percent'
+}
+
+type PdfDoc = InstanceType<typeof PDFDocument>
+
+/**
+ * Column widths sized to the content: every column gets at least its longest
+ * word (numbers never wrap), and whatever room is left goes to the columns
+ * whose full text would otherwise wrap. Falls back to a smaller type size
+ * when even the unwrappable minimum will not fit across the page.
+ */
+function layoutColumns(
+  doc: PdfDoc,
+  columns: ReportColumn[],
+  cells: string[][],
+  pageWidth: number,
+): { widths: number[]; fontSize: number } {
+  // pdfkit measures a word together with the space after it when wrapping, so
+  // the space is counted here too or the word gets split mid-way.
+  const longestWord = (text: string): number =>
+    Math.max(0, ...text.split(/\s+/).filter(Boolean).map((word) => doc.widthOfString(`${word} `)))
+
+  let chosen: { widths: number[]; fontSize: number } | null = null
+  for (const fontSize of PDF_FONT_SIZES) {
+    const natural: number[] = []
+    const minimum: number[] = []
+
+    columns.forEach((column, index) => {
+      doc.font('Helvetica-Bold').fontSize(fontSize)
+      const headerWord = longestWord(column.label)
+      doc.font('Helvetica').fontSize(fontSize)
+      let full = 0
+      let word = 0
+      for (const row of cells) {
+        const text = row[index] ?? ''
+        if (!text) continue
+        full = Math.max(full, doc.widthOfString(text))
+        if (!isNumericFormat(column.format)) word = Math.max(word, longestWord(text))
+      }
+      const pad = CELL_PAD_X * 2 + 1
+      const min = Math.max(headerWord, isNumericFormat(column.format) ? full : word) + pad
+      minimum.push(min)
+      natural.push(Math.max(min, full + pad))
+    })
+
+    const sumMin = minimum.reduce((a, b) => a + b, 0)
+    const sumNatural = natural.reduce((a, b) => a + b, 0)
+    let widths: number[]
+    if (sumNatural <= pageWidth) {
+      // Everything fits on one line; share the spare room out evenly.
+      const spare = (pageWidth - sumNatural) / columns.length
+      widths = natural.map((width) => width + spare)
+    } else if (sumMin <= pageWidth) {
+      const ratio = (pageWidth - sumMin) / (sumNatural - sumMin)
+      widths = minimum.map((min, index) => min + ((natural[index] ?? min) - min) * ratio)
+    } else {
+      // Even the minimum overflows: scale down and let pdfkit break long words.
+      widths = minimum.map((min) => (min / sumMin) * pageWidth)
+    }
+
+    chosen = { widths, fontSize }
+    if (sumMin <= pageWidth) break
+  }
+
+  return chosen as { widths: number[]; fontSize: number }
+}
+
 export function toPdf(payload: ExportPayload): Promise<Buffer> {
   const { definition, rows, totals, organizationName, generatedAt, filterSummary } = payload
+  const columns = definition.columns
 
   return new Promise((resolve, reject) => {
     // Landscape gives wide reports room without shrinking the type.
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 36 })
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: PDF_MARGIN, bufferPages: true })
     const chunks: Buffer[] = []
 
     doc.on('data', (chunk: Buffer) => chunks.push(chunk))
     doc.on('end', () => resolve(Buffer.concat(chunks)))
     doc.on('error', reject)
 
-    const pageWidth = doc.page.width - 72
-    const columnWidth = pageWidth / definition.columns.length
+    const left = PDF_MARGIN
+    const pageWidth = doc.page.width - PDF_MARGIN * 2
+    const bottom = doc.page.height - PDF_MARGIN - 14
 
-    const drawHeader = (): void => {
-      doc.fontSize(14).fillColor('#000000').text(organizationName, { align: 'left' })
-      doc.fontSize(11).text(definition.name)
-      doc.fontSize(8).fillColor('#666666')
-      if (filterSummary) doc.text(filterSummary)
-      doc.text(`Generated ${generatedAt.toISOString()}`)
-      doc.moveDown(0.5)
+    const cells = rows.map((row) => columns.map((column) => formatValue(row[column.key], column.format)))
+    const hasTotals = columns.some((column) => column.total) && rows.length > 0
+    const totalCells = hasTotals
+      ? columns.map((column, index) =>
+          index === 0 ? 'Total' : column.total ? formatValue(totals[column.key], column.format) : '',
+        )
+      : null
 
-      const y = doc.y
-      doc.fontSize(8).fillColor('#000000')
-      definition.columns.forEach((column, index) => {
-        doc.text(column.label, 36 + index * columnWidth, y, { width: columnWidth - 4, ellipsis: true })
+    const { widths, fontSize } = layoutColumns(doc, columns, totalCells ? [...cells, totalCells] : cells, pageWidth)
+    const xs = widths.reduce<number[]>((acc, _width, index) => {
+      acc.push(index === 0 ? left : (acc[index - 1] ?? left) + (widths[index - 1] ?? 0))
+      return acc
+    }, [])
+
+    const rowHeight = (values: string[], font: string): number => {
+      doc.font(font).fontSize(fontSize)
+      let tallest = 0
+      values.forEach((text, index) => {
+        const width = (widths[index] ?? 0) - CELL_PAD_X * 2
+        if (text) tallest = Math.max(tallest, doc.heightOfString(text, { width }))
       })
-      doc
-        .moveTo(36, y + 12)
-        .lineTo(36 + pageWidth, y + 12)
-        .strokeColor('#cccccc')
-        .stroke()
-      doc.y = y + 18
+      return Math.max(tallest, fontSize * 1.2) + CELL_PAD_Y * 2
     }
 
-    drawHeader()
-    doc.fontSize(8).fillColor('#333333')
-
-    for (const row of rows) {
-      // Start a new page before the row would overflow the bottom margin.
-      if (doc.y > doc.page.height - 60) {
-        doc.addPage()
-        drawHeader()
-        doc.fontSize(8).fillColor('#333333')
-      }
-
-      const y = doc.y
-      definition.columns.forEach((column, index) => {
-        doc.text(formatValue(row[column.key], column.format), 36 + index * columnWidth, y, {
-          width: columnWidth - 4,
-          ellipsis: true,
+    const drawRow = (values: string[], y: number, height: number, font: string, color: string, fill?: string): void => {
+      if (fill) doc.rect(left, y, pageWidth, height).fill(fill)
+      doc.font(font).fontSize(fontSize).fillColor(color)
+      values.forEach((text, index) => {
+        if (!text) return
+        const column = columns[index]
+        doc.text(text, (xs[index] ?? left) + CELL_PAD_X, y + CELL_PAD_Y, {
+          width: (widths[index] ?? 0) - CELL_PAD_X * 2,
+          align: column && isNumericFormat(column.format) ? 'right' : 'left',
+          lineGap: 0,
         })
       })
-      doc.y = y + 14
+      doc
+        .moveTo(left, y + height)
+        .lineTo(left + pageWidth, y + height)
+        .lineWidth(0.4)
+        .strokeColor('#d9dde3')
+        .stroke()
     }
 
-    if (definition.columns.some((column) => column.total) && rows.length > 0) {
-      const y = doc.y + 4
-      doc.moveTo(36, y - 2).lineTo(36 + pageWidth, y - 2).strokeColor('#cccccc').stroke()
-      doc.fontSize(8).fillColor('#000000')
-      definition.columns.forEach((column, index) => {
-        const text = index === 0 ? 'Total' : column.total ? formatValue(totals[column.key], column.format) : ''
-        doc.text(text, 36 + index * columnWidth, y + 4, { width: columnWidth - 4, ellipsis: true })
-      })
+    const headerLabels = columns.map((column) => column.label)
+    const headerHeight = rowHeight(headerLabels, 'Helvetica-Bold')
+
+    const drawPageHeader = (): number => {
+      doc.font('Helvetica-Bold').fontSize(13).fillColor('#000000').text(organizationName, left, PDF_MARGIN)
+      doc.font('Helvetica').fontSize(10).text(definition.name, left)
+      doc.fontSize(7.5).fillColor('#666666')
+      if (filterSummary) doc.text(filterSummary, left)
+      doc.text(`Generated ${generatedAt.toISOString()}`, left)
+      const y = doc.y + 6
+      drawRow(headerLabels, y, headerHeight, 'Helvetica-Bold', '#000000', '#eef1f5')
+      return y + headerHeight
+    }
+
+    let y = drawPageHeader()
+    cells.forEach((values, index) => {
+      const height = rowHeight(values, 'Helvetica')
+      if (y + height > bottom) {
+        doc.addPage()
+        y = drawPageHeader()
+      }
+      drawRow(values, y, height, 'Helvetica', '#222222', index % 2 === 1 ? '#f8f9fb' : undefined)
+      y += height
+    })
+
+    if (totalCells) {
+      const height = rowHeight(totalCells, 'Helvetica-Bold')
+      if (y + height > bottom) {
+        doc.addPage()
+        y = drawPageHeader()
+      }
+      doc.moveTo(left, y).lineTo(left + pageWidth, y).lineWidth(0.8).strokeColor('#9aa3ad').stroke()
+      drawRow(totalCells, y, height, 'Helvetica-Bold', '#000000', '#eef1f5')
+    }
+
+    // Page numbers, written once every page exists.
+    const range = doc.bufferedPageRange()
+    for (let page = range.start; page < range.start + range.count; page += 1) {
+      doc.switchToPage(page)
+      const bottomMargin = doc.page.margins.bottom
+      doc.page.margins.bottom = 0
+      doc
+        .font('Helvetica')
+        .fontSize(7)
+        .fillColor('#888888')
+        .text(`Page ${page - range.start + 1} of ${range.count}`, left, doc.page.height - PDF_MARGIN - 6, {
+          width: pageWidth,
+          align: 'right',
+          lineBreak: false,
+        })
+      doc.page.margins.bottom = bottomMargin
     }
 
     doc.end()
