@@ -1,14 +1,19 @@
 import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { validate } from '../../middleware/validate.js'
-import { authenticate } from '../../middleware/authenticate.js'
+import { authenticate, authenticateLocked } from '../../middleware/authenticate.js'
+import { requirePermissions } from '../../middleware/authorize.js'
+import { PERMISSIONS } from './permissions.js'
 import * as controller from './auth.controller.js'
 import {
   changePasswordSchema,
   forgotPasswordSchema,
   loginSchema,
   refreshSchema,
+  removePinSchema,
   resetPasswordSchema,
+  setPinSchema,
+  unlockPinSchema,
 } from './auth.validation.js'
 
 /**
@@ -37,3 +42,17 @@ authRouter.post('/forgot-password', credentialLimiter, validate({ body: forgotPa
 authRouter.post('/reset-password', credentialLimiter, validate({ body: resetPasswordSchema }), controller.resetPassword)
 authRouter.post('/change-password', authenticate, validate({ body: changePasswordSchema }), controller.changePassword)
 authRouter.get('/me', authenticate, controller.me)
+
+// App lock PIN. Unlocking accepts a locked session - that is its whole point -
+// and is also held to the per-IP limit on top of the per-user count of wrong PINs.
+authRouter.post('/pin/unlock', credentialLimiter, authenticateLocked, validate({ body: unlockPinSchema }), controller.unlockPin)
+authRouter.put(
+  '/pin',
+  credentialLimiter,
+  authenticate,
+  requirePermissions(PERMISSIONS.APP_LOCK_MANAGE),
+  validate({ body: setPinSchema }),
+  controller.setPin,
+)
+// Turning the lock off needs no permission, so losing the permission never strands a PIN.
+authRouter.post('/pin/remove', credentialLimiter, authenticate, validate({ body: removePinSchema }), controller.removePin)

@@ -1,6 +1,6 @@
 /** Shared API types, mirroring the server's response shapes. */
 
-export type RoleKey = 'SUPER_ADMIN' | 'SUPERVISOR' | 'EMPLOYEE'
+export type RoleKey = 'SUPER_ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'EMPLOYEE'
 
 export type VerificationStatus = 'PENDING' | 'VERIFIED' | 'REJECTED'
 
@@ -53,6 +53,8 @@ export interface SessionUser {
   mustChangePassword: boolean
   permissions: string[]
   lastLoginAt: string | null
+  /** An app lock PIN is set, so the site asks for it each time it is opened. */
+  appPinEnabled: boolean
 }
 
 export interface AuthResult {
@@ -60,6 +62,8 @@ export interface AuthResult {
   accessToken: string
   refreshToken: string
   refreshTokenExpiresAt: string
+  /** The session is waiting for the app lock PIN. */
+  appLocked: boolean
 }
 
 export interface OrganizationProfile {
@@ -137,6 +141,10 @@ export interface EmployeeSummary {
   supervisorId: string | null
   supervisorName: string | null
   isSupervisor: boolean
+  /** For a supervisor: the manager who oversees them. */
+  managerId: string | null
+  managerName: string | null
+  isManager: boolean
   employmentType: EmploymentType
   employmentStatus: EmploymentStatus
   salaryBasis: SalaryBasis
@@ -419,6 +427,52 @@ export interface MonthlyCalendar {
     unmarked: number
   }
   days: MonthlyCalendarDay[]
+}
+
+/** A day's status on the attendance calendar; UNMARKED is a working day nobody marked yet. */
+export type CalendarStatus = AttendanceStatus | 'UNMARKED'
+
+export interface AttendanceCalendarDay {
+  date: string
+  holidayName: string | null
+  counts: {
+    present: number
+    absent: number
+    onLeave: number
+    halfDay: number
+    holiday: number
+    weeklyOff: number
+    unmarked: number
+    employed: number
+  }
+  /** Index-aligned with `AttendanceCalendar.employees`; null when not employed that day. */
+  statuses: (CalendarStatus | null)[]
+  /** Single-employee view only: the day's attendance record, or null when nothing was marked. */
+  record?: {
+    id: string
+    status: AttendanceStatus
+    leaveTypeId: string | null
+    remarks: string | null
+    source: string
+    fromLeaveRequest: boolean
+    isLocked: boolean
+  } | null
+}
+
+export interface AttendanceCalendar {
+  from: string
+  to: string
+  /** The viewer may mark attendance (the server still checks scope on save). */
+  canEdit: boolean
+  employees: {
+    id: string
+    employeeCode: string
+    name: string
+    departmentName: string | null
+    designationName: string | null
+    supervisorName: string | null
+  }[]
+  days: AttendanceCalendarDay[]
 }
 
 export interface LeaveType {
@@ -905,7 +959,8 @@ export interface SuperAdminDashboard {
 }
 
 export interface SupervisorDashboard {
-  role: 'SUPERVISOR'
+  /** A manager gets the same team dashboard, over their supervisors' teams too. */
+  role: 'SUPERVISOR' | 'MANAGER'
   date: string
   team: { totalEmployees: number; activeEmployees: number }
   attendanceToday: { present: number; absent: number; onLeave: number; halfDay: number; holiday: number; weeklyOff: number }
@@ -917,6 +972,8 @@ export interface SupervisorDashboard {
     designationName: string | null
     todayStatus: AttendanceStatus | null
   }[]
+  /** The supervisors assigned to a manager; empty for a supervisor. */
+  supervisors: { id: string; employeeCode: string; name: string; teamSize: number }[]
 }
 
 export interface EmployeeDashboard {

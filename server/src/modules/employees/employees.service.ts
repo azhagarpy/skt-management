@@ -150,6 +150,9 @@ export function presentEmployeeSummary(row: repository.EmployeeListRow) {
     supervisorId: row.supervisor_id,
     supervisorName: row.supervisor_name,
     isSupervisor: row.is_supervisor,
+    managerId: row.manager_id,
+    managerName: row.manager_name,
+    isManager: row.is_manager,
     employmentType: row.employment_type,
     employmentStatus: row.employment_status,
     salaryBasis: row.salary_basis,
@@ -398,7 +401,13 @@ export async function removeEmployeePhoto(auth: AuthContext, employeeId: string,
 
 async function assertReferencesExist(
   organizationId: string,
-  input: { departmentId?: string | null; designationId?: string | null; locationId?: string | null; supervisorId?: string | null },
+  input: {
+    departmentId?: string | null
+    designationId?: string | null
+    locationId?: string | null
+    supervisorId?: string | null
+    managerId?: string | null
+  },
   db: Queryable,
 ): Promise<void> {
   const checks: { table: string; id: string | null | undefined; label: string }[] = [
@@ -425,6 +434,16 @@ async function assertReferencesExist(
     )
     if (!supervisor) throw ApiError.badRequest('The selected supervisor does not exist')
     if (!supervisor.is_supervisor) throw ApiError.businessRule('The selected employee is not marked as a supervisor')
+  }
+
+  if (input.managerId) {
+    const manager = await queryOne<{ id: string; is_manager: boolean }>(
+      db,
+      'SELECT id, is_manager FROM employees WHERE id = $1 AND organization_id = $2',
+      [input.managerId, organizationId],
+    )
+    if (!manager) throw ApiError.badRequest('The selected manager does not exist')
+    if (!manager.is_manager) throw ApiError.businessRule('The selected employee is not marked as a manager')
   }
 }
 
@@ -487,6 +506,8 @@ export async function createEmployee(auth: AuthContext, input: CreateEmployeeInp
         location_id: input.locationId ?? null,
         supervisor_id: input.supervisorId ?? null,
         is_supervisor: input.isSupervisor,
+        manager_id: input.managerId ?? null,
+        is_manager: input.isManager,
         employment_type: input.employmentType,
         employment_status: input.employmentStatus,
         salary_basis: input.salaryBasis,
@@ -594,7 +615,20 @@ export async function updateEmployee(
     if (input.supervisorId && input.supervisorId === employeeId) {
       throw ApiError.businessRule('An employee cannot be their own supervisor')
     }
+    if (input.managerId && input.managerId === employeeId) {
+      throw ApiError.businessRule('An employee cannot be their own manager')
+    }
     await assertReferencesExist(auth.organizationId, input, tx)
+
+    // Taking the manager flag away would silently orphan their supervisors.
+    if (input.isManager === false && existing.is_manager) {
+      const managed = await repository.listManagedSupervisorIds(employeeId, tx)
+      if (managed.length > 0) {
+        throw ApiError.businessRule(
+          `This employee manages ${managed.length} supervisor(s). Reassign them before removing the manager role.`,
+        )
+      }
+    }
 
     if (input.exitDate && input.joiningDate && input.exitDate < input.joiningDate) {
       throw ApiError.businessRule('Exit date cannot be before the joining date')
@@ -621,6 +655,8 @@ export async function updateEmployee(
       location_id: input.locationId,
       supervisor_id: input.supervisorId,
       is_supervisor: input.isSupervisor,
+      manager_id: input.managerId,
+      is_manager: input.isManager,
       employment_type: input.employmentType,
       employment_status: input.employmentStatus,
       salary_basis: input.salaryBasis,
@@ -792,6 +828,10 @@ export async function deleteEmployee(auth: AuthContext, employeeId: string, cont
       `This employee supervises ${supervises.length} other employee(s). Reassign them before deleting.`,
     )
   }
+  const manages = await repository.listManagedSupervisorIds(employeeId)
+  if (manages.length > 0) {
+    throw ApiError.businessRule(`This employee manages ${manages.length} supervisor(s). Reassign them before deleting.`)
+  }
 
   await repository.deleteEmployee(employeeId, auth.organizationId)
   await recordAudit({
@@ -900,6 +940,84 @@ export async function listSupervisors(auth: AuthContext) {
     employmentStatus: 'ACTIVE',
   } as EmployeeListQuery)
   return rows.map(presentEmployeeSummary)
+}
+
+/** Lightweight list of managers, for selectors and the Managers page. */
+export async function listManagers(auth: AuthContext) {
+  const clause = scopeClause(auth, 'ALL', 'e', 1)
+  const { rows } = await repository.listEmployees(clause, {
+    page: 1,
+    pageSize: 200,
+    sortOrder: 'asc',
+    isManager: true,
+    employmentStatus: 'ACTIVE',
+  } as EmployeeListQuery)
+  return rows.map(presentEmployeeSummary)
+}
+
+/**
+ * Sets exactly which supervisors a manager oversees: the listed ones are
+ * assigned to this manager (moving them from any other), and any supervisor
+ * this manager had that is not listed is left without a manager.
+ */
+export async function setManagedSupervisors(
+  auth: AuthContext,
+  managerId: string,
+  supervisorIds: string[],
+  context: AuditContext,
+) {
+  const ids = [...new Set(supervisorIds)]
+  return withTransaction(async (tx) => {
+    const manager = await repository.findEmployeeById(managerId, auth.organizationId, tx)
+    if (!manager) throw ApiError.notFound('Employee')
+    if (!manager.is_manager) throw ApiError.businessRule('This employee is not marked as a manager')
+    if (ids.includes(managerId)) throw ApiError.businessRule('A manager cannot manage themselves')
+
+    if (ids.length > 0) {
+      const found = await queryRows<{ id: string; is_supervisor: boolean }>(
+        tx,
+        'SELECT id, is_supervisor FROM employees WHERE id = ANY($1::uuid[]) AND organization_id = $2',
+        [ids, auth.organizationId],
+      )
+      if (found.length !== ids.length) throw ApiError.badRequest('One or more selected supervisors do not exist')
+      if (found.some((row) => !row.is_supervisor)) {
+        throw ApiError.businessRule('Only employees marked as supervisors can be assigned to a manager')
+      }
+    }
+
+    const before = await repository.listManagedSupervisorIds(managerId, tx)
+    await tx.query(
+      'UPDATE employees SET manager_id = NULL, updated_by = $3 WHERE manager_id = $1 AND NOT (id = ANY($2::uuid[]))',
+      [managerId, ids, auth.userId],
+    )
+    if (ids.length > 0) {
+      await tx.query(
+        `UPDATE employees SET manager_id = $1, updated_by = $4
+          WHERE id = ANY($2::uuid[]) AND organization_id = $3 AND manager_id IS DISTINCT FROM $1`,
+        [managerId, ids, auth.organizationId, auth.userId],
+      )
+    }
+
+    await recordAudit(
+      {
+        ...context,
+        action: 'MANAGER_SUPERVISORS_ASSIGNED',
+        entityType: 'employee',
+        entityId: managerId,
+        oldValues: { supervisorIds: before },
+        newValues: { supervisorIds: ids },
+      },
+      tx,
+    )
+
+    const clause = scopeClause(auth, 'ALL', 'e', 1)
+    const { rows } = await repository.listEmployees(
+      clause,
+      { page: 1, pageSize: 500, sortOrder: 'asc', managerId } as EmployeeListQuery,
+      tx,
+    )
+    return rows.map(presentEmployeeSummary)
+  })
 }
 
 /**

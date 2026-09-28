@@ -13,8 +13,8 @@ import type { AuthContext } from '../../types/express.js'
  * Role-specific dashboards (plan sections 42, 43 and 44).
  *
  * Each dashboard answers only what its role is allowed to see: the Super Admin
- * gets organization-wide figures, a supervisor sees their team, and an employee
- * sees themselves.
+ * gets organization-wide figures, a supervisor sees their team, a manager sees
+ * their supervisors and everyone under them, and an employee sees themselves.
  */
 
 interface StatusCounts {
@@ -194,7 +194,7 @@ export async function supervisorDashboard(auth: AuthContext) {
   const today = todayIso()
   const clause = scopeClause(auth, 'TEAM', 'e', 1)
 
-  const [team, attendance, pendingLeave, teamList] = await Promise.all([
+  const [team, attendance, pendingLeave, teamList, supervisors] = await Promise.all([
     queryOne<{ total: string; active: string }>(
       pool,
       `SELECT count(*)::text AS total,
@@ -224,10 +224,21 @@ export async function supervisorDashboard(auth: AuthContext) {
         LIMIT 100`,
       [...clause.params, today],
     ),
+    // A manager also sees the supervisors assigned to them and each one's team size.
+    queryRows<{ id: string; employee_code: string; first_name: string; last_name: string | null; team_size: string }>(
+      pool,
+      `SELECT s.id, s.employee_code, s.first_name, s.last_name,
+              (SELECT count(*) FROM employees t
+                WHERE t.supervisor_id = s.id AND t.employment_status = 'ACTIVE')::text AS team_size
+         FROM employees s
+        WHERE s.organization_id = $1 AND s.manager_id = $2 AND s.employment_status = 'ACTIVE'
+        ORDER BY s.employee_code`,
+      [auth.organizationId, auth.employeeId],
+    ),
   ])
 
   return {
-    role: 'SUPERVISOR' as const,
+    role: auth.role === 'MANAGER' ? ('MANAGER' as const) : ('SUPERVISOR' as const),
     date: today,
     team: {
       totalEmployees: Number(team?.total ?? 0),
@@ -241,6 +252,12 @@ export async function supervisorDashboard(auth: AuthContext) {
       name: [member.first_name, member.last_name].filter(Boolean).join(' '),
       designationName: member.designation_name,
       todayStatus: member.status,
+    })),
+    supervisors: supervisors.map((supervisor) => ({
+      id: supervisor.id,
+      employeeCode: supervisor.employee_code,
+      name: [supervisor.first_name, supervisor.last_name].filter(Boolean).join(' '),
+      teamSize: Number(supervisor.team_size),
     })),
   }
 }

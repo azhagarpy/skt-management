@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { PERMISSIONS, ROLE_PERMISSIONS, PERMISSION_DEFINITIONS, type PermissionCode } from './permissions.js'
 import { checkPasswordStrength } from './password.service.js'
 import { durationToMs, hashToken } from './token.service.js'
-import { resolveScope, scopeClause } from '../employees/employee-access.js'
+import { isTeamMember, resolveScope, scopeClause } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 
 /**
@@ -16,7 +16,7 @@ import type { AuthContext } from '../../types/express.js'
 
 const ORGANIZATION_ID = 'org-1'
 
-function contextFor(role: 'SUPER_ADMIN' | 'SUPERVISOR' | 'EMPLOYEE', employeeId: string | null, extra: PermissionCode[] = []): AuthContext {
+function contextFor(role: 'SUPER_ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'EMPLOYEE', employeeId: string | null, extra: PermissionCode[] = []): AuthContext {
   const permissions = new Set<PermissionCode>([...(ROLE_PERMISSIONS[role] ?? []), ...extra])
   return {
     userId: `user-${role}`,
@@ -56,6 +56,16 @@ describe('role permission sets', () => {
     // Plan section 3: "View team salary/pay information only if explicitly permitted".
     expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.SALARY_VIEW_TEAM)
     expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.PAYROLL_VIEW_TEAM)
+  })
+
+  it('gives a manager everything a supervisor has, plus a view of their supervisors, and nothing organization-wide', () => {
+    const manager = ROLE_PERMISSIONS.MANAGER
+    for (const code of ROLE_PERMISSIONS.SUPERVISOR) expect(manager).toContain(code)
+    expect(manager).toContain(PERMISSIONS.SUPERVISOR_VIEW_TEAM)
+    expect(manager).not.toContain(PERMISSIONS.EMPLOYEE_VIEW_ALL)
+    expect(manager).not.toContain(PERMISSIONS.SUPERVISOR_MANAGE)
+    expect(manager).not.toContain(PERMISSIONS.SALARY_VIEW_TEAM)
+    expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.SUPERVISOR_VIEW_TEAM)
   })
 
   it('limits an employee to their own records', () => {
@@ -115,6 +125,23 @@ describe('scope predicate', () => {
     // not fall through to seeing everyone.
     expect(scopeClause(contextFor('SUPERVISOR', null), 'TEAM', 'e', 1)).toEqual({ sql: 'FALSE', params: [] })
     expect(scopeClause(contextFor('EMPLOYEE', null), 'SELF', 'e', 1)).toEqual({ sql: 'FALSE', params: [] })
+  })
+
+  it('scopes a manager to their supervisors and everyone those supervisors look after', () => {
+    const clause = scopeClause(contextFor('MANAGER', 'emp-mgr'), 'TEAM', 'e', 1)
+    expect(clause.sql).toContain('e.manager_id = $2')
+    expect(clause.sql).toContain('e.supervisor_id IN (SELECT m.id FROM employees m WHERE m.manager_id = $2)')
+    expect(clause.params).toEqual([ORGANIZATION_ID, 'emp-mgr'])
+  })
+
+  it('counts the same people as team members in memory as the SQL predicate does', () => {
+    const base = { id: 'emp-x', supervisor_id: null, manager_id: null, supervisor_manager_id: null }
+    expect(isTeamMember({ ...base, id: 'emp-mgr' }, 'emp-mgr')).toBe(true)
+    expect(isTeamMember({ ...base, supervisor_id: 'emp-mgr' }, 'emp-mgr')).toBe(true)
+    expect(isTeamMember({ ...base, manager_id: 'emp-mgr' }, 'emp-mgr')).toBe(true)
+    expect(isTeamMember({ ...base, supervisor_id: 'emp-sup', supervisor_manager_id: 'emp-mgr' }, 'emp-mgr')).toBe(true)
+    expect(isTeamMember({ ...base, supervisor_id: 'emp-sup', supervisor_manager_id: 'emp-other' }, 'emp-mgr')).toBe(false)
+    expect(isTeamMember(base, 'emp-mgr')).toBe(false)
   })
 
   it('honours the placeholder offset so filters can be appended', () => {

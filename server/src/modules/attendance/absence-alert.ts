@@ -146,7 +146,7 @@ export async function checkAbsenceStreaks(
       const name = [employee.first_name, employee.last_name].filter(Boolean).join(' ')
       await notifyRole(
         organizationId,
-        ['SUPER_ADMIN', 'SUPERVISOR'],
+        ['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR'],
         {
           organizationId,
           type: 'ABSENCE_STREAK',

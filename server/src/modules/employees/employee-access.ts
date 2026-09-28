@@ -53,10 +53,17 @@ export function scopeClause(
       // A supervisor account with no employee record supervises nobody.
       return { sql: 'FALSE', params: [] }
     }
-    // The supervisor's own record is included so they can see themselves in team views.
+    // A team is everyone the caller supervises, plus - for a manager - the
+    // supervisors assigned to them and everyone those supervisors look after.
+    // The caller's own record is included so they can see themselves in team
+    // views. For a supervisor the manager branches match nobody.
+    const me = `$${startIndex + 1}`
     return {
       sql: `${employeeAlias}.organization_id = $${startIndex}
-            AND (${employeeAlias}.supervisor_id = $${startIndex + 1} OR ${employeeAlias}.id = $${startIndex + 1})`,
+            AND (${employeeAlias}.supervisor_id = ${me}
+                 OR ${employeeAlias}.id = ${me}
+                 OR ${employeeAlias}.manager_id = ${me}
+                 OR ${employeeAlias}.supervisor_id IN (SELECT m.id FROM employees m WHERE m.manager_id = ${me}))`,
       params: [auth.organizationId, auth.employeeId],
     }
   }
@@ -80,8 +87,16 @@ export async function assertEmployeeInScope(
   scope: EmployeeScope,
   db: Queryable = pool,
 ): Promise<void> {
-  const { rows } = await db.query<{ id: string; supervisor_id: string | null }>(
-    'SELECT id, supervisor_id FROM employees WHERE id = $1 AND organization_id = $2',
+  const { rows } = await db.query<{
+    id: string
+    supervisor_id: string | null
+    manager_id: string | null
+    supervisor_manager_id: string | null
+  }>(
+    `SELECT e.id, e.supervisor_id, e.manager_id, s.manager_id AS supervisor_manager_id
+       FROM employees e
+       LEFT JOIN employees s ON s.id = e.supervisor_id
+      WHERE e.id = $1 AND e.organization_id = $2`,
     [employeeId, auth.organizationId],
   )
   const employee = rows[0]
@@ -91,13 +106,30 @@ export async function assertEmployeeInScope(
 
   if (scope === 'TEAM') {
     if (!auth.employeeId) throw ApiError.forbidden('Your account is not linked to an employee record')
-    if (employee.supervisor_id === auth.employeeId || employee.id === auth.employeeId) return
+    if (isTeamMember(employee, auth.employeeId)) return
     throw ApiError.forbidden('This employee is not assigned to you')
   }
 
   if (!auth.employeeId || employee.id !== auth.employeeId) {
     throw ApiError.forbidden('You can only access your own records')
   }
+}
+
+/**
+ * The in-memory twin of the TEAM predicate in `scopeClause`: the employee is
+ * the caller, reports to them, is a supervisor assigned to them as manager, or
+ * reports to such a supervisor.
+ */
+export function isTeamMember(
+  employee: { id: string; supervisor_id: string | null; manager_id: string | null; supervisor_manager_id: string | null },
+  callerEmployeeId: string,
+): boolean {
+  return (
+    employee.id === callerEmployeeId ||
+    employee.supervisor_id === callerEmployeeId ||
+    employee.manager_id === callerEmployeeId ||
+    employee.supervisor_manager_id === callerEmployeeId
+  )
 }
 
 /** Resolves the acting user's own employee id, or fails with a clear message. */

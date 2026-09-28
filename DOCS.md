@@ -9,14 +9,37 @@ this file covers what the application *does*, in the order you use it.
 
 | Role | Scope | Notes |
 | ---- | ----- | ----- |
-| `SUPER_ADMIN` | Everything (all 80 permissions) | Administrative account, **not** an employee — no attendance, leave, salary or payslips of their own |
+| `SUPER_ADMIN` | Everything (all 93 permissions) | Administrative account, **not** an employee — no attendance, leave, salary or payslips of their own |
+| `MANAGER` | Their supervisors, and everyone on those supervisors' teams | Same team permissions as a supervisor, one level up; also sees their supervisors on **Supervisors** |
 | `SUPERVISOR` | Their assigned team | Team salary, team payroll and team reports are **not** granted by default — grant per user from Users |
 | `EMPLOYEE` | Themselves only | — |
 
 The role is only a starting set. Any single permission can be granted or revoked
 per user from **Users**, which is how "this one supervisor may see team salary"
-is expressed without adding a fourth role. The sidebar builds itself from the
+is expressed without adding another role. The sidebar builds itself from the
 signed-in user's permissions.
+
+**Managers.** A manager is an employee with *Is a manager* ticked, signing in
+with the `MANAGER` role. The Super Admin assigns supervisors to them from
+**People → Managers → Assign supervisors** (or the *Manager* field on a
+supervisor's employee form). A supervisor has at most one manager. Anyone a
+manager's supervisors look after — and anyone who reports to the manager
+directly — is in the manager's team for attendance, leave, documents, overtime
+and reports. Removing *Is a manager*, or deleting the employee, is refused while
+supervisors are still assigned to them.
+
+**App lock PIN.** Super Admins, managers and supervisors can turn on a 4-digit
+PIN under **Settings → App lock PIN** (their password is asked for to set,
+change or remove it). With it on, every time the site is opened on a device
+where they are still signed in — a new tab, a reload, the browser reopened — it
+shows a PIN screen before anything else. Signing in with the password never asks
+for the PIN, and an open page is not interrupted while it is being used.
+**Lock now** in the account menu locks the current page on demand. Five wrong
+PINs in a row sign that device out, and the password is needed. The lock is
+enforced by the API, not just the screen: until the PIN is entered, every
+request except the unlock itself is refused with `423 APP_LOCKED`. The
+permission is `applock.manage`; grant it to an individual employee from Users
+if they need it too.
 
 ---
 
@@ -51,6 +74,19 @@ Each step depends on the ones above it.
   already have different attendance need an explicit *override* or *keep existing* choice.
   Approved-leave and payroll-locked days are never changed. `HF` becomes an unpaid half day.
   Endpoints: `POST /attendance/import/preview` (dry run) and `POST /attendance/import`.
+  **Calendar** (Attendance → *Calendar* tab): a calendar **month** or a **week**, filtered by
+  department, supervisor or one employee. A summary strip gives the period's attendance rate
+  (days worked, half days counting half, out of days people were expected to work) and totals.
+  For a team each day shows its rate, a bar of the split and how many were present, absent, on
+  half day, on leave, on holiday or weekly off, and not marked; clicking a day lists the
+  employees (ID and name) under each status. For one employee each day is a coloured circle,
+  and anyone who can mark attendance (Super Admin, manager, supervisor) can click a day to
+  change it — with a leave type for leave or half day, and an optional note kept in the day's
+  history. Days in a locked payroll run cannot be changed; a day set by an approved leave
+  request can, but the request itself is left as it is. A day without a record shows what the
+  company calendar says it is (holiday or weekly off), as *My attendance* does; "not marked"
+  is never shown for future days. An absence alert's link opens the calendar on that employee.
+  Endpoint: `GET /attendance/calendar?from&to` (at most 42 days).
 - **Leave** — employee applies → supervisor or admin approves/rejects → an approved
   request writes back into attendance. Statuses: `PENDING` `APPROVED` `REJECTED` `CANCELLED`.
   **Sandwich rule** (`sandwichHolidays`, on by default): a holiday with a full day of
@@ -59,7 +95,13 @@ Each step depends on the ones above it.
   outside the dates the employee asked for — a Friday request and a Monday request with
   a holiday on the Saturday between them costs three days, not two. An unbroken run of
   holidays counts as one sandwich; a weekly off between the leave and the holiday breaks
-  the run and nothing is charged.
+  the run and nothing is charged. A **half day** next to a holiday counts as leave for
+  this rule: a half day before the holiday and a full day of leave after it (or the
+  other way round) charges the holiday too.
+  Payroll applies the same rule to unpaid days: a holiday not worked, with an absence,
+  unpaid leave or a half day on each side, is not paid. A holiday **worked for half a
+  day** is never charged or forfeited; it pays that half day, and if the holiday has
+  *extra pay* on, half a day of holiday work pay on top — two half days in all.
 - **Bonuses** — attached to a payroll *month*, not a date. Only `APPROVED` bonuses are
   paid; `PENDING` ones are ignored by the calculator.
 - **Tax** — the tax amount for each band of wages (Tax → Tax slabs). The tax report
@@ -192,6 +234,8 @@ reversed payment will not accept new proof.
   (correction, reversal, arrear, recovery).
 - **A weekly off is not paid.** It counts towards the calendar days payroll divides by,
   but earns nothing, so pay follows the days actually worked. Holidays *are* paid.
+- **The site asks for a PIN although you are signed in.** That is the app lock
+  (see Roles above); it asks each time the site is opened, not on every page.
 - **A leave can charge a day outside the dates applied for.** That is the sandwich rule
   on holidays; see Leave above.
 - **Aadhaar, PAN and bank numbers render masked** unless the viewer holds
@@ -226,7 +270,8 @@ separate script:
 
 | Role | Steps | Covers |
 | ---- | ----- | ------ |
-| Super Admin | 22 | Every module, config through payroll and audit. No "My" section — they have no employee record |
+| Super Admin | 23 | Every module, config through payroll and audit. No "My" section — they have no employee record |
+| Manager | 20 | As a supervisor, plus their supervisors |
 | Supervisor | 19 | Team employees, documents, attendance, leave, reports, plus their own records |
 | Employee | 14 | Dashboard, calendar, and their own profile, attendance, leave, salary, payslips, documents |
 

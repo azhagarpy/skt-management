@@ -14,6 +14,8 @@ const redactPaths = [
   '*.password_hash',
   '*.currentPassword',
   '*.newPassword',
+  '*.pin',
+  '*.app_pin_hash',
   '*.token',
   '*.refreshToken',
   '*.accessToken',

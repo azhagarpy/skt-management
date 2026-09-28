@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarCheck, CheckCheck, FileUp, Lock, Save, Wand2 } from 'lucide-react'
 import { get, post } from '../../lib/api'
@@ -18,17 +19,22 @@ import {
   Select,
   Spinner,
   StatTile,
+  Tabs,
 } from '../../components/ui'
 import { DepartmentSelector, SupervisorSelector, useLeaveTypes, useShifts } from '../../components/forms/selectors'
 import type { AttendanceStatus, DailySheet } from '../../types/api'
 import AttendanceImportModal from './AttendanceImportModal'
+import { AttendanceCalendarView } from './AttendanceCalendarView'
 
 /**
- * The daily attendance sheet (plan section 6).
+ * The daily attendance sheet (plan section 6), and beside it the calendar.
  *
  * Status-based only: there is no check-in, check-out or working-hours input.
  * Edits are held locally until saved, so marking a whole department is one
  * request rather than one per employee.
+ *
+ * `?view=calendar` opens the calendar tab; `?employee=<id>` (the link an
+ * absence alert carries) opens it on that employee.
  */
 
 const STATUS_OPTIONS: { value: AttendanceStatus; label: string }[] = [
@@ -60,6 +66,22 @@ export default function AttendancePage() {
   const [pending, setPending] = useState<Record<string, PendingEntry>>({})
   const [confirmCalendar, setConfirmCalendar] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedEmployeeId = searchParams.get('employee') ?? undefined
+  const view = searchParams.get('view') === 'calendar' || linkedEmployeeId ? 'calendar' : 'sheet'
+  const setView = (next: string): void => {
+    const calendarParams: Record<string, string> = linkedEmployeeId
+      ? { view: 'calendar', employee: linkedEmployeeId }
+      : { view: 'calendar' }
+    setSearchParams(next === 'calendar' ? calendarParams : {}, { replace: true })
+  }
+
+  /** From a day on the calendar straight to marking it. */
+  const openSheetFor = (day: string): void => {
+    setDate(day)
+    setView('sheet')
+  }
 
   const filters = {
     date,
@@ -199,7 +221,7 @@ export default function AttendancePage() {
         title="Attendance"
         description="Mark attendance by status. Weekly offs and holidays come from the configured calendar."
         actions={
-          canManage ? (
+          canManage && view === 'sheet' ? (
             <>
               <Button variant="secondary" icon={<FileUp size={15} />} onClick={() => setImportOpen(true)}>
                 Import sheet
@@ -223,7 +245,26 @@ export default function AttendancePage() {
         }
       />
 
-      {summary ? (
+      <Tabs
+        tabs={[
+          { key: 'sheet', label: 'Daily sheet' },
+          { key: 'calendar', label: 'Calendar' },
+        ]}
+        active={view}
+        onChange={setView}
+      />
+
+      {view === 'calendar' ? (
+        <Card padded={false}>
+          <AttendanceCalendarView
+            key={linkedEmployeeId ?? 'all'}
+            initialEmployeeId={linkedEmployeeId}
+            onOpenSheet={canManage ? openSheetFor : undefined}
+          />
+        </Card>
+      ) : null}
+
+      {view === 'sheet' && summary ? (
         <div className="grid grid-4">
           <StatTile label="Employees" value={summary.total} sublabel={`${summary.unmarked} not marked`} tone="info" icon={<CalendarCheck size={18} />} />
           <StatTile label="Present" value={summary.present} tone="success" />
@@ -232,148 +273,150 @@ export default function AttendancePage() {
         </div>
       ) : null}
 
-      {invalidEntries.length > 0 ? (
+      {view === 'sheet' && invalidEntries.length > 0 ? (
         <div className="alert alert-warning">
           {invalidEntries.length} row(s) are set to leave but have no leave type selected. Pick a leave type before saving.
         </div>
       ) : null}
 
-      <Card padded={false}>
-        <div className="filter-bar">
-          <Field label="Date" htmlFor="attendance-date">
-            <Input id="attendance-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
-          </Field>
+      {view === 'sheet' ? (
+        <Card padded={false}>
+          <div className="filter-bar">
+            <Field label="Date" htmlFor="attendance-date">
+              <Input id="attendance-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+            </Field>
 
-          <Field label="Department" htmlFor="attendance-department">
-            <DepartmentSelector id="attendance-department" value={departmentId} onChange={setDepartmentId} />
-          </Field>
+            <Field label="Department" htmlFor="attendance-department">
+              <DepartmentSelector id="attendance-department" value={departmentId} onChange={setDepartmentId} />
+            </Field>
 
-          <Field label="Supervisor" htmlFor="attendance-supervisor">
-            <SupervisorSelector id="attendance-supervisor" value={supervisorId} onChange={setSupervisorId} />
-          </Field>
+            <Field label="Supervisor" htmlFor="attendance-supervisor">
+              <SupervisorSelector id="attendance-supervisor" value={supervisorId} onChange={setSupervisorId} />
+            </Field>
 
-          <SearchInput value={search} onChange={setSearch} placeholder="Name or employee ID" />
-        </div>
-
-        {error ? (
-          <ErrorState error={error} onRetry={() => void refetch()} />
-        ) : isFetching && employees.length === 0 ? (
-          <Spinner label="Loading the attendance sheet" />
-        ) : employees.length === 0 ? (
-          <p className="muted" style={{ padding: '2rem', textAlign: 'center' }}>
-            No employees match these filters for {formatDate(date)}.
-          </p>
-        ) : (
-          <div className="data-table-wrapper">
-            <table className="data-table">
-              <caption className="sr-only">Attendance for {formatDate(date)}</caption>
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th className="hide-mobile">Department</th>
-                  <th>Status</th>
-                  <th>Leave type</th>
-                  <th>Shift</th>
-                  <th className="hide-mobile">Day</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map((employee) => {
-                  const current = statusFor(employee.employeeId, employee.status)
-                  const isLeave = current === 'ON_LEAVE' || current === 'HALF_DAY_LEAVE'
-                  const edited = Boolean(pending[employee.employeeId])
-
-                  return (
-                    <tr key={employee.employeeId} style={edited ? { background: 'var(--info-bg)' } : undefined}>
-                      <td data-label="Employee">
-                        <div>
-                          <strong>{employee.employeeName}</strong>
-                          <p className="subtle">
-                            {employee.employeeCode}
-                            {employee.supervisorName ? ` · ${employee.supervisorName}` : ''}
-                          </p>
-                        </div>
-                      </td>
-                      <td data-label="Department" className="hide-mobile">
-                        {employee.departmentName ?? '—'}
-                      </td>
-                      <td data-label="Status">
-                        {employee.isLocked ? (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-                            <Lock size={13} aria-hidden />
-                            <Badge tone="accent">{employee.status ?? 'Locked'}</Badge>
-                          </span>
-                        ) : canManage ? (
-                          <Select
-                            value={current}
-                            aria-label={`Attendance status for ${employee.employeeName}`}
-                            onChange={(event) => setStatus(employee.employeeId, event.target.value as AttendanceStatus)}
-                          >
-                            <option value="">Not marked</option>
-                            {STATUS_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </Select>
-                        ) : (
-                          <Badge tone="neutral">{employee.status ?? 'Not marked'}</Badge>
-                        )}
-                      </td>
-                      <td data-label="Leave type">
-                        {isLeave && canManage && !employee.isLocked ? (
-                          <Select
-                            value={pending[employee.employeeId]?.leaveTypeId ?? employee.leaveTypeId ?? ''}
-                            aria-label={`Leave type for ${employee.employeeName}`}
-                            onChange={(event) => setLeaveType(employee.employeeId, event.target.value, employee.status)}
-                          >
-                            <option value="">Select a leave type</option>
-                            {(leaveTypes ?? []).map((leaveType) => (
-                              <option key={leaveType.id} value={leaveType.id}>
-                                {leaveType.name}
-                                {leaveType.isPaid ? '' : ' (unpaid)'}
-                              </option>
-                            ))}
-                          </Select>
-                        ) : (
-                          <span className="subtle">{employee.leaveTypeName ?? '—'}</span>
-                        )}
-                      </td>
-                      <td data-label="Shift">
-                        {canManage && !employee.isLocked ? (
-                          <Select
-                            value={shiftFor(employee.employeeId, employee.shiftId)}
-                            aria-label={`Shift for ${employee.employeeName}`}
-                            onChange={(event) => setShift(employee.employeeId, event.target.value, employee.status)}
-                          >
-                            <option value="">No shift</option>
-                            {(shifts ?? []).map((shift) => (
-                              <option key={shift.id} value={shift.id}>
-                                {shift.code} — {shift.name}
-                              </option>
-                            ))}
-                          </Select>
-                        ) : (
-                          <span className="subtle">{employee.shiftCode ?? '—'}</span>
-                        )}
-                      </td>
-                      <td data-label="Day" className="hide-mobile">
-                        {employee.dayKind === 'HOLIDAY' ? (
-                          <Badge tone="accent">{employee.holidayName ?? 'Holiday'}</Badge>
-                        ) : employee.dayKind === 'WEEKLY_OFF' ? (
-                          <Badge tone="neutral">Weekly off</Badge>
-                        ) : (
-                          <span className="subtle">Working day</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <SearchInput value={search} onChange={setSearch} placeholder="Name or employee ID" />
           </div>
-        )}
-      </Card>
+
+          {error ? (
+            <ErrorState error={error} onRetry={() => void refetch()} />
+          ) : isFetching && employees.length === 0 ? (
+            <Spinner label="Loading the attendance sheet" />
+          ) : employees.length === 0 ? (
+            <p className="muted" style={{ padding: '2rem', textAlign: 'center' }}>
+              No employees match these filters for {formatDate(date)}.
+            </p>
+          ) : (
+            <div className="data-table-wrapper">
+              <table className="data-table">
+                <caption className="sr-only">Attendance for {formatDate(date)}</caption>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th className="hide-mobile">Department</th>
+                    <th>Status</th>
+                    <th>Leave type</th>
+                    <th>Shift</th>
+                    <th className="hide-mobile">Day</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employees.map((employee) => {
+                    const current = statusFor(employee.employeeId, employee.status)
+                    const isLeave = current === 'ON_LEAVE' || current === 'HALF_DAY_LEAVE'
+                    const edited = Boolean(pending[employee.employeeId])
+
+                    return (
+                      <tr key={employee.employeeId} style={edited ? { background: 'var(--info-bg)' } : undefined}>
+                        <td data-label="Employee">
+                          <div>
+                            <strong>{employee.employeeName}</strong>
+                            <p className="subtle">
+                              {employee.employeeCode}
+                              {employee.supervisorName ? ` · ${employee.supervisorName}` : ''}
+                            </p>
+                          </div>
+                        </td>
+                        <td data-label="Department" className="hide-mobile">
+                          {employee.departmentName ?? '—'}
+                        </td>
+                        <td data-label="Status">
+                          {employee.isLocked ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <Lock size={13} aria-hidden />
+                              <Badge tone="accent">{employee.status ?? 'Locked'}</Badge>
+                            </span>
+                          ) : canManage ? (
+                            <Select
+                              value={current}
+                              aria-label={`Attendance status for ${employee.employeeName}`}
+                              onChange={(event) => setStatus(employee.employeeId, event.target.value as AttendanceStatus)}
+                            >
+                              <option value="">Not marked</option>
+                              {STATUS_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </Select>
+                          ) : (
+                            <Badge tone="neutral">{employee.status ?? 'Not marked'}</Badge>
+                          )}
+                        </td>
+                        <td data-label="Leave type">
+                          {isLeave && canManage && !employee.isLocked ? (
+                            <Select
+                              value={pending[employee.employeeId]?.leaveTypeId ?? employee.leaveTypeId ?? ''}
+                              aria-label={`Leave type for ${employee.employeeName}`}
+                              onChange={(event) => setLeaveType(employee.employeeId, event.target.value, employee.status)}
+                            >
+                              <option value="">Select a leave type</option>
+                              {(leaveTypes ?? []).map((leaveType) => (
+                                <option key={leaveType.id} value={leaveType.id}>
+                                  {leaveType.name}
+                                  {leaveType.isPaid ? '' : ' (unpaid)'}
+                                </option>
+                              ))}
+                            </Select>
+                          ) : (
+                            <span className="subtle">{employee.leaveTypeName ?? '—'}</span>
+                          )}
+                        </td>
+                        <td data-label="Shift">
+                          {canManage && !employee.isLocked ? (
+                            <Select
+                              value={shiftFor(employee.employeeId, employee.shiftId)}
+                              aria-label={`Shift for ${employee.employeeName}`}
+                              onChange={(event) => setShift(employee.employeeId, event.target.value, employee.status)}
+                            >
+                              <option value="">No shift</option>
+                              {(shifts ?? []).map((shift) => (
+                                <option key={shift.id} value={shift.id}>
+                                  {shift.code} — {shift.name}
+                                </option>
+                              ))}
+                            </Select>
+                          ) : (
+                            <span className="subtle">{employee.shiftCode ?? '—'}</span>
+                          )}
+                        </td>
+                        <td data-label="Day" className="hide-mobile">
+                          {employee.dayKind === 'HOLIDAY' ? (
+                            <Badge tone="accent">{employee.holidayName ?? 'Holiday'}</Badge>
+                          ) : employee.dayKind === 'WEEKLY_OFF' ? (
+                            <Badge tone="neutral">Weekly off</Badge>
+                          ) : (
+                            <span className="subtle">Working day</span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      ) : null}
 
       <AttendanceImportModal open={importOpen} onClose={() => setImportOpen(false)} />
 

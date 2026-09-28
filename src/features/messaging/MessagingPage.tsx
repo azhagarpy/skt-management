@@ -563,6 +563,7 @@ function BroadcastTab() {
               <Select id="bc-role" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
                 <option value="">Everyone</option>
                 <option value="SUPER_ADMIN">Super Admin</option>
+                <option value="MANAGER">Manager</option>
                 <option value="SUPERVISOR">Supervisor</option>
                 <option value="EMPLOYEE">Employee</option>
               </Select>

@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'PAYMENT_ERROR'
   | 'FILE_UPLOAD_ERROR'
   | 'RATE_LIMITED'
+  | 'APP_LOCKED'
   | 'DATABASE_ERROR'
   | 'INTERNAL_ERROR'
 
@@ -69,6 +70,11 @@ export class ApiError extends Error {
 
   static upload(message: string, details: ErrorDetail[] = []): ApiError {
     return new ApiError(400, 'FILE_UPLOAD_ERROR', message, details)
+  }
+
+  /** 423 - signed in, but the app lock PIN has not been entered on this page yet. */
+  static appLocked(message = 'Enter your PIN to continue'): ApiError {
+    return new ApiError(423, 'APP_LOCKED', message)
   }
 
   static internal(message = 'Something went wrong'): ApiError {

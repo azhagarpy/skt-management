@@ -152,6 +152,7 @@ export default function EmployeeListPage() {
       render: (row) => (
         <span style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
           <StatusBadge status={row.employmentStatus} />
+          {row.isManager ? <Badge tone="accent">Manager</Badge> : null}
           {row.isSupervisor ? <Badge tone="accent">Supervisor</Badge> : null}
         </span>
       ),

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bell, ChevronDown, Compass, LogOut, Menu, WifiOff, X } from 'lucide-react'
+import { Bell, ChevronDown, Compass, Lock, LogOut, Menu, WifiOff, X } from 'lucide-react'
 import { useAuth } from '../app/providers/AuthProvider'
 import { useBranding } from '../app/providers/BrandingProvider'
 import { ProductTour, hasSeenTour } from '../app/tour/ProductTour'
@@ -19,7 +19,7 @@ import type { NotificationItem } from '../types/api'
  * what makes the PWA comfortable on a phone (plan section 46).
  */
 export function AppLayout() {
-  const { user, logout, canAny } = useAuth()
+  const { user, logout, lock, canAny } = useAuth()
   const { name: orgName, initials, logoUrl } = useBranding()
   const [tourOpen, setTourOpen] = useState(false)
   const tourOpenedDrawer = useRef(false)
@@ -270,6 +270,18 @@ export function AppLayout() {
                   >
                     <Compass size={14} aria-hidden /> Take the tour
                   </button>
+                  {user?.appPinEnabled ? (
+                    <button
+                      type="button"
+                      className="dropdown-item"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        void lock()
+                      }}
+                    >
+                      <Lock size={14} aria-hidden /> Lock now
+                    </button>
+                  ) : null}
                   <button type="button" className="dropdown-item dropdown-item-danger" onClick={handleLogout}>
                     <LogOut size={14} aria-hidden /> Sign out
                   </button>

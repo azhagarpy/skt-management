@@ -18,6 +18,7 @@ import { checkAbsenceStreaks } from './absence-alert.js'
 import type {
   AttendanceListQuery,
   BulkMarkAttendanceInput,
+  CalendarQuery,
   DailySheetQuery,
   MarkAttendanceInput,
   MonthlyQuery,
@@ -274,6 +275,146 @@ export async function getMonthlyCalendar(auth: AuthContext, query: MonthlyQuery)
       weeklyOff: counts.WEEKLY_OFF ?? 0,
       unmarked: days.filter((day) => day.isEmployed && !day.status).length,
     },
+    days,
+  }
+}
+
+/** A day's status on the attendance calendar; UNMARKED is a working day nobody marked yet. */
+export type CalendarStatus =
+  | 'PRESENT'
+  | 'ABSENT'
+  | 'ON_LEAVE'
+  | 'HALF_DAY_LEAVE'
+  | 'HOLIDAY'
+  | 'WEEKLY_OFF'
+  | 'UNMARKED'
+
+export interface CalendarDayCounts {
+  present: number
+  absent: number
+  onLeave: number
+  halfDay: number
+  holiday: number
+  weeklyOff: number
+  unmarked: number
+  /** Employees employed on the day - the sum of the other counts. */
+  employed: number
+}
+
+const COUNT_KEY: Record<CalendarStatus, keyof Omit<CalendarDayCounts, 'employed'>> = {
+  PRESENT: 'present',
+  ABSENT: 'absent',
+  ON_LEAVE: 'onLeave',
+  HALF_DAY_LEAVE: 'halfDay',
+  HOLIDAY: 'holiday',
+  WEEKLY_OFF: 'weeklyOff',
+  UNMARKED: 'unmarked',
+}
+
+/**
+ * The attendance calendar: every day of a window (a month or a week) for the
+ * employees in scope, with each employee's status on each day and the day's
+ * totals.
+ *
+ * A day with no attendance record takes what the configured calendar says it
+ * is - a holiday or weekly off - exactly as the single-employee monthly view
+ * does, so an unmarked Sunday reads as a weekly off rather than "not marked".
+ * `statuses` is index-aligned with `employees` and holds null on a day the
+ * employee was not employed; one response is enough to draw the grid and to
+ * list who was absent on any day.
+ *
+ * When the view comes down to a single employee each day also carries its
+ * record (or null when nothing was marked), which is what the calendar needs
+ * to edit that day, and `canEdit` says whether the viewer may.
+ */
+export async function getAttendanceCalendar(auth: AuthContext, query: CalendarQuery) {
+  const scope = viewScope(auth)
+  if (query.employeeId) await assertEmployeeInScope(auth, query.employeeId, scope)
+  const clause = scopeClause(auth, scope, 'e', 1)
+
+  const [employees, calendar] = await Promise.all([
+    repository.calendarEmployees(clause, query.from, query.to, query),
+    buildCalendarContext(auth.organizationId, query.from, query.to),
+  ])
+  const records = await repository.listAttendanceForEmployees(
+    employees.map((employee) => employee.employee_id),
+    query.from,
+    query.to,
+  )
+  const recordByKey = new Map(records.map((record) => [`${record.employee_id}|${record.attendance_date}`, record]))
+  const single = employees.length === 1 ? employees[0] : undefined
+
+  const days = datesBetween(query.from, query.to).map((date) => {
+    const counts: CalendarDayCounts = {
+      present: 0,
+      absent: 0,
+      onLeave: 0,
+      halfDay: 0,
+      holiday: 0,
+      weeklyOff: 0,
+      unmarked: 0,
+      employed: 0,
+    }
+
+    const statuses = employees.map((employee): CalendarStatus | null => {
+      const employed = date >= employee.joining_date && (!employee.exit_date || date <= employee.exit_date)
+      if (!employed) return null
+
+      let status = recordByKey.get(`${employee.employee_id}|${date}`)?.status as CalendarStatus | undefined
+      if (!status) {
+        const day = calendar.dayFor(date, {
+          departmentId: employee.department_id,
+          locationId: employee.location_id,
+          employeeId: employee.employee_id,
+        })
+        status = day.kind === 'HOLIDAY' ? 'HOLIDAY' : day.kind === 'WEEKLY_OFF' ? 'WEEKLY_OFF' : 'UNMARKED'
+      }
+
+      counts[COUNT_KEY[status] ?? 'unmarked'] += 1
+      counts.employed += 1
+      return status
+    })
+
+    // Holidays are organization-wide, so the name does not depend on who is asking.
+    const holidayName = calendar.dayFor(date, {}).holidayName
+
+    const record = single ? recordByKey.get(`${single.employee_id}|${date}`) : undefined
+    return {
+      date,
+      holidayName,
+      counts,
+      statuses,
+      ...(single
+        ? {
+            record: record
+              ? {
+                  id: record.id,
+                  status: record.status,
+                  leaveTypeId: record.leave_type_id,
+                  remarks: record.remarks,
+                  source: record.source,
+                  fromLeaveRequest: record.leave_request_id !== null,
+                  isLocked: record.locked_by_payroll_run_id !== null,
+                }
+              : null,
+          }
+        : {}),
+    }
+  })
+
+  return {
+    from: query.from,
+    to: query.to,
+    // The server still checks the employee is within the viewer's manage scope on save.
+    canEdit: auth.hasAny(PERMISSIONS.ATTENDANCE_MANAGE_ALL, PERMISSIONS.ATTENDANCE_MANAGE_TEAM),
+    employees: employees.map((employee) => ({
+      id: employee.employee_id,
+      employeeCode: employee.employee_code,
+      name: [employee.first_name, employee.middle_name, employee.last_name].filter(Boolean).join(' '),
+      departmentName: employee.department_name,
+      designationName: employee.designation_name,
+      supervisorName: employee.supervisor_name,
+    })),
     days,
   }
 }

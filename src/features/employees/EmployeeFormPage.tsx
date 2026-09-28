@@ -13,6 +13,7 @@ import {
   EmployeeTypeSelector,
   DesignationSelector,
   LocationSelector,
+  ManagerSelector,
   SupervisorSelector,
 } from '../../components/forms/selectors'
 import type { EmployeeDetail } from '../../types/api'
@@ -45,7 +46,9 @@ const schema = z.object({
   designationId: z.string().optional().or(z.literal('')),
   locationId: z.string().optional().or(z.literal('')),
   supervisorId: z.string().optional().or(z.literal('')),
+  managerId: z.string().optional().or(z.literal('')),
   isSupervisor: z.boolean(),
+  isManager: z.boolean(),
   employmentType: z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT', 'TEMPORARY', 'INTERN']),
   employmentStatus: z.enum(['ACTIVE', 'INACTIVE', 'ON_NOTICE', 'RESIGNED', 'TERMINATED']),
   salaryBasis: z.enum(['MONTHLY', 'DAILY']),
@@ -58,7 +61,7 @@ const schema = z.object({
   exitDate: z.string().optional().or(z.literal('')),
   createUserAccount: z.boolean(),
   userEmail: z.string().trim().email('Enter a valid email').optional().or(z.literal('')),
-  userRole: z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE']),
+  userRole: z.enum(['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR', 'EMPLOYEE']),
   temporaryPassword: z.string().optional().or(z.literal('')),
 })
 
@@ -83,7 +86,10 @@ function toPayload(values: FormValues, isEdit: boolean): Record<string, unknown>
     designationId: blank(values.designationId),
     locationId: blank(values.locationId),
     supervisorId: blank(values.supervisorId),
+    // Only a supervisor reports to a manager.
+    managerId: values.isSupervisor ? blank(values.managerId) : null,
     isSupervisor: values.isSupervisor,
+    isManager: values.isManager,
     employmentType: values.employmentType,
     employmentStatus: values.employmentStatus,
     salaryBasis: values.salaryBasis,
@@ -150,7 +156,9 @@ export default function EmployeeFormPage() {
       designationId: '',
       locationId: '',
       supervisorId: '',
+      managerId: '',
       isSupervisor: false,
+      isManager: false,
       employmentType: 'FULL_TIME',
       employmentStatus: 'ACTIVE',
       salaryBasis: 'MONTHLY',
@@ -184,7 +192,9 @@ export default function EmployeeFormPage() {
       designationId: existing.designationId ?? '',
       locationId: existing.locationId ?? '',
       supervisorId: existing.supervisorId ?? '',
+      managerId: existing.managerId ?? '',
       isSupervisor: existing.isSupervisor,
+      isManager: existing.isManager,
       employmentType: existing.employmentType,
       employmentStatus: existing.employmentStatus,
       salaryBasis: existing.salaryBasis,
@@ -527,6 +537,24 @@ export default function EmployeeFormPage() {
                 <span>This employee supervises others</span>
               </label>
             </Field>
+
+            {watch('isSupervisor') ? (
+              <Field label="Manager" htmlFor="managerId" hint="The manager who oversees this supervisor and their team.">
+                <ManagerSelector
+                  id="managerId"
+                  includeAll={false}
+                  value={watch('managerId') ?? ''}
+                  onChange={(value) => setValue('managerId', value)}
+                />
+              </Field>
+            ) : null}
+
+            <Field label="Is a manager" htmlFor="isManager" hint="Managers oversee a set of supervisors and their teams.">
+              <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                <input id="isManager" type="checkbox" {...register('isManager')} />
+                <span>This employee manages supervisors</span>
+              </label>
+            </Field>
           </div>
         </Card>
 
@@ -622,6 +650,7 @@ export default function EmployeeFormPage() {
                   <Field label="Role" htmlFor="userRole">
                     <Select id="userRole" {...register('userRole')}>
                       <option value="EMPLOYEE">Employee</option>
+                      <option value="MANAGER">Manager</option>
                       <option value="SUPERVISOR">Supervisor</option>
                       <option value="SUPER_ADMIN">Super Admin</option>
                     </Select>

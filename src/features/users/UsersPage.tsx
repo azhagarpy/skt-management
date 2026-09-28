@@ -249,6 +249,7 @@ export default function UsersPage() {
             <Select id="user-role" value={role} onChange={(event) => setRole(event.target.value)}>
               <option value="">All roles</option>
               <option value="SUPER_ADMIN">Super Admin</option>
+              <option value="MANAGER">Manager</option>
               <option value="SUPERVISOR">Supervisor</option>
               <option value="EMPLOYEE">Employee</option>
             </Select>
@@ -297,6 +298,7 @@ export default function UsersPage() {
           <Field label="Role" htmlFor="user-form-role" required>
             <Select id="user-form-role" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as RoleKey })}>
               <option value="EMPLOYEE">Employee</option>
+              <option value="MANAGER">Manager</option>
               <option value="SUPERVISOR">Supervisor</option>
               <option value="SUPER_ADMIN">Super Admin</option>
             </Select>

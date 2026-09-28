@@ -9,6 +9,7 @@ import {
   generateOpaqueToken,
   hashToken,
   passwordResetExpiry,
+  readAccessTokenIgnoringExpiry,
   refreshTokenExpiry,
   signAccessToken,
 } from './token.service.js'
@@ -16,6 +17,8 @@ import { ROLE_PERMISSIONS, type PermissionCode, type RoleKey } from './permissio
 
 const MAX_FAILED_ATTEMPTS = 8
 const LOCK_MINUTES = 15
+/** Wrong PINs in a row before the session is signed out and the password is needed. */
+export const MAX_PIN_ATTEMPTS = 5
 
 export interface SessionUser {
   id: string
@@ -28,6 +31,8 @@ export interface SessionUser {
   mustChangePassword: boolean
   permissions: PermissionCode[]
   lastLoginAt: string | null
+  /** An app lock PIN is set, so the site asks for it each time it is opened. */
+  appPinEnabled: boolean
 }
 
 export interface AuthResult {
@@ -35,6 +40,8 @@ export interface AuthResult {
   accessToken: string
   refreshToken: string
   refreshTokenExpiresAt: string
+  /** The access token is waiting for the PIN; only the unlock endpoint accepts it. */
+  appLocked: boolean
 }
 
 function effectivePermissions(role: RoleKey, overrides: { code: PermissionCode; granted: boolean }[]): PermissionCode[] {
@@ -46,8 +53,10 @@ function effectivePermissions(role: RoleKey, overrides: { code: PermissionCode; 
   return [...permissions].sort()
 }
 
-async function buildSessionUser(user: repository.UserWithEmployee): Promise<SessionUser> {
-  const overrides = await repository.findUserPermissionOverrides(user.id)
+function presentSessionUser(
+  user: repository.UserWithEmployee,
+  overrides: { code: PermissionCode; granted: boolean }[],
+): SessionUser {
   return {
     id: user.id,
     email: user.email,
@@ -59,20 +68,56 @@ async function buildSessionUser(user: repository.UserWithEmployee): Promise<Sess
     mustChangePassword: user.must_change_password,
     permissions: effectivePermissions(user.role, overrides),
     lastLoginAt: user.last_login_at ? user.last_login_at.toISOString() : null,
+    appPinEnabled: user.app_pin_hash !== null,
   }
 }
 
-async function issueSession(
-  user: repository.UserWithEmployee,
-  context: { userAgent?: string | null; ipAddress?: string | null },
-): Promise<AuthResult> {
-  const accessToken = signAccessToken({
+async function buildSessionUser(user: repository.UserWithEmployee): Promise<SessionUser> {
+  return presentSessionUser(user, await repository.findUserPermissionOverrides(user.id))
+}
+
+function tokenVersionOf(user: repository.UserWithEmployee): number {
+  return Math.floor(user.password_changed_at.getTime() / 1000)
+}
+
+function accessTokenFor(user: repository.UserWithEmployee, pinLocked: boolean): string {
+  return signAccessToken({
     sub: user.id,
     organizationId: user.organization_id,
     role: user.role,
     employeeId: user.employee_id,
-    tokenVersion: Math.floor(user.password_changed_at.getTime() / 1000),
+    tokenVersion: tokenVersionOf(user),
+    ...(pinLocked ? { pinLocked: true } : {}),
   })
+}
+
+/**
+ * Whether a refreshed session must wait for the PIN.
+ *
+ * "Opening the site" is told apart from a routine refresh by the access token
+ * the page sends along: it lives only in the page's memory, so a page that was
+ * just opened has none, while an open page presents its current (possibly
+ * expired) one. A page that already unlocked stays unlocked; anything else -
+ * no token, a locked one, someone else's, or one from before a password
+ * change - has to enter the PIN.
+ */
+export function refreshNeedsPin(user: repository.UserWithEmployee, previousAccessToken: string | undefined): boolean {
+  if (user.app_pin_hash === null) return false
+  const previous = previousAccessToken ? readAccessTokenIgnoringExpiry(previousAccessToken) : null
+  const unlockedHere =
+    previous !== null &&
+    previous.sub === user.id &&
+    previous.pinLocked !== true &&
+    previous.tokenVersion === tokenVersionOf(user)
+  return !unlockedHere
+}
+
+/** Signing in with the password is proof enough: a fresh sign-in is never locked. */
+async function issueSession(
+  user: repository.UserWithEmployee,
+  context: { userAgent?: string | null; ipAddress?: string | null },
+): Promise<AuthResult> {
+  const accessToken = accessTokenFor(user, false)
 
   const { token, hash } = generateOpaqueToken()
   const expiresAt = refreshTokenExpiry()
@@ -89,6 +134,7 @@ async function issueSession(
     accessToken,
     refreshToken: token,
     refreshTokenExpiresAt: expiresAt.toISOString(),
+    appLocked: false,
   }
 }
 
@@ -163,6 +209,7 @@ export async function login(
 export async function refresh(
   refreshTokenValue: string,
   context: { userAgent?: string | null; ipAddress?: string | null },
+  previousAccessToken?: string,
 ): Promise<AuthResult> {
   const tokenHash = hashToken(refreshTokenValue)
 
@@ -184,13 +231,8 @@ export async function refresh(
     if (!user) throw ApiError.unauthenticated('Account no longer exists')
     if (user.status !== 'ACTIVE') throw ApiError.forbidden('This account is not active')
 
-    const accessToken = signAccessToken({
-      sub: user.id,
-      organizationId: user.organization_id,
-      role: user.role,
-      employeeId: user.employee_id,
-      tokenVersion: Math.floor(user.password_changed_at.getTime() / 1000),
-    })
+    const appLocked = refreshNeedsPin(user, previousAccessToken)
+    const accessToken = accessTokenFor(user, appLocked)
 
     const { token, hash } = generateOpaqueToken()
     const expiresAt = refreshTokenExpiry()
@@ -208,23 +250,102 @@ export async function refresh(
 
     const overrides = await repository.findUserPermissionOverrides(user.id, tx)
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.full_name,
-        role: user.role,
-        organizationId: user.organization_id,
-        employeeId: user.employee_id,
-        employeeCode: user.employee_code,
-        mustChangePassword: user.must_change_password,
-        permissions: effectivePermissions(user.role, overrides),
-        lastLoginAt: user.last_login_at ? user.last_login_at.toISOString() : null,
-      },
+      user: presentSessionUser(user, overrides),
       accessToken,
       refreshToken: token,
       refreshTokenExpiresAt: expiresAt.toISOString(),
+      appLocked,
     }
   })
+}
+
+// ---------------------------------------------------------------------------
+// App lock PIN
+// ---------------------------------------------------------------------------
+
+/**
+ * Exchanges a locked access token for an unlocked one when the PIN is right.
+ *
+ * Wrong PINs are counted per user. After MAX_PIN_ATTEMPTS in a row this
+ * session's refresh token is revoked, so whoever is guessing is back at the
+ * password screen; a four-digit PIN is only safe behind a limit like this.
+ */
+export async function unlockWithPin(
+  userId: string,
+  pin: string,
+  refreshTokenValue: string | undefined,
+  context: AuditContext,
+): Promise<{ user: SessionUser; accessToken: string; appLocked: false }> {
+  const user = await repository.findUserById(userId)
+  if (!user) throw ApiError.unauthenticated('Account no longer exists')
+  if (user.status !== 'ACTIVE') throw ApiError.forbidden('This account is not active')
+
+  // The lock was turned off since this page was opened: nothing to check.
+  const matches = user.app_pin_hash === null || (await verifyPassword(pin, user.app_pin_hash))
+  if (matches) {
+    if (user.app_pin_failed_attempts > 0) await repository.resetFailedPins(user.id)
+    return { user: await buildSessionUser(user), accessToken: accessTokenFor(user, false), appLocked: false }
+  }
+
+  const attempts = await repository.recordFailedPin(user.id)
+  const auditBase = { ...context, organizationId: user.organization_id, userId: user.id, entityType: 'user', entityId: user.id }
+
+  if (attempts >= MAX_PIN_ATTEMPTS) {
+    await withTransaction(async (tx) => {
+      const stored = refreshTokenValue ? await repository.findRefreshToken(hashToken(refreshTokenValue), tx) : null
+      if (stored && stored.user_id === user.id) await repository.revokeRefreshToken(stored.id, null, tx)
+      else await repository.revokeAllRefreshTokensForUser(user.id, tx)
+      await repository.resetFailedPins(user.id, tx)
+      await recordAudit({ ...auditBase, action: 'APP_PIN_LOCKOUT', newValues: { attempts } }, tx)
+    })
+    throw ApiError.unauthenticated('Too many wrong PINs. Sign in with your password to continue.')
+  }
+
+  await recordAudit({ ...auditBase, action: 'APP_PIN_FAILED', newValues: { attempts } })
+  const left = MAX_PIN_ATTEMPTS - attempts
+  throw ApiError.badRequest(`Incorrect PIN. ${left} attempt${left === 1 ? '' : 's'} left before you are signed out.`)
+}
+
+async function requireCurrentPassword(userId: string, currentPassword: string): Promise<repository.UserWithEmployee> {
+  const user = await repository.findUserById(userId)
+  if (!user) throw ApiError.notFound('Account')
+  if (!(await verifyPassword(currentPassword, user.password_hash))) {
+    throw ApiError.badRequest('Your password is incorrect')
+  }
+  return user
+}
+
+/**
+ * Turns the app lock on, or changes the PIN. The account password is asked
+ * for so that someone at an already-unlocked screen cannot set a PIN of their
+ * own - or, in `removeAppPin`, take the lock off.
+ */
+export async function setAppPin(
+  userId: string,
+  input: { pin: string; currentPassword: string },
+  context: AuditContext,
+): Promise<SessionUser> {
+  const user = await requireCurrentPassword(userId, input.currentPassword)
+  await repository.updateAppPin(user.id, await hashPassword(input.pin))
+  await recordAudit({
+    ...context,
+    action: 'APP_PIN_SET',
+    entityType: 'user',
+    entityId: user.id,
+    newValues: { changed: user.app_pin_hash !== null },
+  })
+  return currentUser(user.id)
+}
+
+export async function removeAppPin(
+  userId: string,
+  input: { currentPassword: string },
+  context: AuditContext,
+): Promise<SessionUser> {
+  const user = await requireCurrentPassword(userId, input.currentPassword)
+  await repository.updateAppPin(user.id, null)
+  await recordAudit({ ...context, action: 'APP_PIN_REMOVED', entityType: 'user', entityId: user.id })
+  return currentUser(user.id)
 }
 
 export async function logout(refreshTokenValue: string | undefined, context: AuditContext): Promise<void> {

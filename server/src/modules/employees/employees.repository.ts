@@ -29,6 +29,8 @@ export interface EmployeeRow {
   location_id: string | null
   supervisor_id: string | null
   is_supervisor: boolean
+  manager_id: string | null
+  is_manager: boolean
   employment_type: string
   employment_status: string
   salary_basis: string
@@ -53,6 +55,7 @@ export interface EmployeeListRow extends EmployeeRow {
   designation_name: string | null
   location_name: string | null
   supervisor_name: string | null
+  manager_name: string | null
   user_email: string | null
   user_role: string | null
   user_status: string | null
@@ -65,6 +68,8 @@ const LIST_COLUMNS = `
   l.name AS location_name,
   CASE WHEN s.id IS NULL THEN NULL
        ELSE trim(s.first_name || ' ' || coalesce(s.last_name, '')) END AS supervisor_name,
+  CASE WHEN mg.id IS NULL THEN NULL
+       ELSE trim(mg.first_name || ' ' || coalesce(mg.last_name, '')) END AS manager_name,
   u.email AS user_email,
   u.role  AS user_role,
   u.status AS user_status,
@@ -78,6 +83,7 @@ const LIST_JOINS = `
   LEFT JOIN designations g ON g.id = e.designation_id
   LEFT JOIN locations    l ON l.id = e.location_id
   LEFT JOIN employees    s ON s.id = e.supervisor_id
+  LEFT JOIN employees    mg ON mg.id = e.manager_id
   LEFT JOIN users        u ON u.id = e.user_id
   LEFT JOIN employee_types t ON t.id = e.employee_type_id
 `
@@ -133,6 +139,8 @@ function buildFilters(scope: ScopeClause, filters: EmployeeListQuery): { clause:
   if (filters.employeeTypeId) conditions.push(`e.employee_type_id = $${push(filters.employeeTypeId)}`)
   if (filters.plant) conditions.push(`e.plant = $${push(filters.plant)}`)
   if (filters.isSupervisor !== undefined) conditions.push(`e.is_supervisor = $${push(filters.isSupervisor)}`)
+  if (filters.managerId) conditions.push(`e.manager_id = $${push(filters.managerId)}`)
+  if (filters.isManager !== undefined) conditions.push(`e.is_manager = $${push(filters.isManager)}`)
   if (filters.joinedFrom) conditions.push(`e.joining_date >= $${push(filters.joinedFrom)}`)
   if (filters.joinedTo) conditions.push(`e.joining_date <= $${push(filters.joinedTo)}`)
 
@@ -198,10 +206,10 @@ export async function insertEmployee(values: Record<string, unknown>, db: Querya
        mobile_number, alternate_number, department_id, designation_id, location_id,
        supervisor_id, is_supervisor, employment_type, employment_status, salary_basis,
        employee_type_id, plant, skill_category, duties, overtime_rate_override_minor,
-       joining_date, confirmation_date, created_by, updated_by
+       joining_date, confirmation_date, created_by, updated_by, manager_id, is_manager
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $31
+       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $31, $32, $33
      ) RETURNING *`,
     [
       values.organization_id,
@@ -235,6 +243,8 @@ export async function insertEmployee(values: Record<string, unknown>, db: Querya
       values.joining_date,
       values.confirmation_date ?? null,
       values.created_by ?? null,
+      values.manager_id ?? null,
+      values.is_manager ?? false,
     ],
   )
   return row as EmployeeRow
@@ -503,6 +513,14 @@ export async function countIncompleteProfiles(organizationId: string, db: Querya
     [organizationId],
   )
   return Number(row?.count ?? 0)
+}
+
+/** Supervisors assigned to the given manager. */
+export async function listManagedSupervisorIds(managerEmployeeId: string, db: Queryable = pool): Promise<string[]> {
+  const rows = await queryRows<{ id: string }>(db, 'SELECT id FROM employees WHERE manager_id = $1', [
+    managerEmployeeId,
+  ])
+  return rows.map((row) => row.id)
 }
 
 /** Employee ids supervised by the given supervisor, used to scope team queries. */

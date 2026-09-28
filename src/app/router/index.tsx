@@ -22,6 +22,7 @@ const EmployeeListPage = lazy(() => import('../../features/employees/EmployeeLis
 const EmployeeDetailPage = lazy(() => import('../../features/employees/EmployeeDetailPage'))
 const EmployeeFormPage = lazy(() => import('../../features/employees/EmployeeFormPage'))
 const SupervisorListPage = lazy(() => import('../../features/supervisors/SupervisorListPage'))
+const ManagerListPage = lazy(() => import('../../features/supervisors/ManagerListPage'))
 const DocumentReviewPage = lazy(() => import('../../features/documents/DocumentReviewPage'))
 const MyDocumentsPage = lazy(() => import('../../features/documents/MyDocumentsPage'))
 
@@ -54,6 +55,7 @@ const UsersPage = lazy(() => import('../../features/users/UsersPage'))
 const AuditLogPage = lazy(() => import('../../features/audit/AuditLogPage'))
 const MessagingPage = lazy(() => import('../../features/messaging/MessagingPage'))
 const SettingsPage = lazy(() => import('../../features/settings/SettingsPage'))
+const AppLockScreen = lazy(() => import('../../features/auth/AppLockScreen'))
 
 function PageFallback() {
   return (
@@ -70,6 +72,7 @@ function Protected({ anyOf, children }: { anyOf?: string[]; children: ReactNode 
 
   if (status === 'loading') return <PageFallback />
   if (status === 'unauthenticated') return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  if (status === 'locked') return <AppLockScreen />
 
   // A forced password change blocks everything else.
   if (user?.mustChangePassword && location.pathname !== '/change-password') {
@@ -170,8 +173,16 @@ export function AppRouter() {
           <Route
             path="/supervisors"
             element={
-              <Protected anyOf={['employee.view.all']}>
+              <Protected anyOf={['employee.view.all', 'supervisor.view.team']}>
                 <SupervisorListPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/managers"
+            element={
+              <Protected anyOf={['employee.view.all']}>
+                <ManagerListPage />
               </Protected>
             }
           />
@@ -398,7 +409,7 @@ export function AppRouter() {
           <Route
             path="/settings"
             element={
-              <Protected anyOf={['settings.view']}>
+              <Protected anyOf={['settings.view', 'applock.manage']}>
                 <SettingsPage />
               </Protected>
             }

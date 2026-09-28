@@ -1,5 +1,6 @@
 import {
   BadgeIndianRupee,
+  BriefcaseBusiness,
   CalendarDays,
   ClipboardCheck,
   FileBarChart,
@@ -25,8 +26,8 @@ import {
  * The navigation model (plan section 47).
  *
  * Each item declares the permissions it needs; the sidebar filters itself from
- * the signed-in user's permission set, so the three roles get the three
- * different menus the plan specifies without three hard-coded menus.
+ * the signed-in user's permission set, so each role gets its own menu without
+ * a hard-coded menu per role.
  */
 
 export interface NavItem {
@@ -65,7 +66,13 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: UsersRound,
         anyOf: ['employee.view.all', 'employee.view.team'],
       },
-      { label: 'Supervisors', to: '/supervisors', icon: ShieldCheck, anyOf: ['employee.view.all'] },
+      { label: 'Managers', to: '/managers', icon: BriefcaseBusiness, anyOf: ['employee.view.all'] },
+      {
+        label: 'Supervisors',
+        to: '/supervisors',
+        icon: ShieldCheck,
+        anyOf: ['employee.view.all', 'supervisor.view.team'],
+      },
       {
         label: 'Documents',
         to: '/documents',
@@ -140,7 +147,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Users', to: '/users', icon: UsersRound, anyOf: ['user.view'] },
       { label: 'Messaging', to: '/messaging', icon: MessageSquare, anyOf: ['message.view'] },
       { label: 'Audit log', to: '/audit-logs', icon: ScrollText, anyOf: ['audit.view'] },
-      { label: 'Settings', to: '/settings', icon: Settings, anyOf: ['settings.view'] },
+      { label: 'Settings', to: '/settings', icon: Settings, anyOf: ['settings.view', 'applock.manage'] },
     ],
   },
 ]

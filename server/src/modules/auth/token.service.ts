@@ -11,6 +11,11 @@ export interface AccessTokenPayload {
   employeeId: string | null
   /** Bumped whenever the password changes, invalidating older access tokens. */
   tokenVersion: number
+  /**
+   * True until the app lock PIN is entered. A locked token reaches only the
+   * unlock endpoint (see `authenticate`).
+   */
+  pinLocked?: boolean
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {
@@ -24,6 +29,19 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
   } catch (error) {
     const message = (error as Error).name === 'TokenExpiredError' ? 'Session expired' : 'Invalid access token'
     throw ApiError.unauthenticated(message)
+  }
+}
+
+/**
+ * Reads an access token whose signature is valid, even if it has expired, or
+ * returns null. Refresh uses it to learn whether the page asking already
+ * unlocked the app, so a routine refresh does not lock an open page again.
+ */
+export function readAccessTokenIgnoringExpiry(token: string): AccessTokenPayload | null {
+  try {
+    return jwt.verify(token, env.JWT_SECRET, { ignoreExpiration: true }) as AccessTokenPayload
+  } catch {
+    return null
   }
 }
 

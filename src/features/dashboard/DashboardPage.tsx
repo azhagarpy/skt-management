@@ -46,7 +46,8 @@ import type {
 } from '../../types/api'
 
 /**
- * One route, three dashboards.
+ * One route, three dashboards (a manager gets the team one, over every team
+ * under them).
  *
  * The server decides which shape to return based on the caller's permissions
  * (plan sections 42-44), so this page renders whichever it receives rather than
@@ -71,10 +72,10 @@ export default function DashboardPage() {
       <PageHeader title={greeting} description="Here is where things stand today." />
       {data.role === 'SUPER_ADMIN' ? (
         <AdminDashboard data={data} />
-      ) : data.role === 'SUPERVISOR' ? (
-        <TeamDashboard data={data} />
-      ) : (
+      ) : data.role === 'EMPLOYEE' ? (
         <SelfDashboard data={data} />
+      ) : (
+        <TeamDashboard data={data} />
       )}
     </div>
   )
@@ -326,7 +327,13 @@ function TeamDashboard({ data }: { data: SupervisorDashboard }) {
   return (
     <>
       <div className="grid grid-4">
-        <StatTile label="My team" value={data.team.activeEmployees} sublabel="Active employees" icon={<UsersRound size={18} />} tone="info" />
+        <StatTile
+          label={data.role === 'MANAGER' ? 'My teams' : 'My team'}
+          value={data.team.activeEmployees}
+          sublabel={data.role === 'MANAGER' ? `Active employees under ${data.supervisors.length} supervisor(s)` : 'Active employees'}
+          icon={<UsersRound size={18} />}
+          tone="info"
+        />
         <StatTile label="Present today" value={data.attendanceToday.present} icon={<ClipboardCheck size={18} />} tone="success" />
         <StatTile label="Absent today" value={data.attendanceToday.absent} icon={<UserMinus size={18} />} tone={data.attendanceToday.absent > 0 ? 'danger' : 'neutral'} />
         <StatTile
@@ -338,8 +345,44 @@ function TeamDashboard({ data }: { data: SupervisorDashboard }) {
         />
       </div>
 
+      {data.role === 'MANAGER' ? (
+        <Card
+          title="My supervisors"
+          description="The supervisors assigned to you, and how many active employees each looks after."
+          padded={false}
+        >
+          {data.supervisors.length === 0 ? (
+            <p className="muted" style={{ padding: '1rem' }}>
+              No supervisors have been assigned to you yet. Ask an administrator to assign them from the Managers page.
+            </p>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Supervisor</th>
+                  <th style={{ textAlign: 'right' }}>Team size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.supervisors.map((supervisor) => (
+                  <tr key={supervisor.id}>
+                    <td data-label="Supervisor">
+                      <Link to={`/employees/${supervisor.id}`}>{supervisor.name}</Link>
+                      <span className="subtle"> · {supervisor.employeeCode}</span>
+                    </td>
+                    <td data-label="Team size" style={{ textAlign: 'right' }}>
+                      <Badge tone={supervisor.teamSize > 0 ? 'info' : 'neutral'}>{supervisor.teamSize}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      ) : null}
+
       <Card
-        title="My team today"
+        title={data.role === 'MANAGER' ? 'My teams today' : 'My team today'}
         description={`Attendance for ${data.date}`}
         actions={
           <Link to="/attendance">

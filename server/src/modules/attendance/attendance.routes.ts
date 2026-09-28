@@ -15,12 +15,14 @@ import { attendanceImportBodySchema, type AttendanceImportBody } from './attenda
 import {
   attendanceListQuerySchema,
   bulkMarkAttendanceSchema,
+  calendarQuerySchema,
   dailySheetQuerySchema,
   markAttendanceSchema,
   monthlyQuerySchema,
   updateAttendanceSchema,
   type AttendanceListQuery,
   type BulkMarkAttendanceInput,
+  type CalendarQuery,
   type DailySheetQuery,
   type MarkAttendanceInput,
   type MonthlyQuery,
@@ -66,6 +68,17 @@ attendanceRouter.get(
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     return sendSuccess(res, await service.getMonthlyCalendar(auth, req.query as unknown as MonthlyQuery))
+  }),
+)
+
+/** The attendance calendar: a month or week, for a team or one employee. */
+attendanceRouter.get(
+  '/calendar',
+  canView,
+  validate({ query: calendarQuerySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(res, await service.getAttendanceCalendar(auth, req.query as unknown as CalendarQuery))
   }),
 )
 

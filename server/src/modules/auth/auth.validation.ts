@@ -36,8 +36,27 @@ export const changePasswordSchema = z.object({
   newPassword: passwordSchema,
 })
 
+/** Exactly four digits, kept as a string so a leading zero survives. */
+export const appPinSchema = z.string().regex(/^\d{4}$/, 'The PIN must be exactly 4 digits')
+
+export const unlockPinSchema = z.object({
+  pin: appPinSchema,
+})
+
+export const setPinSchema = z.object({
+  pin: appPinSchema,
+  currentPassword: z.string().min(1, 'Your password is required').max(128),
+})
+
+export const removePinSchema = z.object({
+  currentPassword: z.string().min(1, 'Your password is required').max(128),
+})
+
 export type LoginInput = z.infer<typeof loginSchema>
 export type RefreshInput = z.infer<typeof refreshSchema>
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
+export type UnlockPinInput = z.infer<typeof unlockPinSchema>
+export type SetPinInput = z.infer<typeof setPinSchema>
+export type RemovePinInput = z.infer<typeof removePinSchema>

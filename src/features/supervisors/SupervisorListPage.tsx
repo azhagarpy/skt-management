@@ -75,6 +75,12 @@ export default function SupervisorListPage() {
     },
     { key: 'department', header: 'Department', hideOnMobile: true, render: (row) => row.departmentName ?? '—' },
     {
+      key: 'manager',
+      header: 'Manager',
+      hideOnMobile: true,
+      render: (row) => row.managerName ?? <span className="subtle">—</span>,
+    },
+    {
       key: 'team',
       header: 'Team size',
       align: 'right',

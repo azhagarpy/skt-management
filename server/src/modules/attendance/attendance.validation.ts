@@ -117,9 +117,34 @@ export const monthlyQuerySchema = z.object({
   supervisorId: z.string().uuid().optional(),
 })
 
+/** The longest window the calendar serves: a month grid, with room to spare. */
+export const CALENDAR_MAX_DAYS = 42
+
+/** The attendance calendar: a month or a week, for the team or one employee. */
+export const calendarQuerySchema = z
+  .object({
+    from: isoDateSchema,
+    to: isoDateSchema,
+    departmentId: z.string().uuid().optional(),
+    supervisorId: z.string().uuid().optional(),
+    employeeId: z.string().uuid().optional(),
+    search: z.string().trim().max(120).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.to < value.from) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'The end date cannot be before the start date' })
+      return
+    }
+    const days = (Date.parse(`${value.to}T00:00:00Z`) - Date.parse(`${value.from}T00:00:00Z`)) / 86_400_000 + 1
+    if (days > CALENDAR_MAX_DAYS) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: `The calendar covers at most ${CALENDAR_MAX_DAYS} days` })
+    }
+  })
+
 export type MarkAttendanceInput = z.infer<typeof markAttendanceSchema>
 export type BulkMarkAttendanceInput = z.infer<typeof bulkMarkAttendanceSchema>
 export type UpdateAttendanceInput = z.infer<typeof updateAttendanceSchema>
 export type DailySheetQuery = z.infer<typeof dailySheetQuerySchema>
 export type AttendanceListQuery = z.infer<typeof attendanceListQuerySchema>
 export type MonthlyQuery = z.infer<typeof monthlyQuerySchema>
+export type CalendarQuery = z.infer<typeof calendarQuerySchema>

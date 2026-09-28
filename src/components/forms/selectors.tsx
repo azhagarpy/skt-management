@@ -80,6 +80,15 @@ export function useSupervisors() {
   })
 }
 
+export function useManagers(enabled = true) {
+  return useQuery({
+    queryKey: ['managers', 'options'],
+    queryFn: () => get<EmployeeSummary[]>('/employees/managers'),
+    staleTime: REFERENCE_DATA_STALE_TIME,
+    enabled,
+  })
+}
+
 interface SelectorProps {
   value: string
   onChange: (value: string) => void
@@ -154,6 +163,20 @@ export function SupervisorSelector({ value, onChange, id, includeAll = true, all
       {(data ?? []).map((supervisor) => (
         <option key={supervisor.id} value={supervisor.id}>
           {supervisor.fullName} ({supervisor.employeeCode})
+        </option>
+      ))}
+    </Select>
+  )
+}
+
+export function ManagerSelector({ value, onChange, id, includeAll = true, allLabel = 'All managers', disabled }: SelectorProps) {
+  const { data, isLoading } = useManagers()
+  return (
+    <Select id={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled || isLoading}>
+      {includeAll ? <option value="">{allLabel}</option> : <option value="">No manager</option>}
+      {(data ?? []).map((manager) => (
+        <option key={manager.id} value={manager.id}>
+          {manager.fullName} ({manager.employeeCode})
         </option>
       ))}
     </Select>

@@ -12,7 +12,10 @@ import type {
   ForgotPasswordInput,
   LoginInput,
   RefreshInput,
+  RemovePinInput,
   ResetPasswordInput,
+  SetPinInput,
+  UnlockPinInput,
 } from './auth.validation.js'
 
 const REFRESH_COOKIE = 'refresh_token'
@@ -36,6 +39,12 @@ function clearRefreshCookie(res: Response): void {
   res.clearCookie(REFRESH_COOKIE, { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/' })
 }
 
+/** The page's current access token, if it sent one - see `refreshNeedsPin`. */
+function readBearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization
+  return header?.startsWith('Bearer ') ? header.slice(7).trim() || undefined : undefined
+}
+
 function readRefreshToken(req: Request): string | undefined {
   const body = req.body as RefreshInput | undefined
   const cookies = req.cookies as Record<string, string> | undefined
@@ -53,6 +62,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       refreshTokenExpiresAt: result.refreshTokenExpiresAt,
+      appLocked: result.appLocked,
     },
     'Signed in successfully',
   )
@@ -61,7 +71,11 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 export const refresh = asyncHandler(async (req: Request, res: Response) => {
   const token = readRefreshToken(req)
   if (!token) throw ApiError.unauthenticated('No refresh token supplied')
-  const result = await service.refresh(token, { userAgent: req.get('user-agent'), ipAddress: req.ip })
+  const result = await service.refresh(
+    token,
+    { userAgent: req.get('user-agent'), ipAddress: req.ip },
+    readBearerToken(req),
+  )
   setRefreshCookie(res, result.refreshToken)
   return sendSuccess(
     res,
@@ -70,6 +84,7 @@ export const refresh = asyncHandler(async (req: Request, res: Response) => {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       refreshTokenExpiresAt: result.refreshTokenExpiresAt,
+      appLocked: result.appLocked,
     },
     'Session refreshed',
   )
@@ -104,6 +119,31 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
   await service.changePassword(auth.userId, input, auditContextFrom(req))
   clearRefreshCookie(res)
   return sendSuccess(res, null, 'Password changed successfully, please sign in again')
+})
+
+export const unlockPin = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const { pin } = req.body as UnlockPinInput
+  try {
+    const result = await service.unlockWithPin(auth.userId, pin, readRefreshToken(req), auditContextFrom(req))
+    return sendSuccess(res, result, 'Unlocked')
+  } catch (error) {
+    // Too many wrong PINs revoked this session; drop its cookie too.
+    if (error instanceof ApiError && error.statusCode === 401) clearRefreshCookie(res)
+    throw error
+  }
+})
+
+export const setPin = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const user = await service.setAppPin(auth.userId, req.body as SetPinInput, auditContextFrom(req))
+  return sendSuccess(res, user, 'App lock PIN saved')
+})
+
+export const removePin = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const user = await service.removeAppPin(auth.userId, req.body as RemovePinInput, auditContextFrom(req))
+  return sendSuccess(res, user, 'App lock turned off')
 })
 
 export const me = asyncHandler(async (req: Request, res: Response) => {

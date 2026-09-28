@@ -13,7 +13,7 @@ export const maritalStatusSchema = z.enum(['SINGLE', 'MARRIED', 'DIVORCED', 'WID
 export const employmentTypeSchema = z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT', 'TEMPORARY', 'INTERN'])
 export const employmentStatusSchema = z.enum(['ACTIVE', 'INACTIVE', 'ON_NOTICE', 'RESIGNED', 'TERMINATED'])
 export const salaryBasisSchema = z.enum(['MONTHLY', 'DAILY'])
-export const roleSchema = z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE'])
+export const roleSchema = z.enum(['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR', 'EMPLOYEE'])
 /** The supply type is a managed row now, so the form sends its id. */
 export const employeeTypeIdSchema = z.string().uuid()
 export const plantSchema = z.enum(['ULTRATECH', 'ICL'])
@@ -61,8 +61,11 @@ export const createEmployeeSchema = z
     designationId: z.string().uuid().nullish(),
     locationId: z.string().uuid().nullish(),
     supervisorId: z.string().uuid().nullish(),
+    /** For a supervisor: the manager who oversees them and their team. */
+    managerId: z.string().uuid().nullish(),
 
     isSupervisor: z.boolean().default(false),
+    isManager: z.boolean().default(false),
     employmentType: employmentTypeSchema.default('FULL_TIME'),
     employmentStatus: employmentStatusSchema.default('ACTIVE'),
     salaryBasis: salaryBasisSchema.default('MONTHLY'),
@@ -126,7 +129,9 @@ export const updateEmployeeSchema = z.object({
   designationId: z.string().uuid().nullish(),
   locationId: z.string().uuid().nullish(),
   supervisorId: z.string().uuid().nullish(),
+  managerId: z.string().uuid().nullish(),
   isSupervisor: z.boolean().optional(),
+  isManager: z.boolean().optional(),
   employmentType: employmentTypeSchema.optional(),
   employmentStatus: employmentStatusSchema.optional(),
   salaryBasis: salaryBasisSchema.optional(),
@@ -172,6 +177,11 @@ export const employeeListQuerySchema = paginationSchema.extend({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .transform((value) => (typeof value === 'boolean' ? value : value === 'true'))
     .optional(),
+  managerId: z.string().uuid().optional(),
+  isManager: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((value) => (typeof value === 'boolean' ? value : value === 'true'))
+    .optional(),
   joinedFrom: isoDateSchema.optional(),
   joinedTo: isoDateSchema.optional(),
 })
@@ -204,9 +214,17 @@ export const jobHistorySchema = z.object({
   notes: z.string().trim().max(500).nullish(),
 })
 
+/** The full set of supervisors a manager oversees; anyone left out is unassigned. */
+export const managedSupervisorsSchema = z.object({
+  supervisorIds: z.array(z.string().uuid()).max(500),
+})
+
 export const employeeIdParam = z.object({
   id: z.union([z.literal('me'), z.string().uuid('A valid employee id is required')]),
 })
+
+/** An employee id that must name a real record - `me` is not accepted. */
+export const uuidIdParam = z.object({ id: z.string().uuid('A valid employee id is required') })
 
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>
 export type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>
@@ -215,3 +233,4 @@ export type EmployeeListQuery = z.infer<typeof employeeListQuerySchema>
 export type AddressInput = z.infer<typeof addressUpsertSchema>
 export type EmergencyContactInput = z.infer<typeof emergencyContactUpsertSchema>
 export type JobHistoryInput = z.infer<typeof jobHistorySchema>
+export type ManagedSupervisorsInput = z.infer<typeof managedSupervisorsSchema>

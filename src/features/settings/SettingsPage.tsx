@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { get, put } from '../../lib/api'
+import { AppLockCard } from './AppLockCard'
 import { formatDateTime } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
@@ -24,6 +25,9 @@ interface Setting {
  * record its own operational rules without a schema change. Statutory rates and
  * payroll policy live in their own screens rather than here, because payroll
  * reads them directly.
+ *
+ * Supervisors and managers reach this page too, but only for their own app
+ * lock PIN; the organization settings need `settings.view`.
  */
 export default function SettingsPage() {
   const toast = useToast()
@@ -32,9 +36,11 @@ export default function SettingsPage() {
 
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
+  const canViewSettings = can('settings.view')
   const { data, isLoading } = useQuery({
     queryKey: ['settings'],
     queryFn: () => get<Setting[]>('/organization/settings'),
+    enabled: canViewSettings,
   })
 
   const mutation = useMutation({
@@ -60,7 +66,7 @@ export default function SettingsPage() {
     onError: (error: Error) => toast.error('Could not save settings', error.message),
   })
 
-  if (isLoading) return <Spinner label="Loading settings" />
+  if (canViewSettings && isLoading) return <Spinner label="Loading settings" />
 
   const settings = data ?? []
   const categories = new Map<string, Setting[]>()
@@ -80,7 +86,7 @@ export default function SettingsPage() {
     <div className="page">
       <PageHeader
         title="Settings"
-        description="Operational settings for this organization."
+        description={canViewSettings ? 'Operational settings for this organization.' : 'Security for your own sign-in.'}
         actions={
           can('settings.manage') && Object.keys(drafts).length > 0 ? (
             <Button icon={<Save size={15} />} loading={mutation.isPending} onClick={() => mutation.mutate()}>
@@ -90,7 +96,9 @@ export default function SettingsPage() {
         }
       />
 
-      {categories.size === 0 ? (
+      <AppLockCard />
+
+      {!canViewSettings ? null : categories.size === 0 ? (
         <Card title="No settings yet">
           <p className="muted">
             Nothing has been configured. Payroll policies and statutory rates are managed under Salary, and calendar rules

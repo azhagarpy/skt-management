@@ -3,6 +3,7 @@ import { logger } from '../../utils/logger.js'
 import { ApiError } from '../../utils/api-error.js'
 import { buildPaginated, offsetOf, type Paginated } from '../../utils/pagination.js'
 import { dispatchScenario } from '../messaging/messaging.service.js'
+import type { RoleKey } from '../auth/permissions.js'
 
 export type NotificationType =
   | 'LEAVE_REQUEST_SUBMITTED'
@@ -115,7 +116,7 @@ export async function notifyUserForEmployee(
 /** Sends to every user holding one of the given roles in an organization. */
 export async function notifyRole(
   organizationId: string,
-  roles: ('SUPER_ADMIN' | 'SUPERVISOR' | 'EMPLOYEE')[],
+  roles: RoleKey[],
   input: NotificationInput,
   db: Queryable = pool,
 ): Promise<void> {

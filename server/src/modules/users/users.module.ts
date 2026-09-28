@@ -26,7 +26,7 @@ const createUserSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
   fullName: z.string().trim().min(2).max(160),
   phone: z.string().trim().max(20).nullish(),
-  role: z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE']),
+  role: z.enum(['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR', 'EMPLOYEE']),
   password: passwordSchema,
   employeeId: z.string().uuid().nullish(),
   mustChangePassword: z.boolean().default(true),
@@ -35,7 +35,7 @@ const createUserSchema = z.object({
 const updateUserSchema = z.object({
   fullName: z.string().trim().min(2).max(160).optional(),
   phone: z.string().trim().max(20).nullish(),
-  role: z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE']).optional(),
+  role: z.enum(['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR', 'EMPLOYEE']).optional(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'LOCKED']).optional(),
   employeeId: z.string().uuid().nullish(),
 })
@@ -58,7 +58,7 @@ const permissionOverrideSchema = z.object({
 
 const listQuerySchema = z.object({
   search: z.string().trim().max(120).optional(),
-  role: z.enum(['SUPER_ADMIN', 'SUPERVISOR', 'EMPLOYEE']).optional(),
+  role: z.enum(['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR', 'EMPLOYEE']).optional(),
   status: z.enum(['ACTIVE', 'INACTIVE', 'LOCKED']).optional(),
 })
 

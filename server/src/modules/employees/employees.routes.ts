@@ -14,7 +14,9 @@ import {
   employeeIdParam,
   employeeListQuerySchema,
   jobHistorySchema,
+  managedSupervisorsSchema,
   updateEmployeeSchema,
+  uuidIdParam,
   updateOwnProfileSchema,
 } from './employees.validation.js'
 
@@ -55,6 +57,7 @@ employeeRouter.post(
   controller.commitEmployeeImport,
 )
 employeeRouter.get('/supervisors', canViewEmployees, controller.listSupervisors)
+employeeRouter.get('/managers', requirePermissions(PERMISSIONS.EMPLOYEE_VIEW_ALL), controller.listManagers)
 
 employeeRouter.post(
   '/',
@@ -97,6 +100,12 @@ employeeRouter.patch(
   requirePermissions(PERMISSIONS.EMPLOYEE_UPDATE),
   validate({ params: employeeIdParam, body: updateEmployeeSchema }),
   controller.updateEmployee,
+)
+employeeRouter.put(
+  '/:id/managed-supervisors',
+  requirePermissions(PERMISSIONS.SUPERVISOR_MANAGE),
+  validate({ params: uuidIdParam, body: managedSupervisorsSchema }),
+  controller.setManagedSupervisors,
 )
 employeeRouter.delete(
   '/:id',

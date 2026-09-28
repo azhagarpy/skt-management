@@ -17,7 +17,7 @@ type FormValues = z.infer<typeof schema>
 
 /** Sign-in accepts either an email address or an employee ID (plan section 37). */
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, signOutNotice } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [formError, setFormError] = useState<string | null>(null)
@@ -59,6 +59,10 @@ export default function LoginPage() {
           {formError ? (
             <div className="alert alert-error" role="alert">
               {formError}
+            </div>
+          ) : signOutNotice ? (
+            <div className="alert alert-error" role="alert">
+              {signOutNotice}
             </div>
           ) : null}
 

@@ -14,6 +14,7 @@ import type {
   EmergencyContactInput,
   EmployeeListQuery,
   JobHistoryInput,
+  ManagedSupervisorsInput,
   UpdateEmployeeInput,
   UpdateOwnProfileInput,
 } from './employees.validation.js'
@@ -39,6 +40,18 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
 export const listSupervisors = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   return sendSuccess(res, await service.listSupervisors(auth))
+})
+
+export const listManagers = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  return sendSuccess(res, await service.listManagers(auth))
+})
+
+export const setManagedSupervisors = asyncHandler(async (req: Request, res: Response) => {
+  const auth = requireAuth(req)
+  const input = req.body as ManagedSupervisorsInput
+  const rows = await service.setManagedSupervisors(auth, req.params.id as string, input.supervisorIds, auditContextFrom(req))
+  return sendSuccess(res, rows, 'Supervisors assigned successfully')
 })
 
 export const getEmployee = asyncHandler(async (req: Request, res: Response) => {

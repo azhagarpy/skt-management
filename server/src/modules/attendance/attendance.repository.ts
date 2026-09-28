@@ -130,6 +130,80 @@ export async function dailySheet(
   )
 }
 
+export interface CalendarEmployeeRow {
+  employee_id: string
+  employee_code: string
+  first_name: string
+  middle_name: string | null
+  last_name: string | null
+  department_id: string | null
+  department_name: string | null
+  designation_name: string | null
+  location_id: string | null
+  supervisor_name: string | null
+  joining_date: IsoDate
+  exit_date: IsoDate | null
+}
+
+/**
+ * Everyone in scope who was employed on at least one day of the window, for
+ * the attendance calendar. The same filters as the daily sheet apply.
+ */
+export async function calendarEmployees(
+  scope: ScopeClause,
+  from: IsoDate,
+  to: IsoDate,
+  filters: { departmentId?: string; supervisorId?: string; employeeId?: string; search?: string },
+  db: Queryable = pool,
+): Promise<CalendarEmployeeRow[]> {
+  const params: unknown[] = [...scope.params]
+  const push = (value: unknown): number => {
+    params.push(value)
+    return params.length
+  }
+
+  const conditions = [
+    `(${scope.sql})`,
+    `e.joining_date <= $${push(to)}`,
+    `(e.exit_date IS NULL OR e.exit_date >= $${push(from)})`,
+    `e.employment_status <> 'INACTIVE'`,
+  ]
+  if (filters.departmentId) conditions.push(`e.department_id = $${push(filters.departmentId)}`)
+  if (filters.supervisorId) conditions.push(`e.supervisor_id = $${push(filters.supervisorId)}`)
+  if (filters.employeeId) conditions.push(`e.id = $${push(filters.employeeId)}`)
+  if (filters.search) {
+    const index = push(`%${filters.search}%`)
+    conditions.push(
+      `(e.employee_code ILIKE $${index} OR e.first_name ILIKE $${index} OR e.last_name ILIKE $${index}
+        OR (e.first_name || ' ' || coalesce(e.last_name, '')) ILIKE $${index})`,
+    )
+  }
+
+  return queryRows<CalendarEmployeeRow>(
+    db,
+    `SELECT e.id AS employee_id,
+            e.employee_code,
+            e.first_name,
+            e.middle_name,
+            e.last_name,
+            e.department_id,
+            d.name AS department_name,
+            g.name AS designation_name,
+            e.location_id,
+            CASE WHEN s.id IS NULL THEN NULL
+                 ELSE trim(s.first_name || ' ' || coalesce(s.last_name, '')) END AS supervisor_name,
+            e.joining_date,
+            e.exit_date
+       FROM employees e
+       LEFT JOIN departments  d ON d.id = e.department_id
+       LEFT JOIN designations g ON g.id = e.designation_id
+       LEFT JOIN employees    s ON s.id = e.supervisor_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY e.employee_code ASC`,
+    params,
+  )
+}
+
 export async function listAttendance(
   scope: ScopeClause,
   filters: { from: IsoDate; to: IsoDate; employeeId?: string; departmentId?: string; supervisorId?: string; status?: string },
@@ -367,6 +441,9 @@ export interface ImportEmployeeRow {
   first_name: string
   last_name: string | null
   supervisor_id: string | null
+  manager_id: string | null
+  /** The manager of this employee's supervisor, which puts them in that manager's team. */
+  supervisor_manager_id: string | null
   department_id: string | null
   location_id: string | null
   joining_date: IsoDate
@@ -382,10 +459,12 @@ export async function findEmployeesByCodes(
   if (codes.length === 0) return []
   return queryRows<ImportEmployeeRow>(
     db,
-    `SELECT id, employee_code, first_name, last_name, supervisor_id, department_id, location_id,
-            joining_date, exit_date
-       FROM employees
-      WHERE organization_id = $1 AND upper(trim(employee_code)) = ANY($2::text[])`,
+    `SELECT e.id, e.employee_code, e.first_name, e.last_name, e.supervisor_id, e.manager_id,
+            s.manager_id AS supervisor_manager_id, e.department_id, e.location_id,
+            e.joining_date, e.exit_date
+       FROM employees e
+       LEFT JOIN employees s ON s.id = e.supervisor_id
+      WHERE e.organization_id = $1 AND upper(trim(e.employee_code)) = ANY($2::text[])`,
     [organizationId, codes],
   )
 }

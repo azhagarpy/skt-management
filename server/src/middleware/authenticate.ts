@@ -51,8 +51,20 @@ function extractToken(req: Request): string | null {
  * Verifies the access token, then re-reads the user and their permission
  * overrides from the database on every request so a deactivated account or a
  * revoked permission takes effect immediately rather than at token expiry.
+ *
+ * A token still waiting for the app lock PIN is refused with 423 everywhere
+ * except the unlock endpoint, which uses `authenticateLocked`.
  */
-export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
+export function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
+  return resolvePrincipal(req, res, next, false)
+}
+
+/** As `authenticate`, but also admits a session still waiting for its PIN. */
+export function authenticateLocked(req: Request, res: Response, next: NextFunction): Promise<void> {
+  return resolvePrincipal(req, res, next, true)
+}
+
+async function resolvePrincipal(req: Request, _res: Response, next: NextFunction, allowLocked: boolean): Promise<void> {
   try {
     // Nested routers apply this middleware too; resolving the principal once per
     // request keeps that from costing an extra database round trip.
@@ -65,6 +77,7 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     if (!token) throw ApiError.unauthenticated()
 
     const payload = verifyAccessToken(token)
+    if (payload.pinLocked && !allowLocked) throw ApiError.appLocked()
 
     const { rows } = await query<UserRow>(
       `SELECT u.id,

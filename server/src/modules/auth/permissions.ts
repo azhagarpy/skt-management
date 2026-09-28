@@ -29,6 +29,8 @@ export const PERMISSIONS = {
   USER_VIEW: 'user.view',
   USER_MANAGE: 'user.manage',
   PERMISSION_MANAGE: 'permission.manage',
+  /** Turn on a PIN that must be entered each time the site is opened. */
+  APP_LOCK_MANAGE: 'applock.manage',
 
   // Employees
   EMPLOYEE_VIEW_ALL: 'employee.view.all',
@@ -39,6 +41,7 @@ export const PERMISSIONS = {
   EMPLOYEE_UPDATE_SELF: 'employee.update.self',
   EMPLOYEE_DELETE: 'employee.delete',
   SUPERVISOR_MANAGE: 'supervisor.manage',
+  SUPERVISOR_VIEW_TEAM: 'supervisor.view.team',
 
   // Documents and sensitive identity data
   DOCUMENT_VIEW_ALL: 'document.view.all',
@@ -167,6 +170,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.USER_VIEW, 'users', 'View user accounts'),
   define(PERMISSIONS.USER_MANAGE, 'users', 'Create, update and deactivate user accounts'),
   define(PERMISSIONS.PERMISSION_MANAGE, 'users', 'Grant and revoke individual permissions'),
+  define(PERMISSIONS.APP_LOCK_MANAGE, 'users', 'Turn on an app lock PIN for their own sign-in'),
 
   define(PERMISSIONS.EMPLOYEE_VIEW_ALL, 'employees', 'View every employee in the organization'),
   define(PERMISSIONS.EMPLOYEE_VIEW_TEAM, 'employees', 'View assigned employees only'),
@@ -175,7 +179,8 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.EMPLOYEE_UPDATE, 'employees', 'Update any employee'),
   define(PERMISSIONS.EMPLOYEE_UPDATE_SELF, 'employees', 'Update own allowed personal information'),
   define(PERMISSIONS.EMPLOYEE_DELETE, 'employees', 'Delete employees'),
-  define(PERMISSIONS.SUPERVISOR_MANAGE, 'employees', 'Manage supervisors and their assignments'),
+  define(PERMISSIONS.SUPERVISOR_MANAGE, 'employees', 'Manage supervisors, managers and their assignments'),
+  define(PERMISSIONS.SUPERVISOR_VIEW_TEAM, 'employees', 'View the supervisors assigned to them (managers)'),
 
   define(PERMISSIONS.DOCUMENT_VIEW_ALL, 'documents', 'View any employee document'),
   define(PERMISSIONS.DOCUMENT_VIEW_TEAM, 'documents', 'View documents of assigned employees'),
@@ -259,7 +264,7 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.AUDIT_VIEW, 'audit', 'View audit logs'),
 ]
 
-export type RoleKey = 'SUPER_ADMIN' | 'SUPERVISOR' | 'EMPLOYEE'
+export type RoleKey = 'SUPER_ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'EMPLOYEE'
 
 /** Super Admin holds every permission in the catalogue (plan section 3). */
 const SUPER_ADMIN_PERMISSIONS: PermissionCode[] = PERMISSION_DEFINITIONS.map((definition) => definition.code)
@@ -307,7 +312,16 @@ const SUPERVISOR_PERMISSIONS: PermissionCode[] = [
   PERMISSIONS.PAYSLIP_VIEW_SELF,
 
   PERMISSIONS.REPORT_VIEW_TEAM,
+
+  PERMISSIONS.APP_LOCK_MANAGE,
 ]
+
+/**
+ * Managers oversee a set of supervisors and everyone under them. They hold the
+ * same team permissions as a supervisor - the team scope itself is what reaches
+ * two levels down (employee-access.ts) - plus a view of their supervisors.
+ */
+const MANAGER_PERMISSIONS: PermissionCode[] = [...SUPERVISOR_PERMISSIONS, PERMISSIONS.SUPERVISOR_VIEW_TEAM]
 
 /** Employees only ever reach their own records (plan section 3). */
 const EMPLOYEE_PERMISSIONS: PermissionCode[] = [
@@ -340,12 +354,14 @@ const EMPLOYEE_PERMISSIONS: PermissionCode[] = [
 
 export const ROLE_PERMISSIONS: Record<RoleKey, PermissionCode[]> = {
   SUPER_ADMIN: SUPER_ADMIN_PERMISSIONS,
+  MANAGER: MANAGER_PERMISSIONS,
   SUPERVISOR: SUPERVISOR_PERMISSIONS,
   EMPLOYEE: EMPLOYEE_PERMISSIONS,
 }
 
 export const ROLE_LABELS: Record<RoleKey, string> = {
   SUPER_ADMIN: 'Super Admin',
+  MANAGER: 'Manager',
   SUPERVISOR: 'Supervisor',
   EMPLOYEE: 'Employee',
 }

@@ -29,6 +29,12 @@ const WELCOME: Record<RoleKey, TourStep> = {
     body:
       'You can see and change everything here. This short tour walks the sidebar top to bottom so you know what each module is for. It takes about a minute.',
   },
+  MANAGER: {
+    id: 'welcome',
+    title: 'Welcome — here are your teams',
+    body:
+      'You oversee the supervisors assigned to you and everyone in their teams: attendance, leave and documents. This short tour shows you where each of those lives.',
+  },
   SUPERVISOR: {
     id: 'welcome',
     title: 'Welcome — here is your team',
@@ -50,6 +56,12 @@ const FINISH: Record<RoleKey, TourStep> = {
     title: 'Where to start',
     body:
       'Set up in this order: Organization (departments, sections, locations) → Salary (components, then structures) → Calendar (holidays and weekly offs) → Employees → assign each a salary. Payroll needs all of it before it can calculate a month.',
+  },
+  MANAGER: {
+    id: 'finish',
+    title: 'Where to start',
+    body:
+      'Open Supervisors to see who reports to you, then Attendance and Leave for their teams. Everything is scoped to your supervisors and the people under them.',
   },
   SUPERVISOR: {
     id: 'finish',
@@ -90,7 +102,15 @@ const MODULE_STEPS: TourStep[] = [
     title: 'Employees',
     body:
       'Everyone in the organization. Here you can create employees — name, department, section, joining date, supervisor — and open any record to manage their identity, documents and salary.',
-    roles: ['SUPER_ADMIN', 'SUPERVISOR'],
+    roles: ['SUPER_ADMIN', 'MANAGER', 'SUPERVISOR'],
+  },
+  {
+    id: 'managers',
+    target: navTarget('/managers'),
+    title: 'Managers',
+    body:
+      'The level above supervisors. Assign supervisors to a manager here — the manager then sees those supervisors and everyone on their teams.',
+    roles: ['SUPER_ADMIN'],
   },
   {
     id: 'supervisors',
@@ -134,7 +154,7 @@ const MODULE_STEPS: TourStep[] = [
     title: 'Calendar',
     body:
       'The company holiday list and the weekly off pattern. Worth checking before you apply for leave — holidays and weekly offs inside your dates usually do not use up your balance.',
-    roles: ['SUPERVISOR', 'EMPLOYEE'],
+    roles: ['MANAGER', 'SUPERVISOR', 'EMPLOYEE'],
   },
   {
     id: 'salary',
@@ -252,7 +272,7 @@ const MODULE_STEPS: TourStep[] = [
     title: 'Organization',
     body:
       'Company details, and the departments, sections and locations people are assigned to. You can look, but changing any of it is an administrator’s job.',
-    roles: ['SUPERVISOR', 'EMPLOYEE'],
+    roles: ['MANAGER', 'SUPERVISOR', 'EMPLOYEE'],
   },
   {
     id: 'users',
@@ -271,7 +291,7 @@ const MODULE_STEPS: TourStep[] = [
     id: 'settings',
     target: navTarget('/settings'),
     title: 'Settings',
-    body: 'System-wide settings for the workspace.',
+    body: 'Workspace settings, and your app lock PIN: turn it on and the site asks for the PIN every time it is opened while you are signed in.',
   },
   {
     id: 'notifications',

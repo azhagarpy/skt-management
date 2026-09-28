@@ -198,6 +198,7 @@ export default function EmployeeDetailPage() {
               <Badge tone="info">{humanise(data.salaryBasis)} paid</Badge>
               {data.employeeTypeName ? <Badge tone="neutral">{data.employeeTypeName}</Badge> : null}
               {data.plant ? <Badge tone="neutral">{humanise(data.plant)}</Badge> : null}
+              {data.isManager ? <Badge tone="accent">Manager</Badge> : null}
               {data.isSupervisor ? <Badge tone="accent">Supervisor</Badge> : null}
             </div>
             <p className="subtle" style={{ marginTop: '0.4rem' }}>
@@ -281,6 +282,7 @@ export default function EmployeeDetailPage() {
             <DetailRow label="Section" value={data.designationName ?? '—'} />
             <DetailRow label="Location" value={data.locationName ?? '—'} />
             <DetailRow label="Supervisor" value={data.supervisorName ?? '—'} />
+            {data.isSupervisor ? <DetailRow label="Manager" value={data.managerName ?? '—'} /> : null}
             <DetailRow label="Employment type" value={humanise(data.employmentType)} />
             <DetailRow label="Employment status" value={humanise(data.employmentStatus)} />
             <DetailRow label="Salary basis" value={humanise(data.salaryBasis)} />

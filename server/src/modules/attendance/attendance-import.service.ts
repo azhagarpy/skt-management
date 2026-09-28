@@ -5,7 +5,7 @@ import type { IsoDate } from '../../utils/dates.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { buildCalendarContext } from '../calendar/calendar.service.js'
-import { resolveScope, type EmployeeScope } from '../employees/employee-access.js'
+import { isTeamMember, resolveScope, type EmployeeScope } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './attendance.repository.js'
 import { parseAttendanceSheet, type ImportStatus, type ParsedSheet } from './attendance-import.parser.js'
@@ -105,7 +105,7 @@ export async function buildPlan(
   const supervisorId = auth.employeeId
   const canTouch = (employee: repository.ImportEmployeeRow): boolean =>
     scope === 'ALL' ||
-    (supervisorId !== null && employee.supervisor_id === supervisorId && employee.id !== supervisorId)
+    (supervisorId !== null && employee.id !== supervisorId && isTeamMember(employee, supervisorId))
 
   const inScopeIds = employees.filter(canTouch).map((employee) => employee.id)
   // Sequential: `db` may be a single transaction connection, which cannot run queries concurrently.

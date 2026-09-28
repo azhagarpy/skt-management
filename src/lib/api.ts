@@ -58,6 +58,7 @@ export interface ApiResponse<T> {
 let accessToken: string | null = null
 let refreshPromise: Promise<boolean> | null = null
 let onUnauthenticated: (() => void) | null = null
+let onLocked: (() => void) | null = null
 
 export function setAccessToken(token: string | null): void {
   accessToken = token
@@ -70,6 +71,11 @@ export function getAccessToken(): string | null {
 /** Registered by the auth provider so a failed refresh can clear the session. */
 export function setUnauthenticatedHandler(handler: (() => void) | null): void {
   onUnauthenticated = handler
+}
+
+/** Registered by the auth provider so a request refused for want of the app lock PIN shows the lock screen. */
+export function setLockedHandler(handler: (() => void) | null): void {
+  onLocked = handler
 }
 
 interface RequestOptions {
@@ -114,24 +120,33 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, message, details)
 }
 
-/** Refreshes the access token, coalescing concurrent callers onto one request. */
+/**
+ * Refreshes the access token, coalescing concurrent callers onto one request.
+ *
+ * The current (possibly expired) token goes along with it: that is how the
+ * server knows this page already entered its app lock PIN, so a routine
+ * refresh does not lock an open page again.
+ */
 async function refreshSession(): Promise<boolean> {
   if (refreshPromise) return refreshPromise
 
   refreshPromise = (async () => {
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (accessToken) headers.Authorization = `Bearer ${accessToken}`
       const response = await fetch(buildUrl('/auth/refresh'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         credentials: 'include',
         body: JSON.stringify({}),
       })
       if (!response.ok) return false
 
-      const body = (await response.json()) as { data?: { accessToken?: string } }
+      const body = (await response.json()) as { data?: { accessToken?: string; appLocked?: boolean } }
       if (!body.data?.accessToken) return false
 
       accessToken = body.data.accessToken
+      if (body.data.appLocked) onLocked?.()
       return true
     } catch {
       return false
@@ -172,6 +187,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       onUnauthenticated?.()
     }
   }
+
+  // Signed in, but this page has not been unlocked with the PIN.
+  if (response.status === 423) onLocked?.()
 
   if (!response.ok) throw await parseError(response)
 

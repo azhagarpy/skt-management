@@ -15,6 +15,9 @@ export interface UserRecord {
   locked_until: Date | null
   last_login_at: Date | null
   password_changed_at: Date
+  /** bcrypt hash of the app lock PIN; null when the lock is off. */
+  app_pin_hash: string | null
+  app_pin_failed_attempts: number
 }
 
 export interface UserWithEmployee extends UserRecord {
@@ -36,6 +39,8 @@ const USER_SELECT = `
          u.locked_until,
          u.last_login_at,
          u.password_changed_at,
+         u.app_pin_hash,
+         u.app_pin_failed_attempts,
          e.id   AS employee_id,
          e.employee_code
     FROM users u
@@ -61,7 +66,9 @@ export async function findUserByEmail(email: string, db: Queryable = pool): Prom
 
 export async function recordSuccessfulLogin(userId: string, db: Queryable = pool): Promise<void> {
   await db.query(
-    'UPDATE users SET last_login_at = now(), failed_login_attempts = 0, locked_until = NULL WHERE id = $1',
+    `UPDATE users
+        SET last_login_at = now(), failed_login_attempts = 0, locked_until = NULL, app_pin_failed_attempts = 0
+      WHERE id = $1`,
     [userId],
   )
 }
@@ -99,6 +106,35 @@ export async function updatePassword(userId: string, passwordHash: string, db: Q
       WHERE id = $1`,
     [userId, passwordHash],
   )
+}
+
+// ---------------------------------------------------------------------------
+// App lock PIN
+// ---------------------------------------------------------------------------
+
+/** Sets the PIN hash, or clears it (turning the lock off) when null. */
+export async function updateAppPin(userId: string, pinHash: string | null, db: Queryable = pool): Promise<void> {
+  await db.query(
+    `UPDATE users
+        SET app_pin_hash = $2, app_pin_updated_at = now(), app_pin_failed_attempts = 0
+      WHERE id = $1`,
+    [userId, pinHash],
+  )
+}
+
+/** Counts a wrong PIN and returns the running total. */
+export async function recordFailedPin(userId: string, db: Queryable = pool): Promise<number> {
+  const row = await queryOne<{ attempts: number }>(
+    db,
+    `UPDATE users SET app_pin_failed_attempts = app_pin_failed_attempts + 1
+      WHERE id = $1 RETURNING app_pin_failed_attempts AS attempts`,
+    [userId],
+  )
+  return row?.attempts ?? 0
+}
+
+export async function resetFailedPins(userId: string, db: Queryable = pool): Promise<void> {
+  await db.query('UPDATE users SET app_pin_failed_attempts = 0 WHERE id = $1', [userId])
 }
 
 // ---------------------------------------------------------------------------
