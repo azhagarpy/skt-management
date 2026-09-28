@@ -67,6 +67,16 @@ describe('toPfEcr', () => {
     expect(fields[1]).toBe('RAVI KUMAR S')
   })
 
+  it('gives a member outside the Pension Scheme EPS wages and EPS of 0, with the whole employer share as EPF', () => {
+    const { buffer } = toPfEcr([
+      { ...member, pension_applicable: 0, employer_eps: '0', employer_epf: '1800.00' },
+      { ...member, ecr_member_number: '101586721662', pension_applicable: 1 },
+    ])
+    const [noPension, withPension] = buffer.toString('utf8').trim().split('\r\n').map((line) => line.split('#~#'))
+    expect(noPension?.slice(3, 9)).toEqual(['15000', '0', '15000', '1800', '0', '1800'])
+    expect(withPension?.slice(3, 9)).toEqual(['15000', '15000', '15000', '1800', '1250', '550'])
+  })
+
   it('produces an empty file when nobody qualifies', () => {
     const { buffer, included } = toPfEcr([])
     expect(buffer.length).toBe(0)

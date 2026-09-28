@@ -139,6 +139,12 @@ once the run reaches `APPROVED`.
 every day of the month resolved against the calendar, whether each leave day was
 paid, approved bonuses for that month, the tax set to be deducted, and the PF and ESI rules on the salary structure.
 
+**EPS and EPF** — the employer's PF share is split into the Pension Scheme (EPS, the
+structure's EPS rate, usually 8.33%) and EPF (the rest). For an employee whose PF
+details say **Pension applicable: No**, there is no EPS: the whole employer share
+goes to EPF (for example 1,800 on a 15,000 PF wage), and the ECR file shows EPS
+wages of 0 for them.
+
 **Documents** (Payslips & letters) — payslips for any approved month, a No Objection
 Certificate, and the statutory **Letter of Appointment** under the Code on Social
 Security, 2020. The letter's sixteen particulars are filled from the employee record,

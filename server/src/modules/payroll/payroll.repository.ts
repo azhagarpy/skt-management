@@ -677,6 +677,8 @@ export interface PayrollEmployeeRow {
   exit_date: IsoDate | null
   employment_status: string
   pf_applicable: boolean | null
+  /** False for a member outside the Pension Scheme: no EPS, the whole employer share goes to EPF. */
+  pension_applicable: boolean | null
   esi_applicable: boolean | null
   overtime_handling: string
   overtime_rate_override_minor: number | null
@@ -714,6 +716,7 @@ export async function listEmployeesForPeriod(
             t.overtime_handling::text AS overtime_handling,
             e.overtime_rate_override_minor,
             pf.pf_applicable,
+            pf.pension_applicable,
             esi.esi_applicable
        FROM employees e
        JOIN employee_types t ON t.id = e.employee_type_id

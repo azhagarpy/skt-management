@@ -461,6 +461,24 @@ describe('calculatePayrollItem - PF and ESI', () => {
     expect(toMajor(result.components.find((entry) => entry.code === 'PF_EMPLOYER_EPF')?.amountMinor ?? 0)).toBe(550)
   })
 
+  it('puts the whole employer share into EPF for a member outside the Pension Scheme (EPS rate 0)', () => {
+    // payroll.service passes an EPS rate of 0 when the employee's "Pension applicable" is No.
+    const components = [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(26_400) })]
+    const result = calculatePayrollItem(
+      baseInput({
+        components,
+        pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 0 },
+      }),
+    )
+
+    expect(toMajor(result.components.find((entry) => entry.code === 'PF_EMPLOYEE')?.amountMinor ?? 0)).toBe(1_800)
+    expect(result.components.find((entry) => entry.code === 'PF_EMPLOYER_EPS')).toBeUndefined()
+    const epf = result.components.find((entry) => entry.code === 'PF_EMPLOYER_EPF')
+    expect(toMajor(epf?.amountMinor ?? 0)).toBe(1_800)
+    expect(epf?.percentage).toBe(12)
+    expect(toMajor(result.employerContributionsMinor)).toBe(1_800)
+  })
+
   it('rounds every PF contribution to the nearest whole rupee, never paise', () => {
     const components = [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(10_000) })]
 

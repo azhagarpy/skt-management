@@ -125,7 +125,10 @@ export function IdentitySection({ employeeId, editable }: { employeeId: string; 
             { label: 'UAN', value: data.pf.uanNumber ?? '—' },
             { label: 'Member ID', value: data.pf.pfMemberId ?? '—' },
             { label: 'Name (as per PF)', value: data.pf.pfName ?? '—' },
-            { label: 'Pension applicable', value: data.pf.pensionApplicable ? 'Yes' : 'No' },
+            {
+              label: 'Pension applicable',
+              value: data.pf.pensionApplicable ? 'Yes' : 'No: whole employer share goes to EPF',
+            },
           ]
         : null,
     },
@@ -512,7 +515,11 @@ function IdentityEditModal({
                 onChange={(event) => set('pfName', event.target.value)}
               />
             </Field>
-            <Field label="Pension applicable" htmlFor="pensionApplicable" hint="Whether the employee is enrolled in the Pension Scheme (EPS)">
+            <Field
+              label="Pension applicable"
+              htmlFor="pensionApplicable"
+              hint="Whether the employee is in the Pension Scheme (EPS). No: payroll puts the whole employer share into EPF, with no EPS."
+            >
               <Select
                 id="pensionApplicable"
                 defaultValue={profile.pf?.pensionApplicable === false ? 'false' : 'true'}

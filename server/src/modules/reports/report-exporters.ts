@@ -348,9 +348,11 @@ function ecrAmount(value: unknown): string {
  *       # EPF contribution (employee) # EPS contribution # EPF-EPS difference (employer)
  *       # days not worked # refund of advances
  *
- * The three wage columns all carry the PF-covered wage. Anyone without a UAN or
- * member number, or not marked PF-applicable, is left out because the portal
- * would reject the row; `skipped` reports how many so the caller can say so.
+ * The three wage columns carry the PF-covered wage, except that a member outside
+ * the Pension Scheme (`pension_applicable` 0) has EPS wages of 0 - their whole
+ * employer share is in the EPF column. Anyone without a UAN or member number, or
+ * not marked PF-applicable, is left out because the portal would reject the
+ * row; `skipped` reports how many so the caller can say so.
  */
 export function toPfEcr(rows: Record<string, unknown>[]): { buffer: Buffer; included: number; skipped: number } {
   const lines: string[] = []
@@ -369,6 +371,7 @@ export function toPfEcr(rows: Record<string, unknown>[]): { buffer: Buffer; incl
       .replace(/[\r\n]+/g, ' ')
       .trim()
     const pfWage = ecrAmount(row.pf_covered_amount)
+    const pensionMember = row.pension_applicable === undefined || Number(row.pension_applicable) !== 0
 
     lines.push(
       [
@@ -376,7 +379,7 @@ export function toPfEcr(rows: Record<string, unknown>[]): { buffer: Buffer; incl
         name,
         ecrAmount(row.total_wages),
         pfWage,
-        pfWage,
+        pensionMember ? pfWage : '0',
         pfWage,
         ecrAmount(row.employee_contribution),
         ecrAmount(row.employer_eps),

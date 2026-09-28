@@ -590,7 +590,9 @@ export async function calculateRun(
             employeeRate: Number(structure.pf_employee_rate),
             employerRate: Number(structure.pf_employer_rate),
             wageLimitMinor: toMinor(structure.pf_wage_ceiling),
-            epsRate: Number(structure.pf_eps_rate),
+            // A member outside the Pension Scheme ("Pension applicable: No" on
+            // their PF details) has no EPS: the whole employer share goes to EPF.
+            epsRate: employee.pension_applicable === false ? 0 : Number(structure.pf_eps_rate),
           },
           esi: {
             applicable: employee.esi_applicable ?? false,
