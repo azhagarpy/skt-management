@@ -17,7 +17,7 @@ import {
   Spinner,
   StatusBadge,
 } from '../../components/ui'
-import { DepartmentMultiSelector, SupervisorSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, EmployeeSelector, SupervisorSelector } from '../../components/forms/selectors'
 import type { ReportColumn, ReportDescriptor } from '../../types/api'
 
 /**
@@ -42,6 +42,7 @@ export default function ReportsPage() {
     to: '',
     departmentId: '',
     supervisorId: '',
+    employeeId: '',
     employmentStatus: '',
     paymentStatus: '',
     leaveStatus: '',
@@ -60,18 +61,30 @@ export default function ReportsPage() {
     if (!selectedKey && reports[0]) setSelectedKey(reports[0].key)
   }, [reports, selectedKey])
 
+  // A report that takes both a month and a date range is run by one or the
+  // other: the period filters not chosen are neither shown nor sent.
+  const [periodMode, setPeriodMode] = useState<'month' | 'range'>('month')
+  const hasPeriodChoice = Boolean(report?.filters.includes('month') && report.filters.includes('from'))
+  const periodKeys = hasPeriodChoice ? (periodMode === 'month' ? ['year', 'month'] : ['from', 'to']) : []
+  const hiddenKeys = useMemo(
+    () => (hasPeriodChoice ? (periodMode === 'month' ? ['from', 'to'] : ['year', 'month']) : []),
+    [hasPeriodChoice, periodMode],
+  )
+  const accepts = (key: string): boolean => Boolean(report?.filters.includes(key)) && !hiddenKeys.includes(key)
+
   // Only send the filters this report actually accepts.
   const activeFilters = useMemo(() => {
     if (!report) return {}
     const result: Record<string, string | number> = {}
     for (const key of report.filters) {
+      if (hiddenKeys.includes(key)) continue
       const value = filters[key]
       if (value) result[key] = value
     }
     return result
-  }, [report, filters])
+  }, [report, filters, hiddenKeys])
 
-  const missingRequired = report?.requiredFilters.filter((key) => !filters[key]) ?? []
+  const missingRequired = [...(report?.requiredFilters ?? []), ...periodKeys].filter((key) => !filters[key])
 
   const dataQuery = useQuery({
     queryKey: ['reports', report?.key, activeFilters, page],
@@ -84,6 +97,10 @@ export default function ReportsPage() {
   const meta = dataQuery.data?.meta
   const columns = (meta?.columns as ReportColumn[] | undefined) ?? report?.columns ?? []
   const totals = (meta?.totals as Record<string, number> | undefined) ?? {}
+  const grandTotals = (meta?.grandTotals as Record<string, number> | undefined) ?? {}
+  const hasTotals = Object.keys(grandTotals).length > 0
+  // With a single page the page total is the grand total, so only one is shown.
+  const isPaged = ((meta?.totalPages as number | undefined) ?? 1) > 1
 
   const setFilter = (key: string, value: string): void => {
     setFilters((current) => ({ ...current, [key]: value }))
@@ -208,7 +225,23 @@ export default function ReportsPage() {
             </Select>
           </Field>
 
-          {report?.filters.includes('year') ? (
+          {hasPeriodChoice ? (
+            <Field label="Period" htmlFor="report-period">
+              <Select
+                id="report-period"
+                value={periodMode}
+                onChange={(event) => {
+                  setPeriodMode(event.target.value as 'month' | 'range')
+                  setPage(1)
+                }}
+              >
+                <option value="month">Month</option>
+                <option value="range">Date range</option>
+              </Select>
+            </Field>
+          ) : null}
+
+          {accepts('year') ? (
             <Field label="Year" htmlFor="report-year">
               <Select id="report-year" value={filters.year} onChange={(event) => setFilter('year', event.target.value)}>
                 {Array.from({ length: 5 }, (_, index) => now.getFullYear() - index).map((value) => (
@@ -220,7 +253,7 @@ export default function ReportsPage() {
             </Field>
           ) : null}
 
-          {report?.filters.includes('month') ? (
+          {accepts('month') ? (
             <Field label="Month" htmlFor="report-month">
               <Select id="report-month" value={filters.month} onChange={(event) => setFilter('month', event.target.value)}>
                 {MONTH_NAMES.map((name, index) => (
@@ -232,13 +265,13 @@ export default function ReportsPage() {
             </Field>
           ) : null}
 
-          {report?.filters.includes('from') ? (
+          {accepts('from') ? (
             <Field label="From" htmlFor="report-from">
               <Input id="report-from" type="date" value={filters.from} onChange={(event) => setFilter('from', event.target.value)} />
             </Field>
           ) : null}
 
-          {report?.filters.includes('to') ? (
+          {accepts('to') ? (
             <Field label="To" htmlFor="report-to">
               <Input id="report-to" type="date" value={filters.to} onChange={(event) => setFilter('to', event.target.value)} />
             </Field>
@@ -250,6 +283,17 @@ export default function ReportsPage() {
                 id="report-department"
                 value={filters.departmentId ? filters.departmentId.split(',') : []}
                 onChange={(ids) => setFilter('departmentId', ids.join(','))}
+              />
+            </Field>
+          ) : null}
+
+          {report?.filters.includes('employeeId') ? (
+            <Field label="Employee" htmlFor="report-employee">
+              <EmployeeSelector
+                id="report-employee"
+                value={filters.employeeId ?? ''}
+                onChange={(value) => setFilter('employeeId', value)}
+                includeFormer
               />
             </Field>
           ) : null}
@@ -346,11 +390,12 @@ export default function ReportsPage() {
             No rows match these filters.
           </p>
         ) : (
-          <div className="data-table-wrapper">
-            <table className="data-table">
+          <div className="data-table-wrapper report-table-wrapper">
+            <table className="data-table report-table">
               <caption className="sr-only">{report?.name}</caption>
+              {/* The header and the all-pages total stay pinned while the rows scroll. */}
               <thead>
-                <tr>
+                <tr className="report-header-row">
                   {columns.map((column) => (
                     <th
                       key={column.key}
@@ -360,6 +405,18 @@ export default function ReportsPage() {
                     </th>
                   ))}
                 </tr>
+                {hasTotals ? (
+                  <tr className="report-grand-total">
+                    {columns.map((column, index) => {
+                      const numeric = column.format === 'currency' || column.format === 'days' || column.format === 'number'
+                      return (
+                        <td key={column.key} data-label={column.label} className={numeric ? 'align-right' : ''}>
+                          {index === 0 ? 'All pages total' : column.total ? renderCell(grandTotals[column.key], column.format) : ''}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ) : null}
               </thead>
               <tbody>
                 {rows.map((row, index) => (
@@ -380,14 +437,14 @@ export default function ReportsPage() {
                   </tr>
                 ))}
               </tbody>
-              {Object.keys(totals).length > 0 ? (
+              {isPaged && Object.keys(totals).length > 0 ? (
                 <tfoot>
                   <tr>
                     {columns.map((column, index) => {
                       const numeric = column.format === 'currency' || column.format === 'days' || column.format === 'number'
                       return (
                         <td key={column.key} data-label={column.label} className={numeric ? 'align-right' : ''}>
-                          {index === 0 ? 'Total' : column.total ? renderCell(totals[column.key], column.format) : ''}
+                          {index === 0 ? 'Page total' : column.total ? renderCell(totals[column.key], column.format) : ''}
                         </td>
                       )
                     })}

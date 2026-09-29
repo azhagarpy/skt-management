@@ -13,6 +13,7 @@ export interface SalaryComponentRow {
   base_component_code: string | null
   taxable: boolean
   prorate: boolean
+  holiday_extra_pay: boolean
   display_order: number
   is_statutory: boolean
   is_active: boolean
@@ -39,7 +40,10 @@ export interface SalaryStructureRow {
   pf_wage_ceiling: string
   /** Share of pf_employer_rate that goes to the Pension Scheme (EPS). */
   pf_eps_rate: string
-  /** ESI applies, on both sides, only when the wage is at or below this limit. */
+  /**
+   * ESI applies, on both sides, only when a standard month's wage is at or below
+   * this limit, and is deducted on the wage capped at it.
+   */
   esi_wage_limit: string
 }
 
@@ -59,6 +63,7 @@ export interface StructureComponentRow {
   base_component_code: string | null
   taxable: boolean
   prorate: boolean
+  holiday_extra_pay: boolean
 }
 
 export interface SalaryStructureWithComponents extends SalaryStructureRow {
@@ -117,8 +122,8 @@ export async function insertComponent(
     db,
     `INSERT INTO salary_components
        (organization_id, name, code, component_type, calculation_type, percentage_base, base_component_code,
-        taxable, prorate, display_order, is_statutory, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        taxable, prorate, holiday_extra_pay, display_order, is_statutory, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
       values.organization_id,
@@ -130,6 +135,7 @@ export async function insertComponent(
       values.base_component_code ?? null,
       values.taxable,
       values.prorate,
+      values.holiday_extra_pay ?? true,
       values.display_order,
       values.is_statutory,
       values.is_active,
@@ -178,7 +184,7 @@ export async function deleteComponent(id: string, organizationId: string, db: Qu
 const STRUCTURE_COMPONENT_SELECT = `
   SELECT sc.*,
          c.name, c.code, c.component_type, c.percentage_base, c.base_component_code,
-         c.taxable, c.prorate
+         c.taxable, c.prorate, c.holiday_extra_pay
     FROM salary_structure_components sc
     JOIN salary_components c ON c.id = sc.salary_component_id
 `

@@ -19,6 +19,7 @@ export function presentComponent(row: repository.SalaryComponentRow) {
     name: row.name,
     code: row.code,
     isActive: row.is_active,
+    holidayExtraPay: row.holiday_extra_pay,
   }
 }
 
@@ -79,6 +80,7 @@ export function presentStructure(row: repository.SalaryStructureWithComponents) 
       baseComponentCode: component.base_component_code,
       taxable: component.taxable,
       prorate: component.prorate,
+      holidayExtraPay: component.holiday_extra_pay,
       displayOrder: component.display_order,
     })),
     summary: summariseStructure(row.components),
@@ -112,8 +114,8 @@ export async function listComponents(auth: AuthContext, activeOnly: boolean) {
 }
 
 // A salary component is always a fixed, taxable, attendance-prorated earning:
-// the only choices left to the admin are its name, code and active flag
-// (plan: simplified salary module).
+// the only choices left to the admin are its name, code, active flag and
+// whether it is part of holiday work pay (plan: simplified salary module).
 const COMPONENT_DEFAULTS = {
   component_type: 'EARNING' as const,
   calculation_type: 'FIXED' as const,
@@ -132,6 +134,7 @@ export async function createComponent(auth: AuthContext, input: SalaryComponentI
     code: input.code,
     ...COMPONENT_DEFAULTS,
     is_active: input.isActive,
+    holiday_extra_pay: input.holidayExtraPay,
   })
 
   await recordAudit({
@@ -159,6 +162,7 @@ export async function updateComponent(
     code: input.code,
     ...COMPONENT_DEFAULTS,
     is_active: input.isActive,
+    holiday_extra_pay: input.holidayExtraPay,
   })
   if (!row) throw ApiError.notFound('Salary component')
 

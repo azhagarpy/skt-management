@@ -67,6 +67,11 @@ export function buildStorageKey(params: {
   return `${organizationId}/${year}/${month}/${employeeId}/${slug}-${randomUUID()}.${extensionForType(contentType)}`
 }
 
+/** Storage key for an organization document. */
+export function buildOrganizationDocumentKey(organizationId: string, contentType: AllowedUploadType): string {
+  return `${organizationId}/organization-documents/${randomUUID()}.${extensionForType(contentType)}`
+}
+
 /** Storage key for an organization's logo. Old keys are deleted on replace. */
 export function buildBrandingStorageKey(organizationId: string, contentType: AllowedUploadType): string {
   return `${organizationId}/branding/logo-${randomUUID()}.${extensionForType(contentType)}`

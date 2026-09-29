@@ -564,8 +564,27 @@ export interface OvertimeEntry {
   workDate: string
   hours: number
   remarks: string | null
+  rateBasis: OvertimeRateBasis
+  /** The n in "one day's salary / n", for DAY_SALARY. */
+  dayDivisor: number | null
+  /** Rupees per hour, for CUSTOM. */
+  ratePerHour: number | null
+  overtimeHandling?: OvertimeHandling
   isLocked: boolean
   updatedAt: string
+}
+
+/** What an overtime hour is paid at: one day's salary / n hours, or a custom amount. */
+export type OvertimeRateBasis = 'DAY_SALARY' | 'CUSTOM'
+
+/** How an employee's overtime is handled, and the rate a new entry for them starts at. */
+export interface OvertimeEmployeeSettings {
+  overtimeHandling: OvertimeHandling
+  rateBasis: OvertimeRateBasis
+  dayDivisor: number | null
+  ratePerHour: number | null
+  /** One day's salary on the entry's date; null when no salary structure is assigned. */
+  daySalary: number | null
 }
 
 export interface OvertimeWeekSummary {
@@ -605,6 +624,8 @@ export interface SalaryComponent {
   name: string
   code: string
   isActive: boolean
+  /** False leaves the component out of the extra day earned by working a holiday. */
+  holidayExtraPay: boolean
 }
 
 export interface SalaryStructure {
@@ -914,6 +935,17 @@ export interface ReportColumn {
   label: string
   format: 'text' | 'number' | 'currency' | 'date' | 'days' | 'percent'
   total?: boolean
+}
+
+export interface OrganizationDocument {
+  id: string
+  title: string
+  note: string | null
+  originalFilename: string
+  mimeType: string
+  fileSizeBytes: number
+  uploadedByName: string | null
+  createdAt: string
 }
 
 export interface ReportDescriptor {

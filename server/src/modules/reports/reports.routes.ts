@@ -41,6 +41,7 @@ reportRouter.get(
       name: result.name,
       columns: result.columns,
       totals: result.totals,
+      grandTotals: result.grandTotals,
       page: result.page,
       pageSize: result.pageSize,
       total: result.total,
@@ -74,8 +75,17 @@ reportRouter.get(
       [auth.organizationId],
     )
 
-    // The export's header names the departments picked rather than their ids.
+    // The export's header names the departments and employee picked rather than their ids.
     const summaryFilters: Record<string, unknown> = { ...query }
+    if (query.employeeId) {
+      const employee = await queryOne<{ label: string }>(
+        pool,
+        `SELECT employee_code || ' - ' || trim(first_name || ' ' || coalesce(last_name, '')) AS label
+           FROM employees WHERE id = $1 AND organization_id = $2`,
+        [query.employeeId, auth.organizationId],
+      )
+      if (employee) summaryFilters.employeeId = employee.label
+    }
     if (query.departmentId?.length) {
       const departments = await queryRows<{ name: string }>(
         pool,

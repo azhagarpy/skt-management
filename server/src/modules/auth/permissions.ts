@@ -24,6 +24,9 @@ export const PERMISSIONS = {
   LOCATION_MANAGE: 'location.manage',
   SETTINGS_VIEW: 'settings.view',
   SETTINGS_MANAGE: 'settings.manage',
+  ORG_DOCUMENT_VIEW: 'orgDocument.view',
+  ORG_DOCUMENT_MANAGE: 'orgDocument.manage',
+  BACKUP_DOWNLOAD: 'backup.download',
 
   // Users
   USER_VIEW: 'user.view',
@@ -166,6 +169,9 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.LOCATION_MANAGE, 'organization', 'Create, update and delete locations'),
   define(PERMISSIONS.SETTINGS_VIEW, 'settings', 'View system settings'),
   define(PERMISSIONS.SETTINGS_MANAGE, 'settings', 'Change system settings'),
+  define(PERMISSIONS.ORG_DOCUMENT_VIEW, 'organization', 'View and download organization documents'),
+  define(PERMISSIONS.ORG_DOCUMENT_MANAGE, 'organization', 'Upload and delete organization documents'),
+  define(PERMISSIONS.BACKUP_DOWNLOAD, 'settings', 'Download a full backup of the database and uploaded files'),
 
   define(PERMISSIONS.USER_VIEW, 'users', 'View user accounts'),
   define(PERMISSIONS.USER_MANAGE, 'users', 'Create, update and deactivate user accounts'),

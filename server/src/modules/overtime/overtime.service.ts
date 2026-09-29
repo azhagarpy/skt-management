@@ -1,7 +1,19 @@
 import { ApiError } from '../../utils/api-error.js'
 import { withTransaction, type TxClient } from '../../database/tx.js'
 import { pool, queryOne, type Queryable } from '../../database/pool.js'
-import { addDays, datesBetween, startOfIsoWeek, type IsoDate } from '../../utils/dates.js'
+import {
+  addDays,
+  countDaysBetween,
+  datesBetween,
+  payCycleContaining,
+  PAYROLL_CYCLE_CUTOFF_DAY,
+  startOfIsoWeek,
+  type IsoDate,
+} from '../../utils/dates.js'
+import { toMajor, toMinor } from '../../utils/money.js'
+import { overtimeDaySalaryMinor } from '../payroll/payroll.calculator.js'
+import { toComponentInputs } from '../payroll/payroll.service.js'
+import * as salaryRepository from '../salary/salary.repository.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { assertEmployeeInScope, resolveScope, scopeClause, type EmployeeScope } from '../employees/employee-access.js'
@@ -16,14 +28,17 @@ import type { OvertimeListQuery, RecordOvertimeInput, UpdateOvertimeInput } from
  *
  * Supply employees never see OT as money: every 8 hours accumulated in a week
  * converts to one extra weekly off, capped at 2/week (16 hours). PSR employees
- * never see OT as days off: hours are paid at a per-hour rate in payroll
- * (payroll.service.ts). The employee's type carries which of the two applies
+ * never see OT as days off: hours are paid in payroll (payroll.service.ts) at
+ * the rate chosen on each entry - one day's salary / n hours, or a custom
+ * amount per hour. The employee's type carries which of the two applies
  * as `overtime_handling`, so a type added later has to declare its behaviour
  * rather than falling through both branches.
  */
 
 const SUPPLY_HOURS_PER_OFF = 8
 const SUPPLY_MAX_OFFS_PER_WEEK = 2
+/** The n in "one day's salary / n" when an entry does not choose its own. */
+const DEFAULT_DAY_DIVISOR = 8
 
 export interface WeekConversionSummary {
   weekStart: IsoDate
@@ -52,6 +67,7 @@ function manageScope(auth: AuthContext): EmployeeScope {
 interface EmployeeOvertimeContext {
   id: string
   overtime_handling: string
+  overtime_rate_override_minor: number | null
   department_id: string | null
   location_id: string | null
 }
@@ -59,7 +75,7 @@ interface EmployeeOvertimeContext {
 async function loadEmployeeContext(employeeId: string, db: Queryable): Promise<EmployeeOvertimeContext> {
   const row = await queryOne<EmployeeOvertimeContext>(
     db,
-    `SELECT e.id, t.overtime_handling, e.department_id, e.location_id
+    `SELECT e.id, t.overtime_handling, e.overtime_rate_override_minor, e.department_id, e.location_id
        FROM employees e
        JOIN employee_types t ON t.id = e.employee_type_id
       WHERE e.id = $1`,
@@ -69,6 +85,47 @@ async function loadEmployeeContext(employeeId: string, db: Queryable): Promise<E
   return row
 }
 
+/** The employee's own rate when their record has one, else one day's salary / 8. */
+function defaultRate(employee: EmployeeOvertimeContext): repository.OvertimeRate {
+  return employee.overtime_rate_override_minor === null
+    ? { basis: 'DAY_SALARY', dayDivisor: DEFAULT_DAY_DIVISOR, ratePerHourMinor: null }
+    : { basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: employee.overtime_rate_override_minor }
+}
+
+function rowRate(row: repository.OvertimeRow): repository.OvertimeRate {
+  return {
+    basis: row.rate_basis,
+    dayDivisor: row.day_divisor === null ? null : Number(row.day_divisor),
+    ratePerHourMinor: row.rate_per_hour_minor,
+  }
+}
+
+/**
+ * The rate an entry is saved at: the one the form chose, else the entry's
+ * current rate when it already exists, else the employee's default.
+ */
+function resolveRate(
+  input: Pick<RecordOvertimeInput, 'rateBasis' | 'dayDivisor' | 'ratePerHour'>,
+  existing: repository.OvertimeRow | null,
+  employee: EmployeeOvertimeContext,
+): repository.OvertimeRate {
+  if (input.rateBasis === 'CUSTOM') {
+    return { basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: toMinor(input.ratePerHour ?? 0) }
+  }
+  if (input.rateBasis === 'DAY_SALARY') {
+    return { basis: 'DAY_SALARY', dayDivisor: input.dayDivisor ?? DEFAULT_DAY_DIVISOR, ratePerHourMinor: null }
+  }
+  return existing ? rowRate(existing) : defaultRate(employee)
+}
+
+function presentRate(rate: repository.OvertimeRate) {
+  return {
+    rateBasis: rate.basis,
+    dayDivisor: rate.dayDivisor,
+    ratePerHour: rate.ratePerHourMinor === null ? null : toMajor(rate.ratePerHourMinor),
+  }
+}
+
 function presentOvertime(row: repository.OvertimeRow) {
   return {
     id: row.id,
@@ -76,6 +133,7 @@ function presentOvertime(row: repository.OvertimeRow) {
     workDate: row.work_date,
     hours: Number(row.hours),
     remarks: row.remarks,
+    ...presentRate(rowRate(row)),
     isLocked: row.locked_by_payroll_run_id !== null,
     updatedAt: row.updated_at,
   }
@@ -87,6 +145,7 @@ function presentOvertimeWithEmployee(row: repository.OvertimeWithEmployeeRow) {
     employeeCode: row.employee_code,
     employeeName: [row.first_name, row.last_name].filter(Boolean).join(' '),
     departmentName: row.department_name,
+    overtimeHandling: row.overtime_handling,
   }
 }
 
@@ -187,6 +246,7 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
     await assertEmployeeInScope(auth, input.employeeId, scope, tx)
     const employee = await loadEmployeeContext(input.employeeId, tx)
     const existing = await assertNotPayrollLocked(input.employeeId, input.workDate, tx)
+    const rate = resolveRate(input, existing, employee)
 
     const row = await repository.upsertOvertime(
       {
@@ -195,6 +255,7 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
         workDate: input.workDate,
         hours: input.hours,
         remarks: input.remarks ?? null,
+        rate,
         userId: auth.userId,
       },
       tx,
@@ -211,8 +272,8 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
         action: existing ? 'OVERTIME_CHANGED' : 'OVERTIME_RECORDED',
         entityType: 'overtime_entry',
         entityId: row.id,
-        oldValues: existing ? { hours: Number(existing.hours) } : undefined,
-        newValues: { employeeId: input.employeeId, date: input.workDate, hours: input.hours },
+        oldValues: existing ? { hours: Number(existing.hours), ...presentRate(rowRate(existing)) } : undefined,
+        newValues: { employeeId: input.employeeId, date: input.workDate, hours: input.hours, ...presentRate(rate) },
       },
       tx,
     )
@@ -240,6 +301,7 @@ export async function updateOvertime(
     }
 
     const employee = await loadEmployeeContext(existing.employee_id, tx)
+    const rate = resolveRate(input, existing, employee)
     const row = await repository.upsertOvertime(
       {
         organizationId: auth.organizationId,
@@ -247,6 +309,7 @@ export async function updateOvertime(
         workDate: existing.work_date,
         hours: input.hours,
         remarks: input.remarks ?? existing.remarks,
+        rate,
         userId: auth.userId,
       },
       tx,
@@ -263,8 +326,8 @@ export async function updateOvertime(
         action: 'OVERTIME_CHANGED',
         entityType: 'overtime_entry',
         entityId: row.id,
-        oldValues: { hours: Number(existing.hours) },
-        newValues: { hours: input.hours },
+        oldValues: { hours: Number(existing.hours), ...presentRate(rowRate(existing)) },
+        newValues: { hours: input.hours, ...presentRate(rate) },
       },
       tx,
     )
@@ -315,6 +378,43 @@ export async function listOvertime(auth: AuthContext, query: OvertimeListQuery) 
   const clause = scopeClause(auth, scope, 'e', 1)
   const rows = await repository.listOvertime(clause, query)
   return rows.map(presentOvertimeWithEmployee)
+}
+
+/**
+ * One day's salary for the pay cycle containing `date`, worked out the way
+ * payroll does, so the entry screen can show what "one day's salary / n" comes
+ * to. Null when no salary structure is assigned for that cycle.
+ */
+async function daySalaryOn(organizationId: string, employeeId: string, date: IsoDate): Promise<number | null> {
+  const cycle = payCycleContaining(date, PAYROLL_CYCLE_CUTOFF_DAY)
+  const [assignment] = await salaryRepository.findAssignmentsForDate([employeeId], cycle.end)
+  if (!assignment) return null
+  const structure = await salaryRepository.findStructure(assignment.salary_structure_id, organizationId)
+  if (!structure) return null
+  return toMajor(
+    overtimeDaySalaryMinor(
+      toComponentInputs(structure),
+      assignment.override_amount === null ? null : toMinor(assignment.override_amount),
+      structure.salary_basis,
+      countDaysBetween(cycle.start, cycle.end),
+    ),
+  )
+}
+
+/**
+ * How an employee's overtime is handled, the rate a new entry starts at, and
+ * one day's salary on `date`, so the entry screen can offer the rate inputs
+ * only to a paid-hourly employee, fill them in with that employee's default,
+ * and show what the entry will be paid.
+ */
+export async function getEmployeeOvertimeSettings(auth: AuthContext, employeeId: string, date: IsoDate) {
+  await assertEmployeeInScope(auth, employeeId, viewScope(auth))
+  const employee = await loadEmployeeContext(employeeId, pool)
+  return {
+    overtimeHandling: employee.overtime_handling,
+    ...presentRate(defaultRate(employee)),
+    daySalary: employee.overtime_handling === 'PAID_HOURLY' ? await daySalaryOn(auth.organizationId, employeeId, date) : null,
+  }
 }
 
 /** Read-only week summary, used by the entry screen's running "X/16 hrs" indicator. */

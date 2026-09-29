@@ -22,6 +22,8 @@ import { dashboardRouter } from './modules/dashboard/dashboard.routes.js'
 import { userRouter } from './modules/users/users.module.js'
 import { auditRouter } from './modules/audit/audit.routes.js'
 import { messagingRouter } from './modules/messaging/messaging.routes.js'
+import { orgDocumentRouter } from './modules/org-documents/org-documents.module.js'
+import { backupRouter } from './modules/backup/backup.module.js'
 
 /**
  * Versioned API surface (plan section 48). Every router below the auth one
@@ -34,6 +36,8 @@ apiRouter.get('/health', (_req, res) => {
 })
 
 apiRouter.use('/auth', authRouter)
+// Before /organization, which would otherwise authenticate these requests a second time.
+apiRouter.use('/organization/documents', orgDocumentRouter)
 apiRouter.use('/organization', organizationRouter)
 apiRouter.use('/departments', departmentRouter)
 apiRouter.use('/designations', designationRouter)
@@ -63,3 +67,4 @@ apiRouter.use('/dashboard', dashboardRouter)
 apiRouter.use('/users', userRouter)
 apiRouter.use('/messaging', messagingRouter)
 apiRouter.use('/audit-logs', auditRouter)
+apiRouter.use('/backup', backupRouter)

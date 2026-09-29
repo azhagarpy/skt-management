@@ -28,8 +28,9 @@ import {
   brandRamp,
   useBranding,
 } from '../../app/providers/BrandingProvider'
+import { OrganizationDocumentsTab } from './OrganizationDocumentsTab'
 
-/** Organization profile, departments, sections and locations. */
+/** Organization profile, departments, sections, locations and company documents. */
 export default function OrganizationPage() {
   const { can } = useAuth()
   const [tab, setTab] = useState('profile')
@@ -46,6 +47,7 @@ export default function OrganizationPage() {
           { key: 'designations', label: 'Sections' },
           { key: 'employeeTypes', label: 'Supply types' },
           { key: 'locations', label: 'Locations' },
+          ...(can('orgDocument.view') ? [{ key: 'documents', label: 'Documents' }] : []),
         ]}
         active={tab}
         onChange={setTab}
@@ -57,6 +59,9 @@ export default function OrganizationPage() {
       {tab === 'designations' ? <DesignationsTab canManage={can('designation.manage')} /> : null}
       {tab === 'employeeTypes' ? <EmployeeTypesTab canManage={can('employeeType.manage')} /> : null}
       {tab === 'locations' ? <LocationsTab canManage={can('location.manage')} /> : null}
+      {tab === 'documents' && can('orgDocument.view') ? (
+        <OrganizationDocumentsTab canManage={can('orgDocument.manage')} />
+      ) : null}
     </div>
   )
 }

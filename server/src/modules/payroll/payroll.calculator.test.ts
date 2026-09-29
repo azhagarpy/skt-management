@@ -51,6 +51,7 @@ function component(overrides: Partial<ComponentInput> & Pick<ComponentInput, 'co
     baseComponentCode: null,
     taxable: true,
     prorate: true,
+    holidayExtraPay: true,
     displayOrder: 0,
     ...overrides,
   }
@@ -73,7 +74,7 @@ function baseInput(overrides: Partial<CalculatorInput> = {}): CalculatorInput {
     days: septemberDays(),
     components: monthlyComponents(),
     overrideTotalMinor: null,
-    overtime: null,
+    overtime: [],
     bonuses: [],
     tax: null,
     lwf: null,
@@ -541,7 +542,7 @@ describe('calculatePayrollItem - PF and ESI', () => {
     expect(toMajor(result.totalDeductionsMinor)).toBe(0)
   })
 
-  it('applies ESI on both sides, uncapped, when the wage is within the limit', () => {
+  it('applies ESI on both sides, on the full wage, when the wage is within the limit', () => {
     const components = [
       component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(12_000) }),
       component({ code: 'HRA', name: 'HRA', amountMinor: toMinor(4_000), displayOrder: 2 }),
@@ -573,6 +574,65 @@ describe('calculatePayrollItem - PF and ESI', () => {
     )
 
     expect(result.components.find((entry) => entry.code === 'ESI_EMPLOYEE')).toBeDefined()
+  })
+
+  describe('ESI eligibility on a standard month', () => {
+    const esi = { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) }
+    const dailyWorker = { id: 'emp-2', code: 'EMP002', name: 'Daily Worker', salaryBasis: 'DAILY' } as const
+    const dailyRate = (rate: number) => [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(rate) })]
+    /** September with its first `count` working days marked absent: 30 - count paid days. */
+    const withAbsences = (count: number) => {
+      const absent = septemberDays().filter((day) => day.dayKind === 'WORKING').slice(0, count)
+      return septemberDays(Object.fromEntries(absent.map((day) => [day.date, { status: 'ABSENT' as const }])))
+    }
+    const line = (result: ReturnType<typeof calculatePayrollItem>, code: string) =>
+      result.components.find((entry) => entry.code === code)
+
+    it('deducts ESI from a daily worker whose 26 days are within the limit', () => {
+      const result = calculatePayrollItem(
+        baseInput({ employee: dailyWorker, components: dailyRate(769), esi, days: withAbsences(4) }),
+      )
+
+      // 26 x 769 = 19,994: 149.955 / 649.805 up to 150 / 650.
+      expect(result.attendance.paidDays).toBe(26)
+      expect(toMajor(result.esiWageMinor)).toBe(19_994)
+      expect(toMajor(line(result, 'ESI_EMPLOYEE')?.amountMinor ?? 0)).toBe(150)
+      expect(toMajor(line(result, 'ESI_EMPLOYER')?.amountMinor ?? 0)).toBe(650)
+    })
+
+    it('keeps deducting ESI when extra days take the month over the limit, on the limit alone', () => {
+      const result = calculatePayrollItem(
+        baseInput({ employee: dailyWorker, components: dailyRate(769), esi, days: withAbsences(2) }),
+      )
+
+      // 28 days earn 21,532, over 21,000, but 26 days (19,994) are within it:
+      // ESI is charged on 21,000 - 157.50 / 682.50 up to 158 / 683.
+      expect(result.attendance.paidDays).toBe(28)
+      expect(toMajor(result.grossEarningsMinor)).toBe(21_532)
+      expect(toMajor(result.esiWageMinor)).toBe(21_000)
+      expect(toMajor(line(result, 'ESI_EMPLOYEE')?.amountMinor ?? 0)).toBe(158)
+      expect(toMajor(line(result, 'ESI_EMPLOYER')?.amountMinor ?? 0)).toBe(683)
+      expect(line(result, 'ESI_EMPLOYEE')?.notes).toBe('ESI wage 21000')
+    })
+
+    it('leaves ESI off a daily worker whose 26 days are over the limit, even in a short month', () => {
+      const result = calculatePayrollItem(
+        baseInput({ employee: dailyWorker, components: dailyRate(850), esi, days: withAbsences(10) }),
+      )
+
+      // 20 days earn only 17,000, but 26 x 850 = 22,100 is over 21,000.
+      expect(toMajor(result.grossEarningsMinor)).toBe(17_000)
+      expect(line(result, 'ESI_EMPLOYEE')).toBeUndefined()
+      expect(result.esiWageMinor).toBe(0)
+    })
+
+    it('leaves ESI off a monthly structure over the limit, even in a short month', () => {
+      const result = calculatePayrollItem(baseInput({ esi, days: withAbsences(16) }))
+
+      // 14 of 30 days of the 42,000 gross earn 19,600, but the monthly gross is over 21,000.
+      expect(toMajor(result.grossEarningsMinor)).toBe(19_600)
+      expect(line(result, 'ESI_EMPLOYEE')).toBeUndefined()
+    })
   })
 
   describe('rounding', () => {
@@ -747,6 +807,34 @@ describe('calculatePayrollItem - PF and ESI', () => {
       expect(toMajor(earning(result, 'HOLIDAY_WORK')?.amountMinor ?? 0)).toBe(800)
     })
 
+    it('leaves a component switched out of holiday extra pay out of the extra day, but pays it for the paid days', () => {
+      // SKT's daily structure: Basic 494 + DA 287 + Special Allowance 138 = 919 a day.
+      const components = [
+        component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(494), displayOrder: 1 }),
+        component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(287), displayOrder: 2 }),
+        component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(138), displayOrder: 3, holidayExtraPay: false }),
+      ]
+      const employee = { id: 'emp-2', code: 'EMP002', name: 'Daily Worker', salaryBasis: 'DAILY' } as const
+      const full = calculatePayrollItem(baseInput({ employee, components, days: septemberDays(holidayDay('PRESENT')) }))
+      const half = calculatePayrollItem(
+        baseInput({ employee, components, days: septemberDays(holidayDay('HALF_DAY_LEAVE')) }),
+      )
+
+      // The extra day is Basic + DA only: 781, and half of that for a half day.
+      expect(toMajor(earning(full, 'HOLIDAY_WORK')?.amountMinor ?? 0)).toBe(781)
+      expect(toMajor(earning(half, 'HOLIDAY_WORK')?.amountMinor ?? 0)).toBe(390.5)
+      // The Special Allowance itself is still paid for all 30 paid days.
+      expect(toMajor(earning(full, 'SA')?.amountMinor ?? 0)).toBe(4_140)
+      expect(toMajor(full.grossEarningsMinor)).toBe(919 * 30 + 781)
+    })
+
+    it('pays no holiday work at all when every component is switched out of it', () => {
+      const components = [component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(42_000), holidayExtraPay: false })]
+      const result = calculatePayrollItem(baseInput({ components, days: septemberDays(holidayDay('PRESENT')) }))
+      expect(earning(result, 'HOLIDAY_WORK')).toBeUndefined()
+      expect(toMajor(result.grossEarningsMinor)).toBe(42_000)
+    })
+
     it('counts towards the PF wage', () => {
       const pf = { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: 0, epsRate: 0 }
       const without = calculatePayrollItem(baseInput({ pf }))
@@ -789,10 +877,11 @@ describe('calculatePayrollItem - PF and ESI', () => {
       const components = [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(20_800) })]
       const result = calculatePayrollItem(baseInput({ components, esi, days: septemberDays(holidayDay('PRESENT')) }))
 
-      // 20,800 + 693.33 = 21,493.33 is over 21,000, but the structure (20,800) is not.
-      expect(toMajor(result.esiWageMinor)).toBe(21_493.33)
-      // 0.75% of 21,493.33 = 161.20, rounded up.
-      expect(toMajor(earning(result, 'ESI_EMPLOYEE')?.amountMinor ?? 0)).toBe(162)
+      // 20,800 + 693.33 = 21,493.33 is over 21,000, but the structure (20,800) is
+      // not: ESI stays, charged on the 21,000 limit alone.
+      expect(toMajor(result.esiWageMinor)).toBe(21_000)
+      // 0.75% of 21,000 = 157.50, rounded up.
+      expect(toMajor(earning(result, 'ESI_EMPLOYEE')?.amountMinor ?? 0)).toBe(158)
     })
 
     it('leaves ESI off when the structure itself is over the limit', () => {
@@ -941,7 +1030,7 @@ describe('calculatePayrollItem - bonuses', () => {
             taxable: true,
           },
         ],
-        overtime: { hours: 10, rateMinor: toMinor(500) },
+        overtime: [{ hours: 10, basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: toMinor(500) }],
         pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
         esi: { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) },
       }),
@@ -1072,5 +1161,88 @@ describe('calculatePayrollItem - reproducibility', () => {
       .filter((entry) => entry.componentType === 'EARNING')
       .reduce((total, entry) => total + entry.fullAmountMinor, 0)
     expect(earnings).toBe(toMinor(33_333.33))
+  })
+})
+
+describe('calculatePayrollItem - overtime', () => {
+  const pf = { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 }
+  const esi = { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) }
+  const dailyWorker = { id: 'emp-2', code: 'EMP002', name: 'Daily Worker', salaryBasis: 'DAILY' } as const
+  /** A daily structure paying 556 a day: Basic 350 + DA 206. */
+  const dailyComponents = [
+    component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(350), displayOrder: 1 }),
+    component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(206), displayOrder: 2 }),
+  ]
+  const daySalary = (hours: number, dayDivisor = 8) =>
+    ({ hours, basis: 'DAY_SALARY', dayDivisor, ratePerHourMinor: null }) as const
+  const custom = (hours: number, ratePerHour: number) =>
+    ({ hours, basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: toMinor(ratePerHour) }) as const
+  const overtimeLine = (result: ReturnType<typeof calculatePayrollItem>) =>
+    result.components.find((entry) => entry.code === 'OVERTIME')
+
+  it('pays one day\'s salary / 8 an hour, with nothing deducted from it', () => {
+    const input = { employee: dailyWorker, components: dailyComponents, pf, esi }
+    const without = calculatePayrollItem(baseInput(input))
+    const result = calculatePayrollItem(baseInput({ ...input, overtime: [daySalary(8)] }))
+
+    // 8 hours at 556 / 8 = 69.50 an hour is exactly one day: 556.
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(556)
+    expect(overtimeLine(result)?.notes).toBe("8 hour(s) at 69.50/hour (one day's salary 556 / 8)")
+    // PF and ESI are unchanged and the whole 556 reaches net.
+    expect(result.totalDeductionsMinor).toBe(without.totalDeductionsMinor)
+    expect(result.pfWageMinor).toBe(without.pfWageMinor)
+    expect(result.esiWageMinor).toBe(without.esiWageMinor)
+    expect(toMajor(result.netSalaryMinor - without.netSalaryMinor)).toBe(556)
+  })
+
+  it('divides the day by whatever n the entry chose', () => {
+    // 556 / 12 an hour: 6 hours are half a day, 278.
+    const result = calculatePayrollItem(
+      baseInput({ employee: dailyWorker, components: dailyComponents, overtime: [daySalary(6, 12)] }),
+    )
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(278)
+    expect(overtimeLine(result)?.notes).toBe("6 hour(s) at 46.33/hour (one day's salary 556 / 12)")
+  })
+
+  it('takes a monthly structure\'s day at the rate its proration uses', () => {
+    // 42,000 over a 30-day basis is 1,400 a day, 175 an hour: 4 hours = 700.
+    const result = calculatePayrollItem(baseInput({ overtime: [daySalary(4)] }))
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(700)
+    expect(toMajor(result.grossEarningsMinor)).toBe(42_700)
+  })
+
+  it('works out part of an hourly rate in one step, so the paise are not lost', () => {
+    const components = [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(919) })]
+    const result = calculatePayrollItem(baseInput({ employee: dailyWorker, components, overtime: [daySalary(5)] }))
+    // 919 x 5 / 8 = 574.375, not 5 x a rounded 114.88 = 574.40.
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(574.38)
+  })
+
+  it('pays a custom amount per hour, with nothing deducted from it', () => {
+    const input = { employee: dailyWorker, components: dailyComponents, pf, esi }
+    const without = calculatePayrollItem(baseInput(input))
+    const result = calculatePayrollItem(baseInput({ ...input, overtime: [custom(8, 100)] }))
+
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(800)
+    expect(overtimeLine(result)?.notes).toBe('8 hour(s) at 100/hour')
+    expect(result.totalDeductionsMinor).toBe(without.totalDeductionsMinor)
+    expect(toMajor(result.netSalaryMinor - without.netSalaryMinor)).toBe(800)
+  })
+
+  it('adds hours recorded at different rates into one overtime line', () => {
+    const result = calculatePayrollItem(
+      baseInput({ employee: dailyWorker, components: dailyComponents, overtime: [daySalary(4), custom(2, 150)] }),
+    )
+    // 4 x 69.50 = 278, plus 2 x 150 = 300.
+    expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(578)
+    expect(overtimeLine(result)?.notes).toBe("4 hour(s) at 69.50/hour (one day's salary 556 / 8); 2 hour(s) at 150/hour")
+    expect(result.components.filter((entry) => entry.code === 'OVERTIME')).toHaveLength(1)
+  })
+
+  it('warns rather than paying nothing silently when the day\'s salary is zero', () => {
+    const components = [component({ code: 'FIXED', name: 'Fixed Pay', amountMinor: toMinor(20_000), prorate: false })]
+    const result = calculatePayrollItem(baseInput({ components, overtime: [daySalary(6)] }))
+    expect(overtimeLine(result)).toBeUndefined()
+    expect(result.warnings).toContain('6 overtime hour(s) are recorded but their rate works out to zero; they were not paid.')
   })
 })

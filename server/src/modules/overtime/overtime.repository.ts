@@ -2,6 +2,15 @@ import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.j
 import type { IsoDate } from '../../utils/dates.js'
 import type { ScopeClause } from '../employees/employee-access.js'
 
+/** One day's salary / n hours, or a custom amount per hour. */
+export type OvertimeRateBasis = 'DAY_SALARY' | 'CUSTOM'
+
+export interface OvertimeRate {
+  basis: OvertimeRateBasis
+  dayDivisor: number | null
+  ratePerHourMinor: number | null
+}
+
 export interface OvertimeRow {
   id: string
   organization_id: string
@@ -9,6 +18,11 @@ export interface OvertimeRow {
   work_date: IsoDate
   hours: string
   remarks: string | null
+  rate_basis: OvertimeRateBasis
+  /** NUMERIC comes back as a string; set only for DAY_SALARY. */
+  day_divisor: string | null
+  /** Set only for CUSTOM. */
+  rate_per_hour_minor: number | null
   locked_by_payroll_run_id: string | null
   marked_by: string | null
   created_at: Date
@@ -20,6 +34,7 @@ export interface OvertimeWithEmployeeRow extends OvertimeRow {
   first_name: string
   last_name: string | null
   department_name: string | null
+  overtime_handling: string
 }
 
 export async function findOvertimeById(id: string, organizationId: string, db: Queryable = pool): Promise<OvertimeRow | null> {
@@ -54,23 +69,44 @@ export async function listOvertimeForEmployee(
   )
 }
 
-/** Total OT hours for a set of employees over a window, batched for payroll (plan section 59). */
-export async function sumOvertimeHours(
+/**
+ * Total OT hours for a set of employees over a window, per employee and per
+ * rate the hours were recorded at, batched for payroll (plan section 59).
+ */
+export async function sumOvertimeHoursByRate(
   employeeIds: string[],
   from: IsoDate,
   to: IsoDate,
   db: Queryable = pool,
-): Promise<Map<string, number>> {
-  if (employeeIds.length === 0) return new Map()
-  const rows = await queryRows<{ employee_id: string; total_hours: string }>(
+): Promise<Map<string, (OvertimeRate & { hours: number })[]>> {
+  const byEmployee = new Map<string, (OvertimeRate & { hours: number })[]>()
+  if (employeeIds.length === 0) return byEmployee
+  const rows = await queryRows<{
+    employee_id: string
+    rate_basis: OvertimeRateBasis
+    day_divisor: string | null
+    rate_per_hour_minor: number | null
+    total_hours: string
+  }>(
     db,
-    `SELECT employee_id, sum(hours)::text AS total_hours
+    `SELECT employee_id, rate_basis, day_divisor::text AS day_divisor, rate_per_hour_minor, sum(hours)::text AS total_hours
        FROM overtime_entries
       WHERE employee_id = ANY($1::uuid[]) AND work_date BETWEEN $2 AND $3
-      GROUP BY employee_id`,
+      GROUP BY employee_id, rate_basis, day_divisor, rate_per_hour_minor
+      ORDER BY employee_id, rate_basis, day_divisor, rate_per_hour_minor`,
     [employeeIds, from, to],
   )
-  return new Map(rows.map((row) => [row.employee_id, Number(row.total_hours)]))
+  for (const row of rows) {
+    const list = byEmployee.get(row.employee_id) ?? []
+    list.push({
+      basis: row.rate_basis,
+      dayDivisor: row.day_divisor === null ? null : Number(row.day_divisor),
+      ratePerHourMinor: row.rate_per_hour_minor,
+      hours: Number(row.total_hours),
+    })
+    byEmployee.set(row.employee_id, list)
+  }
+  return byEmployee
 }
 
 export async function listOvertime(
@@ -95,9 +131,11 @@ export async function listOvertime(
 
   return queryRows<OvertimeWithEmployeeRow>(
     db,
-    `SELECT o.*, e.employee_code, e.first_name, e.last_name, d.name AS department_name
+    `SELECT o.*, e.employee_code, e.first_name, e.last_name, d.name AS department_name,
+            t.overtime_handling::text AS overtime_handling
        FROM overtime_entries o
        JOIN employees e ON e.id = o.employee_id
+       JOIN employee_types t ON t.id = e.employee_type_id
        LEFT JOIN departments d ON d.id = e.department_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY o.work_date DESC, e.employee_code ASC`,
@@ -112,20 +150,35 @@ export async function upsertOvertime(
     workDate: IsoDate
     hours: number
     remarks?: string | null
+    rate: OvertimeRate
     userId: string | null
   },
   db: Queryable = pool,
 ): Promise<OvertimeRow> {
   const row = await queryOne<OvertimeRow>(
     db,
-    `INSERT INTO overtime_entries (organization_id, employee_id, work_date, hours, remarks, marked_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now())
+    `INSERT INTO overtime_entries
+       (organization_id, employee_id, work_date, hours, remarks, rate_basis, day_divisor, rate_per_hour_minor, marked_by, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
      ON CONFLICT (employee_id, work_date) DO UPDATE
        SET hours = EXCLUDED.hours,
            remarks = EXCLUDED.remarks,
+           rate_basis = EXCLUDED.rate_basis,
+           day_divisor = EXCLUDED.day_divisor,
+           rate_per_hour_minor = EXCLUDED.rate_per_hour_minor,
            updated_at = now()
      RETURNING *`,
-    [values.organizationId, values.employeeId, values.workDate, values.hours, values.remarks ?? null, values.userId],
+    [
+      values.organizationId,
+      values.employeeId,
+      values.workDate,
+      values.hours,
+      values.remarks ?? null,
+      values.rate.basis,
+      values.rate.basis === 'DAY_SALARY' ? values.rate.dayDivisor : null,
+      values.rate.basis === 'CUSTOM' ? values.rate.ratePerHourMinor : null,
+      values.userId,
+    ],
   )
   return row as OvertimeRow
 }

@@ -207,6 +207,7 @@ export function toComponentInputs(structure: salaryRepository.SalaryStructureWit
     baseComponentCode: component.base_component_code,
     taxable: component.taxable,
     prorate: component.prorate,
+    holidayExtraPay: component.holiday_extra_pay,
     displayOrder: component.display_order,
   }))
 }
@@ -376,7 +377,7 @@ export async function calculateRun(
       const contextStart = addDays(periodStart, -HOLIDAY_CONTEXT_DAYS)
       const contextEnd = addDays(periodEnd, HOLIDAY_CONTEXT_DAYS)
 
-      const [calendar, attendanceRows, leaveRows, assignments, bonuses, taxDeductions, lwfContributions, plWagesCredits, adjustments, overtimeHoursByEmployee] =
+      const [calendar, attendanceRows, leaveRows, assignments, bonuses, taxDeductions, lwfContributions, plWagesCredits, adjustments, overtimeByEmployee] =
         await Promise.all([
           buildCalendarContext(auth.organizationId, contextStart, contextEnd, tx),
           attendanceRepository.listAttendanceForEmployees(employeeIds, contextStart, contextEnd, tx),
@@ -387,7 +388,7 @@ export async function calculateRun(
           listLwfForPeriod(employeeIds, run.year, run.month, tx),
           listApprovedPlWagesForPeriod(employeeIds, run.year, run.month, tx),
           repository.listPendingAdjustments(auth.organizationId, run.year, run.month, employeeIds, tx),
-          overtimeRepository.sumOvertimeHours(employeeIds, periodStart, periodEnd, tx),
+          overtimeRepository.sumOvertimeHoursByRate(employeeIds, periodStart, periodEnd, tx),
         ])
 
       // Structures are shared, so each distinct one is fetched once.
@@ -547,23 +548,11 @@ export async function calculateRun(
         const employeeAdjustments = adjustmentsByEmployee.get(employee.id) ?? []
 
         // Paid-hourly overtime is money; off-in-lieu overtime converts to extra weekly offs
-        // instead (overtime.service.ts) and never reaches payroll at all. There
-        // is no organization-wide default rate: it is set per employee.
-        let overtime: CalculatorInput['overtime'] = null
-        if (employee.overtime_handling === 'PAID_HOURLY') {
-          const hours = overtimeHoursByEmployee.get(employee.id) ?? 0
-          const rateMinor = employee.overtime_rate_override_minor ?? null
-          if (hours > 0) {
-            if (rateMinor === null) {
-              warnings.push({
-                employeeCode: employee.employee_code,
-                warnings: ['Overtime hours are recorded but no PSR overtime rate is configured; overtime was not paid.'],
-              })
-            } else {
-              overtime = { hours, rateMinor }
-            }
-          }
-        }
+        // instead (overtime.service.ts) and never reaches payroll at all. Each
+        // entry carries the rate it was recorded at: one day's salary / n hours
+        // (worked out by the calculator) or a custom amount per hour.
+        const overtime: CalculatorInput['overtime'] =
+          employee.overtime_handling === 'PAID_HOURLY' ? (overtimeByEmployee.get(employee.id) ?? []) : []
 
         const calculatorInput: CalculatorInput = {
           period: { year: run.year, month: run.month, start: periodStart, end: periodEnd },

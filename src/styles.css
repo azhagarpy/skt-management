@@ -1209,6 +1209,31 @@ textarea {
   font-weight: 600;
 }
 
+/* Reports scroll inside their own box so the header row and the all-pages
+   total stay pinned at the top while the rows move underneath. */
+.report-table-wrapper {
+  max-height: min(70vh, 760px);
+  overflow: auto;
+}
+
+.report-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* The whole head is pinned, so its cells need not pin themselves. */
+.report-table thead th {
+  position: static;
+}
+
+.report-grand-total td {
+  background: var(--surface-raised);
+  font-weight: 700;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--border-strong);
+}
+
 .align-right {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -3558,6 +3583,22 @@ button.att-day:focus-visible {
 
   .data-table tfoot {
     display: block;
+  }
+
+  /* On a phone the report reads as cards: the all-pages total becomes the
+     first card, and the page scrolls normally instead of the table box. */
+  .report-table-wrapper {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .data-table.report-table thead {
+    display: block;
+    position: static;
+  }
+
+  .data-table.report-table thead .report-header-row {
+    display: none;
   }
 
   .filter-bar {

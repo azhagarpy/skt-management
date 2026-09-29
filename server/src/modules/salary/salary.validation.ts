@@ -10,15 +10,18 @@ export const percentageSchema = z.coerce.number().min(0).max(100)
 
 /**
  * A salary component is always a fixed, taxable, attendance-prorated earning:
- * only its name, code and active flag are configurable (plan: simplified
- * salary module, no calculation-type or percentage-base choices). Whether it
- * counts toward the PF/ESI wage is no longer a per-component choice - the
- * whole structure's gross does, capped by the structure's own PF/ESI settings.
+ * only its name, code, active flag and whether it is part of holiday work pay
+ * are configurable (plan: simplified salary module, no calculation-type or
+ * percentage-base choices). Whether it counts toward the PF/ESI wage is no
+ * longer a per-component choice - the whole structure's gross does, capped by
+ * the structure's own PF/ESI settings.
  */
 export const salaryComponentSchema = z.object({
   name: z.string().trim().min(2, 'A component name is required').max(120),
   code: codeSchema,
   isActive: z.boolean().default(true),
+  /** False leaves the component out of the extra day earned by working a holiday. */
+  holidayExtraPay: z.boolean().default(true),
 })
 
 export const updateSalaryComponentSchema = salaryComponentSchema
@@ -40,9 +43,10 @@ export const salaryStructureSchema = z.object({
   isActive: z.boolean().default(true),
   components: z.array(structureComponentSchema).min(1, 'Add at least one salary component').max(50),
   // PF is deducted, on both sides, on the wage up to pfWageCeiling; ESI
-  // applies, on both sides, only when the wage is at or below esiWageLimit
-  // (plan: simplified salary module - rates and limits live on the
-  // structure, not a separate organization-wide statutory rule).
+  // applies, on both sides, only when a standard month's wage is at or below
+  // esiWageLimit, on the wage up to it (plan: simplified salary module - rates
+  // and limits live on the structure, not a separate organization-wide
+  // statutory rule).
   pfEmployeeRate: percentageSchema.default(12),
   pfEmployerRate: percentageSchema.default(12),
   pfWageCeiling: amountSchema.default(15_000),

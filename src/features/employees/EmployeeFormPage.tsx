@@ -430,9 +430,9 @@ export default function EmployeeFormPage() {
             </Field>
 
             <Field
-              label="Overtime rate override"
+              label="Default overtime rate per hour"
               htmlFor="overtimeRateOverride"
-              hint="PSR only: rupees per overtime hour for this employee. Leave blank to use the organization's default rate."
+              hint="Only for a type whose overtime is paid per hour: the custom amount in rupees the Overtime form starts at for this employee. Leave blank to start at one day's salary ÷ 8. Each entry can still change it."
             >
               <Input id="overtimeRateOverride" type="number" step="0.01" min="0" {...register('overtimeRateOverride')} />
             </Field>

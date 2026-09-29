@@ -32,6 +32,13 @@ const envSchema = z.object({
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().positive().default(10),
 
   /**
+   * The pg_dump binary used by Settings > Backup. Empty looks it up on PATH
+   * (and, on Windows, under C:\Program Files\PostgreSQL). It must be the same
+   * major version as the database server, or newer.
+   */
+  PG_DUMP_PATH: z.string().optional().default(''),
+
+  /**
    * WhatsApp delivery. The `log` driver records messages without sending, so
    * the whole flow is exercisable without an account; `meta` talks to the
    * WhatsApp Cloud API over plain HTTPS and needs no SDK.

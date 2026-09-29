@@ -3,17 +3,40 @@ import { isoDateSchema } from '../employees/employees.validation.js'
 
 export const overtimeHoursSchema = z.coerce.number().positive('Hours must be greater than zero').max(24)
 
-export const recordOvertimeSchema = z.object({
-  employeeId: z.string().uuid('A valid employee is required'),
-  workDate: isoDateSchema,
-  hours: overtimeHoursSchema,
-  remarks: z.string().trim().max(300).nullish(),
-})
+/**
+ * What a paid-hourly entry's hour is worth: one day's salary / `dayDivisor`
+ * hours, or a custom `ratePerHour` in rupees. Left out, it is one day's salary / 8.
+ */
+const overtimeRateFields = {
+  rateBasis: z.enum(['DAY_SALARY', 'CUSTOM']).optional(),
+  dayDivisor: z.coerce.number().positive('The hours in a day must be greater than zero').max(24).nullish(),
+  ratePerHour: z.coerce.number().min(0, 'The amount per hour cannot be negative').max(999_999).nullish(),
+}
 
-export const updateOvertimeSchema = z.object({
-  hours: overtimeHoursSchema,
-  remarks: z.string().trim().max(300).nullish(),
-})
+function requireCustomRate(value: { rateBasis?: 'DAY_SALARY' | 'CUSTOM'; ratePerHour?: number | null }, ctx: z.RefinementCtx) {
+  if (value.rateBasis === 'CUSTOM' && (value.ratePerHour === null || value.ratePerHour === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ratePerHour'], message: 'Enter the amount per hour' })
+  }
+}
+
+export const recordOvertimeSchema = z
+  .object({
+    employeeId: z.string().uuid('A valid employee is required'),
+    workDate: isoDateSchema,
+    hours: overtimeHoursSchema,
+    remarks: z.string().trim().max(300).nullish(),
+    ...overtimeRateFields,
+  })
+  .superRefine(requireCustomRate)
+
+/** Rate fields left out keep the entry's current rate. */
+export const updateOvertimeSchema = z
+  .object({
+    hours: overtimeHoursSchema,
+    remarks: z.string().trim().max(300).nullish(),
+    ...overtimeRateFields,
+  })
+  .superRefine(requireCustomRate)
 
 export const overtimeListQuerySchema = z.object({
   from: isoDateSchema,
@@ -21,6 +44,12 @@ export const overtimeListQuerySchema = z.object({
   employeeId: z.string().uuid().optional(),
   departmentId: z.string().uuid().optional(),
   supervisorId: z.string().uuid().optional(),
+})
+
+export const overtimeEmployeeQuerySchema = z.object({
+  employeeId: z.string().uuid(),
+  /** The entry's date, for the day's salary in force then. */
+  date: isoDateSchema,
 })
 
 export const overtimeWeekQuerySchema = z.object({
@@ -33,3 +62,4 @@ export type RecordOvertimeInput = z.infer<typeof recordOvertimeSchema>
 export type UpdateOvertimeInput = z.infer<typeof updateOvertimeSchema>
 export type OvertimeListQuery = z.infer<typeof overtimeListQuerySchema>
 export type OvertimeWeekQuery = z.infer<typeof overtimeWeekQuerySchema>
+export type OvertimeEmployeeQuery = z.infer<typeof overtimeEmployeeQuerySchema>

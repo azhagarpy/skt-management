@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save } from 'lucide-react'
 import { get, put } from '../../lib/api'
 import { AppLockCard } from './AppLockCard'
+import { BackupCard } from './BackupCard'
 import { formatDateTime } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
@@ -97,6 +98,8 @@ export default function SettingsPage() {
       />
 
       <AppLockCard />
+
+      {can('backup.download') ? <BackupCard /> : null}
 
       {!canViewSettings ? null : categories.size === 0 ? (
         <Card title="No settings yet">

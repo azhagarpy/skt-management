@@ -79,6 +79,12 @@ const FILTER_SQL: Partial<Record<FilterKey, (paramIndex: number) => string>> = {
 const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?: string; month?: string }> = {
   'daily-attendance': { from: 'a.attendance_date', to: 'a.attendance_date' },
   'monthly-attendance-summary': { from: 'a.attendance_date', to: 'a.attendance_date' },
+  'holiday-report': {
+    from: 'a.attendance_date',
+    to: 'a.attendance_date',
+    year: 'EXTRACT(YEAR FROM a.attendance_date)::int',
+    month: 'EXTRACT(MONTH FROM a.attendance_date)::int',
+  },
   'leave-requests': { from: 'r.to_date', to: 'r.from_date' },
   'leave-balances': { year: 'b.leave_year' },
   'salary-register': { year: 'r.year', month: 'r.month' },
@@ -156,21 +162,39 @@ function buildQuery(
   const paging = includePaging
     ? ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
     : ''
+
+  // The row count and every totalled column, summed over all matching rows
+  // rather than one page, so the screen can show the whole report's totals.
+  // Column keys come from the definition, never the request.
+  const totalSelects = definition.columns
+    .filter((column) => column.total)
+    .map((column) => `, coalesce(sum((report_rows."${column.key}")::numeric), 0)::text AS "${column.key}"`)
+    .join('')
   const pagingParams = includePaging ? [filters.pageSize, (filters.page - 1) * filters.pageSize] : []
 
   return {
     sql: `${body} ORDER BY ${definition.orderBy}${paging}`,
-    countSql: `SELECT count(*)::text AS count FROM (${body}) report_rows`,
+    countSql: `SELECT count(*)::text AS count${totalSelects} FROM (${body}) report_rows`,
     params: includePaging ? [...params, ...pagingParams] : params,
   }
 }
 
 function assertRequiredFilters(definition: ReportDefinition, filters: ReportFilters): void {
+  const isGiven = (key: FilterKey): boolean => {
+    const value = filters[key as keyof ReportFilters]
+    return value !== undefined && value !== null && value !== ''
+  }
+
   for (const required of definition.requiredFilters ?? []) {
-    const value = filters[required as keyof ReportFilters]
-    if (value === undefined || value === null || value === '') {
+    if (!isGiven(required)) {
       throw ApiError.badRequest(`The ${definition.name} report requires the "${required}" filter`)
     }
+  }
+
+  const alternatives = definition.requiredOneOf ?? []
+  if (alternatives.length > 0 && !alternatives.some((set) => set.every(isGiven))) {
+    const options = alternatives.map((set) => set.map((key) => `"${key}"`).join(' and ')).join(', or ')
+    throw ApiError.badRequest(`${definition.name} needs the ${options} filters`)
   }
 }
 
@@ -205,7 +229,10 @@ export interface ReportResult {
   name: string
   columns: ReportDefinition['columns']
   rows: Record<string, unknown>[]
+  /** Totals of the rows on this page. */
   totals: Record<string, number>
+  /** Totals of every row the filters match, across all pages. */
+  grandTotals: Record<string, number>
   page: number
   pageSize: number
   total: number
@@ -226,6 +253,15 @@ function computeTotals(definition: ReportDefinition, rows: Record<string, unknow
   return totals
 }
 
+function grandTotalsFrom(definition: ReportDefinition, row: Record<string, string> | null): Record<string, number> {
+  const totals: Record<string, number> = {}
+  for (const column of definition.columns) {
+    if (!column.total) continue
+    totals[column.key] = Number(Number(row?.[column.key] ?? 0).toFixed(2))
+  }
+  return totals
+}
+
 export async function runReport(auth: AuthContext, key: string, filters: ReportFilters): Promise<ReportResult> {
   const definition = findReportDefinition(key)
   if (!definition) throw ApiError.notFound('Report')
@@ -239,7 +275,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
   const paged = buildQuery(definition, auth, scope, filters, true)
   const counted = buildQuery(definition, auth, scope, filters, false)
 
-  const countRow = await queryOne<{ count: string }>(pool, counted.countSql, counted.params)
+  const countRow = await queryOne<Record<string, string>>(pool, counted.countSql, counted.params)
   const rows = await queryRows<Record<string, unknown>>(pool, paged.sql, paged.params)
 
   const paginated = buildPaginated(rows, Number(countRow?.count ?? 0), filters.page, filters.pageSize)
@@ -250,6 +286,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
     columns: definition.columns,
     rows: paginated.items,
     totals: computeTotals(definition, rows),
+    grandTotals: grandTotalsFrom(definition, countRow),
     page: paginated.page,
     pageSize: paginated.pageSize,
     total: paginated.total,

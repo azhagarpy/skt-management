@@ -500,7 +500,7 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
 // Components
 // ---------------------------------------------------------------------------
 
-const emptyComponentForm = { name: '', code: '', isActive: true }
+const emptyComponentForm = { name: '', code: '', isActive: true, holidayExtraPay: true }
 
 function ComponentsTab({ canManage }: { canManage: boolean }) {
   const toast = useToast()
@@ -527,6 +527,7 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
         name: form.name,
         code: form.code.toUpperCase(),
         isActive: form.isActive,
+        holidayExtraPay: form.holidayExtraPay,
       }
       return editing ? put(`/salary/components/${editing.id}`, payload) : post('/salary/components', payload)
     },
@@ -558,6 +559,7 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
       name: component.name,
       code: component.code,
       isActive: component.isActive,
+      holidayExtraPay: component.holidayExtraPay,
     })
     setModalOpen(true)
   }
@@ -572,6 +574,11 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
           <p className="subtle">{row.code}</p>
         </div>
       ),
+    },
+    {
+      key: 'holidayExtraPay',
+      header: 'Holiday extra pay',
+      render: (row) => (row.holidayExtraPay ? 'Included' : <span className="subtle">Not included</span>),
     },
     { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
     ...(canManage
@@ -648,6 +655,22 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
               />
             </Field>
           </div>
+
+          <Field
+            label="Holiday extra pay"
+            htmlFor="component-holiday-extra-pay"
+            hint="Working a holiday earns one extra day's pay. Untick to leave this component out of that extra day - it is still paid for every paid day."
+          >
+            <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+              <input
+                id="component-holiday-extra-pay"
+                type="checkbox"
+                checked={form.holidayExtraPay}
+                onChange={(event) => setForm({ ...form, holidayExtraPay: event.target.checked })}
+              />
+              <span>Include in holiday extra pay</span>
+            </label>
+          </Field>
 
           {editing ? (
             <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
@@ -925,7 +948,7 @@ function PfEsiTab() {
   return (
     <Card
       title="PF, ESI & policy"
-      description="PF is deducted, on both sides, on the wage up to the PF wage ceiling. ESI applies, on both sides, only when a structure's gross is at or below the ESI wage limit. Set each structure's rates, ceiling and limit here."
+      description="PF is deducted, on both sides, on the wage up to the PF wage ceiling. ESI applies, on both sides, only when a structure's monthly gross (26 days' pay for a daily structure) is at or below the ESI wage limit, and is deducted on the wage up to that limit. Set each structure's rates, ceiling and limit here."
       padded={false}
     >
       <DataTable
@@ -1034,7 +1057,7 @@ function PfEsiTab() {
               <Field
                 label="ESI wage limit"
                 htmlFor="rate-esi-limit"
-                hint="ESI applies, on the full wage, only when the structure's gross is at or below this amount. 0 means always applies."
+                hint="ESI applies only when the structure's monthly gross (26 days' pay for a daily structure) is at or below this amount, and is deducted on the month's wage up to it. 0 means always applies, uncapped."
               >
                 <Input
                   id="rate-esi-limit"

@@ -21,6 +21,9 @@ export interface StorageDriver {
 
 const localRoot = resolve(process.cwd(), env.STORAGE_LOCAL_DIR)
 
+/** Where the local driver keeps files - the folder a full backup copies. */
+export const localStorageRoot = localRoot
+
 function resolveLocalPath(key: string): string {
   if (!isSafeStorageKey(key)) {
     throw ApiError.badRequest('Invalid storage key')

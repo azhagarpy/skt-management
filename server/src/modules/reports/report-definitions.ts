@@ -51,6 +51,11 @@ export interface ReportDefinition {
   /** Filters without which the report is meaningless. */
   requiredFilters?: FilterKey[]
   /**
+   * Alternative filter sets, at least one of which must be given in full - e.g.
+   * a month (year and month) or a date range (from and to).
+   */
+  requiredOneOf?: FilterKey[][]
+  /**
    * The SELECT ... FROM ... body. `{{scope}}` is replaced with the employee
    * scope predicate and `{{filters}}` with the bound filter predicates.
    */
@@ -231,6 +236,52 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
        GROUP BY e.id, e.employee_code, e.first_name, e.last_name, d.name, g.name
     `,
     orderBy: 'e.employee_code',
+  },
+  {
+    key: 'holiday-report',
+    name: 'Holiday Report',
+    description: 'The holidays in a month or date range, and who worked on each - a full day or a half day.',
+    category: 'ATTENDANCE',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['year', 'month', 'from', 'to', 'departmentId', 'employeeId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['from', 'to'],
+    ],
+    columns: [
+      { key: 'holiday_date', label: 'Date', format: 'date' },
+      { key: 'holiday_name', label: 'Holiday', format: 'text' },
+      ...EMPLOYEE_COLUMNS,
+      { key: 'worked', label: 'Worked', format: 'text' },
+      { key: 'days_worked', label: 'Days', format: 'days', total: true },
+    ],
+    // Only mandatory holidays count: an optional one leaves the day a working
+    // day (calendar.service.ts). Holidays are matched by date, not by
+    // attendance.holiday_id, because a day imported as worked carries no
+    // holiday link. Two calendars listing the same date give one row, with
+    // both names. A half day on a holiday is half of it worked, as payroll pays it.
+    sql: `
+      SELECT a.attendance_date AS holiday_date,
+             h.name AS holiday_name,
+             e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             CASE WHEN a.status = 'PRESENT' THEN 'Full day' ELSE 'Half day' END AS worked,
+             CASE WHEN a.status = 'PRESENT' THEN 1 ELSE 0.5 END AS days_worked
+        FROM attendance a
+        JOIN (SELECT organization_id, holiday_date, string_agg(DISTINCT name, ' / ' ORDER BY name) AS name
+                FROM holidays
+               WHERE NOT is_optional
+               GROUP BY organization_id, holiday_date) h
+          ON h.organization_id = a.organization_id AND h.holiday_date = a.attendance_date
+        JOIN employees e ON e.id = a.employee_id
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id
+       WHERE {{scope}} {{filters}} AND a.status IN ('PRESENT', 'HALF_DAY_LEAVE')
+    `,
+    orderBy: 'a.attendance_date, e.employee_code',
   },
 
   // -------------------------------------------------------------------------

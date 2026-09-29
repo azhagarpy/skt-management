@@ -74,6 +74,11 @@ export interface ComponentInput {
   taxable: boolean
   /** When false the component is paid in full regardless of attendance. */
   prorate: boolean
+  /**
+   * When false the component is left out of holiday work pay: it is still paid
+   * for every paid day, but working a holiday earns the extra day without it.
+   */
+  holidayExtraPay: boolean
   displayOrder: number
 }
 
@@ -109,6 +114,15 @@ export interface PlWagesInput {
   note: string | null
 }
 
+/** Overtime hours recorded at one rate. */
+export interface OvertimeInput {
+  hours: number
+  /** One day's salary / `dayDivisor` an hour, or a custom `ratePerHourMinor`. */
+  basis: 'DAY_SALARY' | 'CUSTOM'
+  dayDivisor: number | null
+  ratePerHourMinor: Minor | null
+}
+
 export interface AdjustmentInput {
   id: string
   code: string
@@ -126,9 +140,9 @@ export interface StatutoryInput {
   employerRate: number
   /**
    * PF: the wage is capped at this ceiling before either side's rate is
-   * applied. ESI: the scheme applies, on both sides, only when the wage is at
-   * or below this limit - the wage itself is not capped. Zero means no cap
-   * (or, for ESI, no limit: it always applies).
+   * applied. ESI: the scheme applies only when a standard month's wage is at or
+   * below this limit (see `esiEligibilityWage`), and the wage is then capped at
+   * it too. Zero means no cap (or, for ESI, no limit: it always applies).
    */
   wageLimitMinor: Minor
   /**
@@ -162,11 +176,11 @@ export interface CalculatorInput {
   days: DayInput[]
   components: ComponentInput[]
   /**
-   * PSR overtime for the period: hours worked and the per-hour rate to pay them
-   * at. Null for a Supply employee, whose overtime converts to extra weekly offs
-   * instead (overtime.service.ts) and never touches payroll money.
+   * PSR overtime for the period, the hours totalled per rate they were recorded
+   * at. Empty for a Supply employee, whose overtime converts to extra weekly
+   * offs instead (overtime.service.ts) and never touches payroll money.
    */
-  overtime: { hours: number; rateMinor: Minor } | null
+  overtime: OvertimeInput[]
   /**
    * Per-employee total that replaces the structure total: monthly gross for a
    * MONTHLY structure, daily rate for a DAILY one. Components are scaled
@@ -183,7 +197,10 @@ export interface CalculatorInput {
   adjustments: AdjustmentInput[]
   /** PF is deducted on the structure's wage, capped at `pf.wageLimitMinor`. */
   pf: StatutoryInput
-  /** ESI applies only when the structure's wage is at or below `esi.wageLimitMinor`. */
+  /**
+   * ESI applies only when a standard month's wage is at or below
+   * `esi.wageLimitMinor`, and is then deducted on the wage capped at that limit.
+   */
   esi: StatutoryInput
   policy: PolicyInput
 }
@@ -613,6 +630,59 @@ function ceilToRupee(minor: Minor): Minor {
   return Math.ceil(minor / 100) * 100
 }
 
+/** The days in a standard month, for judging a daily-rated employee's ESI eligibility. */
+const ESI_STANDARD_MONTH_DAYS = 26
+
+/**
+ * The wage ESI eligibility is judged on: what the structure pays for a standard
+ * month, never what this month's attendance happened to earn. That is the
+ * monthly gross for a monthly structure, and 26 days at the daily rate for a
+ * daily one. Judged on actual earnings, a few extra days worked would push an
+ * employee over the limit and out of ESI, and a short month would pull one who
+ * is over it back in.
+ */
+function esiEligibilityWage(resolved: ResolvedComponent[], salaryBasis: 'MONTHLY' | 'DAILY'): Minor {
+  let wageMinor = 0
+  for (const entry of resolved) {
+    if (entry.input.componentType !== 'EARNING') continue
+    // A daily structure pays a prorated component per day and any other once
+    // per period, same as the proration in calculatePayrollItem.
+    wageMinor +=
+      salaryBasis === 'DAILY' && entry.input.prorate
+        ? multiplyMinor(entry.fullAmountMinor, ESI_STANDARD_MONTH_DAYS)
+        : entry.fullAmountMinor
+  }
+  return wageMinor
+}
+
+/**
+ * One day's salary, the base of an overtime rate of "one day's salary / n": the
+ * structure's prorated earnings at the same daily rate its proration uses -
+ * the per-day amounts of a daily structure, or a monthly structure's earnings
+ * over the payable days basis.
+ */
+function daySalaryMinor(resolved: ResolvedComponent[], salaryBasis: 'MONTHLY' | 'DAILY', payableDaysBasis: number): Minor {
+  let dayMinor = 0
+  for (const entry of resolved) {
+    if (entry.input.componentType !== 'EARNING' || !entry.input.prorate) continue
+    dayMinor += entry.fullAmountMinor
+  }
+  return salaryBasis === 'MONTHLY' ? prorateMinor(dayMinor, 1, payableDaysBasis) : dayMinor
+}
+
+/**
+ * One day's salary for a structure, outside a payroll run: what the overtime
+ * entry screen shows an entry will be worth before payroll pays it.
+ */
+export function overtimeDaySalaryMinor(
+  components: ComponentInput[],
+  overrideTotalMinor: Minor | null,
+  salaryBasis: 'MONTHLY' | 'DAILY',
+  payableDaysBasis: number,
+): Minor {
+  return daySalaryMinor(applyOverride(resolveComponents(components), overrideTotalMinor), salaryBasis, payableDaysBasis)
+}
+
 // ---------------------------------------------------------------------------
 // The calculation
 // ---------------------------------------------------------------------------
@@ -742,10 +812,37 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // ------------------------------------------------------------------
   // PSR overtime pay: hours x rate, as a plain earning (plan: OT for PSR is
   // salary, not days off - the opposite of a Supply employee's conversion).
-  // Like bonuses, it counts toward gross earnings but not the statutory wage.
+  // Each entry chose its rate when it was recorded: one day's salary / n hours
+  // - a day being the structure's earnings at the same daily rate its
+  // proration uses, as for holiday work pay - or a custom amount per hour.
+  // Like bonuses, it counts toward gross earnings but not the statutory wage,
+  // so no PF or ESI is deducted from it: the whole amount reaches net salary.
   // ------------------------------------------------------------------
-  if (input.overtime && input.overtime.hours > 0 && input.overtime.rateMinor > 0) {
-    const overtimeAmountMinor = multiplyMinor(input.overtime.rateMinor, input.overtime.hours)
+  const dayRateMinor = daySalaryMinor(resolved, input.employee.salaryBasis, attendance.payableDaysBasis)
+
+  let overtimeAmountMinor = 0
+  let unpaidOvertimeHours = 0
+  const overtimeNotes: string[] = []
+  for (const overtime of input.overtime) {
+    if (overtime.hours <= 0) continue
+    let amountMinor: Minor
+    if (overtime.basis === 'CUSTOM') {
+      const rateMinor = overtime.ratePerHourMinor ?? 0
+      amountMinor = multiplyMinor(rateMinor, overtime.hours)
+      overtimeNotes.push(`${overtime.hours} hour(s) at ${rateMinor / 100}/hour`)
+    } else {
+      const divisor = overtime.dayDivisor ?? 0
+      // Hours x day / n in one step, so n hours pay exactly one day's salary.
+      amountMinor = divisor > 0 ? multiplyMinor(dayRateMinor, overtime.hours / divisor) : 0
+      overtimeNotes.push(
+        `${overtime.hours} hour(s) at ${divisor > 0 ? (dayRateMinor / 100 / divisor).toFixed(2) : 0}/hour (one day's salary ${dayRateMinor / 100} / ${divisor})`,
+      )
+    }
+    if (amountMinor > 0) overtimeAmountMinor += amountMinor
+    else unpaidOvertimeHours += overtime.hours
+  }
+
+  if (overtimeAmountMinor > 0) {
     grossEarningsMinor += overtimeAmountMinor
     components.push({
       code: 'OVERTIME',
@@ -759,8 +856,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
       taxable: true,
       displayOrder: 550,
       referenceId: null,
-      notes: `${input.overtime.hours} hour(s) at ${input.overtime.rateMinor / 100}/hour`,
+      notes: overtimeNotes.join('; '),
     })
+  }
+  if (unpaidOvertimeHours > 0) {
+    warnings.push(`${unpaidOvertimeHours} overtime hour(s) are recorded but their rate works out to zero; they were not paid.`)
   }
 
   // ------------------------------------------------------------------
@@ -772,6 +872,8 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // toward gross earnings and toward the PF and ESI wage (unlike overtime and
   // bonuses). A holiday worked for half a day earns half of that: its worked
   // half is paid through the paid days, and the extra pay is half a day more.
+  // A component switched out of holiday extra pay (e.g. a special allowance
+  // paid for the month's days only) is left out of that extra day.
   // ------------------------------------------------------------------
   const holidaysWorked = input.days.filter(
     (day) =>
@@ -783,7 +885,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   const holidayWorkedDays = holidaysWorked.reduce((total, day) => total + (day.status === 'PRESENT' ? 1 : 0.5), 0)
   if (holidayWorkedDays > 0) {
     for (const entry of resolved) {
-      if (entry.input.componentType !== 'EARNING' || !entry.input.prorate) continue
+      if (entry.input.componentType !== 'EARNING' || !entry.input.prorate || !entry.input.holidayExtraPay) continue
       holidayWorkMinor +=
         input.employee.salaryBasis === 'DAILY'
           ? multiplyMinor(entry.fullAmountMinor, holidayWorkedDays)
@@ -819,15 +921,17 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // the structure's PF wage ceiling. Employee PF, the employer share and EPS are
   // each rounded to the nearest whole rupee (.5 and above up, below .5 down), and
   // EPF is the remainder, so all three parts are whole rupees. ESI applies,
-  // on both sides, on the full wage, but only when the structure's wage is at or
-  // below the structure's ESI limit, and is always rounded UP to the next whole rupee.
+  // on both sides, only when a standard month's wage (esiEligibilityWage) is at
+  // or below the structure's ESI limit; it is then deducted on the month's wage
+  // capped at that limit, and is always rounded UP to the next whole rupee.
   // Neither is rounded into the net: net salary is gross less these whole-rupee
   // amounts, so it keeps whatever paise the prorated earnings carry.
   // ------------------------------------------------------------------
   // PF and ESI are worked out on the structure's earnings plus holiday work pay.
-  // ESI *eligibility* still looks at the structure alone, so a month with a
-  // worked holiday cannot by itself push someone over the ESI limit and drop
-  // them out of the scheme.
+  // ESI *eligibility* looks at the structure's standard month alone, so extra
+  // days or a worked holiday cannot push someone over the ESI limit and drop
+  // them out of the scheme - the part of the wage above the limit is simply not
+  // charged ESI.
   const statutoryWageMinor = structureGrossMinor + holidayWorkMinor
   let statutoryDeductionsMinor = 0
   let pfWageMinor = 0
@@ -909,9 +1013,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   if (
     input.esi.applicable &&
     structureGrossMinor > 0 &&
-    (input.esi.wageLimitMinor <= 0 || structureGrossMinor <= input.esi.wageLimitMinor)
+    (input.esi.wageLimitMinor <= 0 ||
+      esiEligibilityWage(resolved, input.employee.salaryBasis) <= input.esi.wageLimitMinor)
   ) {
-    esiWageMinor = statutoryWageMinor
+    esiWageMinor =
+      input.esi.wageLimitMinor > 0 ? minMinor(statutoryWageMinor, input.esi.wageLimitMinor) : statutoryWageMinor
     const employeeMinor = ceilToRupee(percentOfMinor(esiWageMinor, input.esi.employeeRate))
     const employerMinor = ceilToRupee(percentOfMinor(esiWageMinor, input.esi.employerRate))
 

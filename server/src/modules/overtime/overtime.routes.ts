@@ -9,10 +9,12 @@ import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as service from './overtime.service.js'
 import {
+  overtimeEmployeeQuerySchema,
   overtimeListQuerySchema,
   overtimeWeekQuerySchema,
   recordOvertimeSchema,
   updateOvertimeSchema,
+  type OvertimeEmployeeQuery,
   type OvertimeListQuery,
   type OvertimeWeekQuery,
   type RecordOvertimeInput,
@@ -36,6 +38,18 @@ overtimeRouter.get(
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     return sendSuccess(res, await service.listOvertime(auth, req.query as unknown as OvertimeListQuery))
+  }),
+)
+
+/** Whether the employee's OT is paid, and the rate a new entry for them starts at. */
+overtimeRouter.get(
+  '/employee-settings',
+  canView,
+  validate({ query: overtimeEmployeeQuerySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const query = req.query as unknown as OvertimeEmployeeQuery
+    return sendSuccess(res, await service.getEmployeeOvertimeSettings(auth, query.employeeId, query.date))
   }),
 )
 
