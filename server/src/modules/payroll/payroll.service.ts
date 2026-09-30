@@ -377,6 +377,11 @@ export async function calculateRun(
       const contextStart = addDays(periodStart, -HOLIDAY_CONTEXT_DAYS)
       const contextEnd = addDays(periodEnd, HOLIDAY_CONTEXT_DAYS)
 
+      // Release the adjustments a previous calculation of this run applied
+      // before reading the pending ones. Read first, they would still count as
+      // applied and drop out, so every other recalculation would lose them.
+      await repository.clearAppliedAdjustmentsForRun(runId, tx)
+
       const [calendar, attendanceRows, leaveRows, assignments, bonuses, taxDeductions, lwfContributions, plWagesCredits, adjustments, overtimeByEmployee] =
         await Promise.all([
           buildCalendarContext(auth.organizationId, contextStart, contextEnd, tx),
@@ -480,7 +485,6 @@ export async function calculateRun(
       }
 
       // --- Replace any previous calculation. --------------------------------
-      await repository.clearAppliedAdjustmentsForRun(runId, tx)
       await repository.deleteRunItems(runId, tx)
 
       const contextDates = datesBetween(contextStart, contextEnd)
