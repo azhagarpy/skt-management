@@ -90,6 +90,7 @@ export function presentRun(row: repository.PayrollRunRow) {
     totalEmployees: row.total_employees,
     totalGross: Number(row.total_gross),
     totalDeductions: Number(row.total_deductions),
+    totalCredits: Number(row.total_credits),
     totalNet: Number(row.total_net),
     totalPaid: Number(row.total_paid),
     totalPending: Number(row.total_pending),
@@ -135,6 +136,7 @@ export function presentItem(row: repository.PayrollItemRow) {
     grossEarnings: Number(row.gross_earnings),
     totalBonus: Number(row.total_bonus),
     totalDeductions: Number(row.total_deductions),
+    totalCredits: Number(row.total_credits),
     employerContributions: Number(row.employer_contributions),
     pfWage: Number(row.pf_wage),
     pfWageCeiling: Number(row.pf_wage_ceiling),
@@ -632,6 +634,7 @@ export async function calculateRun(
             gross_earnings: toNumericString(result.grossEarningsMinor),
             total_bonus: toNumericString(result.totalBonusMinor),
             total_deductions: toNumericString(result.totalDeductionsMinor),
+            total_credits: toNumericString(result.totalCreditsMinor),
             employer_contributions: toNumericString(result.employerContributionsMinor),
             pf_wage: toNumericString(result.pfWageMinor),
             pf_wage_ceiling: toNumericString(result.pfWageCeilingMinor),
@@ -920,6 +923,8 @@ export async function getItem(auth: AuthContext, itemId: string) {
     components: components.map(presentComponent),
     earnings: components.filter((component) => component.component_type === 'EARNING').map(presentComponent),
     deductions: components.filter((component) => component.component_type === 'DEDUCTION').map(presentComponent),
+    // Other Credits, added to net pay after the deductions.
+    credits: components.filter((component) => component.component_type === 'CREDIT').map(presentComponent),
     // Named distinctly from the numeric total on the item itself.
     employerContributionComponents: components
       .filter((component) => component.component_type === 'EMPLOYER_CONTRIBUTION')

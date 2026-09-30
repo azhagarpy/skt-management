@@ -439,6 +439,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'gross_earnings', label: 'Gross', format: 'currency', total: true },
       { key: 'total_bonus', label: 'Bonus', format: 'currency', total: true },
       { key: 'total_deductions', label: 'Deductions', format: 'currency', total: true },
+      { key: 'total_credits', label: 'Other Credits', format: 'currency', total: true },
       { key: 'net_salary', label: 'Net', format: 'currency', total: true },
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
@@ -453,6 +454,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              i.gross_earnings,
              i.total_bonus,
              i.total_deductions,
+             i.total_credits,
              i.net_salary,
              i.paid_amount,
              i.pending_amount,
@@ -629,6 +631,39 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN departments  d ON d.id = e.department_id
         LEFT JOIN designations g ON g.id = e.designation_id
        WHERE {{scope}} {{filters}} AND a.component_code LIKE 'OD\\_%'
+    `,
+    orderBy: 'a.apply_year DESC, a.apply_month DESC, e.employee_code',
+  },
+  {
+    key: 'other-credits-report',
+    name: 'Other Credits Report',
+    description: 'One-off amounts added straight to net pay - incentives, reimbursements and the like - by employee and payroll month.',
+    category: 'PAYROLL',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['year', 'month', 'departmentId', 'employeeId'],
+    requiredFilters: ['year'],
+    columns: [
+      ...EMPLOYEE_COLUMNS,
+      { key: 'category', label: 'Category', format: 'text' },
+      { key: 'amount', label: 'Amount', format: 'currency', total: true },
+      { key: 'reason', label: 'Reason', format: 'text' },
+      { key: 'status', label: 'Status', format: 'text' },
+    ],
+    sql: `
+      SELECT e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             a.component_name AS category,
+             a.amount,
+             a.reason,
+             CASE WHEN a.applied_at IS NOT NULL THEN 'Applied' ELSE 'Pending' END AS status
+        FROM payroll_adjustments a
+        JOIN employees e ON e.id = a.employee_id
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id
+       WHERE {{scope}} {{filters}} AND a.component_code LIKE 'OC\\_%'
     `,
     orderBy: 'a.apply_year DESC, a.apply_month DESC, e.employee_code',
   },
@@ -820,6 +855,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'employees', label: 'Employees', format: 'number', total: true },
       { key: 'gross_earnings', label: 'Gross', format: 'currency', total: true },
       { key: 'total_deductions', label: 'Deductions', format: 'currency', total: true },
+      { key: 'total_credits', label: 'Other Credits', format: 'currency', total: true },
       { key: 'net_salary', label: 'Net', format: 'currency', total: true },
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
@@ -829,6 +865,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              count(*) AS employees,
              sum(i.gross_earnings)   AS gross_earnings,
              sum(i.total_deductions) AS total_deductions,
+             sum(i.total_credits)    AS total_credits,
              sum(i.net_salary)       AS net_salary,
              sum(i.paid_amount)      AS paid_amount,
              sum(i.pending_amount)   AS pending_amount

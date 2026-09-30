@@ -170,6 +170,7 @@ export function drawPayslipPage(doc: Pdf, data: PayslipPdfData): void {
   const earnings = components.filter((component) => component.component_type === 'EARNING')
   const deductions = components.filter((component) => component.component_type === 'DEDUCTION')
   const employer = components.filter((component) => component.component_type === 'EMPLOYER_CONTRIBUTION')
+  const credits = components.filter((component) => component.component_type === 'CREDIT')
 
   const toRow = (component: PayrollItemComponentRow): TableRow => ({
     name: component.component_name,
@@ -188,20 +189,35 @@ export function drawPayslipPage(doc: Pdf, data: PayslipPdfData): void {
   const rightEnd = drawSide(doc, PAGE.left + HALF + 15, y, 'Deductions', deductionRows)
   const totalsY = Math.max(leftEnd, rightEnd)
 
-  const total = (x: number, label: string, value: string): void => {
-    doc.rect(x, totalsY, HALF, 22).fill(COLOR.band)
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.ink).text(label, x + 8, totalsY + 7, { width: HALF - 108, lineBreak: false })
-    doc.text(value, x + HALF - 92, totalsY + 7, { width: 84, align: 'right', lineBreak: false })
+  const total = (x: number, rowY: number, label: string, value: string): void => {
+    doc.rect(x, rowY, HALF, 22).fill(COLOR.band)
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR.ink).text(label, x + 8, rowY + 7, { width: HALF - 108, lineBreak: false })
+    doc.text(value, x + HALF - 92, rowY + 7, { width: 84, align: 'right', lineBreak: false })
   }
-  total(PAGE.left, 'Gross earnings', money(item.gross_earnings))
-  total(PAGE.left + HALF + 15, 'Total deductions', money(item.total_deductions))
+  total(PAGE.left, totalsY, 'Gross earnings', money(item.gross_earnings))
+  total(PAGE.left + HALF + 15, totalsY, 'Total deductions', money(item.total_deductions))
   y = totalsY + 22 + 14
+
+  // --- Other credits -------------------------------------------------------------
+  // Paid on top of earnings less deductions: not part of gross, nothing deducted from it.
+  if (credits.length > 0) {
+    const creditRows = credits.map(toRow)
+    y = ensureSpace(doc, y, tableHeight(creditRows) + 22 + 14 + 80)
+    const creditsEnd = drawSide(doc, PAGE.left, y, 'Other credits', creditRows)
+    total(PAGE.left, creditsEnd, 'Total credits', money(item.total_credits))
+    y = creditsEnd + 22 + 14
+  }
 
   // --- Net pay -----------------------------------------------------------------
   const net = Number(item.net_salary)
   doc.rect(PAGE.left, y, PAGE.width, 54).lineWidth(1).fillAndStroke(COLOR.tint, COLOR.accent)
   doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLOR.accent).text('NET PAY (INR)', PAGE.left + 12, y + 9, { lineBreak: false })
-  doc.font('Helvetica').fontSize(8).fillColor(COLOR.muted).text('Gross earnings less total deductions', PAGE.left + 12, y + 21, { lineBreak: false })
+  doc.font('Helvetica').fontSize(8).fillColor(COLOR.muted).text(
+    credits.length > 0 ? 'Gross earnings less total deductions, plus other credits' : 'Gross earnings less total deductions',
+    PAGE.left + 12,
+    y + 21,
+    { lineBreak: false },
+  )
   doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(COLOR.ink).text(amountInWords(net), PAGE.left + 12, y + 35, {
     width: PAGE.width - 24,
     lineBreak: false,

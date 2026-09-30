@@ -237,6 +237,30 @@ export default function PayrollItemPage() {
           </div>
         </div>
 
+        {item.credits.length > 0 ? (
+          <div style={{ marginTop: '1.5rem' }}>
+            <p className="stat-label">Other credits</p>
+            <p className="subtle" style={{ marginBottom: '0.4rem' }}>
+              Added straight to net salary; not part of gross earnings, and nothing is deducted from them.
+            </p>
+            <div className="breakdown-list">
+              {item.credits.map((component) => (
+                <div key={component.id} className="breakdown-row">
+                  <span>
+                    {component.name}
+                    {component.notes ? <span className="subtle" style={{ display: 'block' }}>{component.notes}</span> : null}
+                  </span>
+                  <span className="numeric">{formatCurrency(component.amount)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="breakdown-total">
+              <span>Total credits</span>
+              <span className="numeric">{formatCurrency(item.totalCredits)}</span>
+            </div>
+          </div>
+        ) : null}
+
         {item.employerContributionComponents.length > 0 ? (
           <div style={{ marginTop: '1.5rem' }}>
             <p className="stat-label">Employer contributions</p>

@@ -97,6 +97,7 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   'bonus-report': { year: 'b.payroll_year', month: 'b.payroll_month' },
   'tax-deductions-report': { year: 't.payroll_year', month: 't.payroll_month' },
   'other-deductions-report': { year: 'a.apply_year', month: 'a.apply_month' },
+  'other-credits-report': { year: 'a.apply_year', month: 'a.apply_month' },
   'lwf-report': { year: 'l.contribution_year' },
   'pl-wages-report': { year: 'c.credit_year' },
   'pf-report': { year: 'r.year', month: 'r.month' },

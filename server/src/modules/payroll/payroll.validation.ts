@@ -82,7 +82,8 @@ export const adjustmentCreateSchema = z.object({
     .max(24)
     .regex(/^[A-Z0-9_-]+$/, 'Code may contain letters, digits, hyphen and underscore only'),
   componentName: z.string().trim().min(2).max(120),
-  componentType: z.enum(['EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION']),
+  // CREDIT is added straight to net pay, outside gross earnings (Other Credits).
+  componentType: z.enum(['EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION', 'CREDIT']),
   amount: z.coerce
     .number()
     .refine((value) => value !== 0, 'An adjustment amount cannot be zero')
@@ -100,7 +101,10 @@ export const adjustmentListQuerySchema = z.object({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .transform((value) => (typeof value === 'boolean' ? value : value === 'true'))
     .optional(),
-  /** Narrows to adjustments whose component code starts with this, e.g. "OD_" for Other Deductions. */
+  /**
+   * Narrows to adjustments whose component code starts with this, e.g. "OD_"
+   * for Other Deductions or "OC_" for Other Credits.
+   */
   componentCodePrefix: z.string().trim().max(24).optional(),
 })
 

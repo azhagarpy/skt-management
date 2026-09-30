@@ -41,6 +41,7 @@ const PayslipDocumentsPage = lazy(() => import('../../features/payroll/PayslipDo
 const PaymentsPage = lazy(() => import('../../features/payments/PaymentsPage'))
 const BonusesPage = lazy(() => import('../../features/bonuses/BonusesPage'))
 const OtherDeductionsPage = lazy(() => import('../../features/other-deductions/OtherDeductionsPage'))
+const OtherCreditsPage = lazy(() => import('../../features/other-credits/OtherCreditsPage'))
 const TaxPage = lazy(() => import('../../features/tax/TaxPage'))
 const LwfPage = lazy(() => import('../../features/lwf/LwfPage'))
 const PlWagesPage = lazy(() => import('../../features/pl-wages/PlWagesPage'))
@@ -289,6 +290,14 @@ export function AppRouter() {
             element={
               <Protected anyOf={['payroll.adjust', 'payroll.view.all']}>
                 <OtherDeductionsPage />
+              </Protected>
+            }
+          />
+          <Route
+            path="/other-credits"
+            element={
+              <Protected anyOf={['payroll.adjust', 'payroll.view.all']}>
+                <OtherCreditsPage />
               </Protected>
             }
           />

@@ -1077,6 +1077,34 @@ describe('calculatePayrollItem - bonuses', () => {
     expect(result.netSalaryMinor).toBeLessThan(0)
     expect(result.warnings.some((warning) => warning.includes('negative net salary'))).toBe(true)
   })
+
+  it('adds an Other Credit straight to net pay, outside gross and the statutory wage', () => {
+    const pf = { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: 0, epsRate: 0 }
+    const esi = { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: 0 }
+    const components = [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(10_000) })]
+    const without = calculatePayrollItem(baseInput({ components, pf, esi }))
+    const result = calculatePayrollItem(
+      baseInput({
+        components,
+        pf,
+        esi,
+        adjustments: [
+          { id: 'adj-2', code: 'OC_INCENTIVE', name: 'Incentive', componentType: 'CREDIT', amountMinor: toMinor(2_500), reason: 'Target met' },
+        ],
+      }),
+    )
+
+    expect(toMajor(result.totalCreditsMinor)).toBe(2_500)
+    expect(result.grossEarningsMinor).toBe(without.grossEarningsMinor)
+    expect(result.totalDeductionsMinor).toBe(without.totalDeductionsMinor)
+    expect(result.pfWageMinor).toBe(without.pfWageMinor)
+    expect(result.esiWageMinor).toBe(without.esiWageMinor)
+    expect(toMajor(result.netSalaryMinor - without.netSalaryMinor)).toBe(2_500)
+    expect(result.components.find((entry) => entry.code === 'OC_INCENTIVE')).toMatchObject({
+      componentType: 'CREDIT',
+      source: 'ADJUSTMENT',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

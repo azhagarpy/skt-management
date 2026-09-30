@@ -19,6 +19,7 @@ export interface PayrollRunRow {
   total_employees: number
   total_gross: string
   total_deductions: string
+  total_credits: string
   total_net: string
   total_paid: string
   total_pending: string
@@ -61,6 +62,7 @@ export interface PayrollItemRow {
   gross_earnings: string
   total_bonus: string
   total_deductions: string
+  total_credits: string
   employer_contributions: string
   pf_wage: string
   pf_wage_ceiling: string
@@ -88,7 +90,7 @@ export interface PayrollItemComponentRow {
   payroll_item_id: string
   component_code: string
   component_name: string
-  component_type: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
+  component_type: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
   calculation_type: 'FIXED' | 'PERCENTAGE'
   source: string
   full_amount: string
@@ -107,7 +109,7 @@ export interface PayrollAdjustmentRow {
   adjustment_type: string
   component_code: string
   component_name: string
-  component_type: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
+  component_type: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
   amount: string
   apply_year: number
   apply_month: number
@@ -254,6 +256,7 @@ export async function refreshRunTotals(runId: string, db: Queryable = pool): Pro
         SET total_employees = t.count,
             total_gross = t.gross,
             total_deductions = t.deductions,
+            total_credits = t.credits,
             total_net = t.net,
             total_paid = t.paid,
             total_pending = t.pending
@@ -261,6 +264,7 @@ export async function refreshRunTotals(runId: string, db: Queryable = pool): Pro
          SELECT count(*)                     AS count,
                 coalesce(sum(gross_earnings), 0)   AS gross,
                 coalesce(sum(total_deductions), 0) AS deductions,
+                coalesce(sum(total_credits), 0)    AS credits,
                 coalesce(sum(net_salary), 0)       AS net,
                 coalesce(sum(paid_amount), 0)      AS paid,
                 coalesce(sum(pending_amount), 0)   AS pending
@@ -301,10 +305,10 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
        weekly_off_days, unmarked_days, paid_days, payable_days_basis,
        gross_earnings, total_bonus, total_deductions, employer_contributions,
        pf_wage, pf_wage_ceiling, esi_wage, net_salary,
-       paid_amount, pending_amount, payment_status, remarks, calculation_snapshot
+       paid_amount, pending_amount, payment_status, remarks, calculation_snapshot, total_credits
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38::jsonb
+       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38::jsonb, $39
      ) RETURNING *`,
     [
       values.organization_id,
@@ -345,6 +349,7 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
       values.payment_status ?? 'PENDING',
       values.remarks ?? null,
       JSON.stringify(values.calculation_snapshot ?? {}),
+      values.total_credits ?? '0',
     ],
   )
   return row as PayrollItemRow

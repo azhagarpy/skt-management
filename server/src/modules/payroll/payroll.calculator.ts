@@ -56,7 +56,12 @@ export interface DayInput {
   holidayForfeited?: boolean
 }
 
-export type ComponentType = 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
+/**
+ * CREDIT is an amount added straight to net pay (Other Credits): not an
+ * earning, so it stays out of gross and every wage worked out from it. Only a
+ * payroll adjustment is ever a credit, never a salary structure component.
+ */
+export type ComponentType = 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
 export type CalculationType = 'FIXED' | 'PERCENTAGE'
 export type PercentageBase = 'BASIC' | 'GROSS' | 'CTC' | 'COMPONENT'
 
@@ -259,6 +264,8 @@ export interface CalculatorOutput {
   grossEarningsMinor: Minor
   totalBonusMinor: Minor
   totalDeductionsMinor: Minor
+  /** Other Credits: added to net pay after deductions, never part of gross. */
+  totalCreditsMinor: Minor
   employerContributionsMinor: Minor
   /** The wage PF/ESI were actually calculated on this run (0 when not applicable). */
   pfWageMinor: Minor
@@ -1155,6 +1162,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // ------------------------------------------------------------------
   let adjustmentEarningsMinor = 0
   let adjustmentDeductionsMinor = 0
+  let totalCreditsMinor = 0
 
   for (const adjustment of input.adjustments) {
     if (adjustment.amountMinor === 0) continue
@@ -1176,6 +1184,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
 
     if (adjustment.componentType === 'EARNING') adjustmentEarningsMinor += adjustment.amountMinor
     else if (adjustment.componentType === 'DEDUCTION') adjustmentDeductionsMinor += adjustment.amountMinor
+    else if (adjustment.componentType === 'CREDIT') totalCreditsMinor += adjustment.amountMinor
     else employerContributionsMinor += adjustment.amountMinor
   }
 
@@ -1187,7 +1196,8 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     adjustmentDeductionsMinor,
   )
 
-  let netSalaryMinor = grossEarningsMinor - totalDeductionsMinor
+  // A credit goes straight to net pay, after the deductions, so none is taken from it.
+  let netSalaryMinor = grossEarningsMinor - totalDeductionsMinor + totalCreditsMinor
   netSalaryMinor = roundToDecimals(netSalaryMinor, input.policy.netRoundingDecimals)
 
   if (netSalaryMinor < 0) {
@@ -1205,6 +1215,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     grossEarningsMinor,
     totalBonusMinor,
     totalDeductionsMinor,
+    totalCreditsMinor,
     employerContributionsMinor,
     pfWageMinor,
     pfWageCeilingMinor,

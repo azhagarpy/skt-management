@@ -192,6 +192,13 @@ const MODULE_STEPS: TourStep[] = [
       'A one-off deduction for a chosen payroll month - a penalty, a recovery for damaged or lost property, an advance recovery, or anything else. It is applied automatically when that month’s payroll is calculated, and can be removed up until then.',
   },
   {
+    id: 'other-credits',
+    target: navTarget('/other-credits'),
+    title: 'Other Credits',
+    body:
+      'A one-off amount paid to an employee in a chosen payroll month - an incentive, a reimbursement, an advance, or anything else. It is added straight to net salary when that month’s payroll is calculated: it is not part of gross, so no PF, ESI or other deduction is taken from it.',
+  },
+  {
     id: 'tax',
     target: navTarget('/tax'),
     title: 'Panchayat Tax',

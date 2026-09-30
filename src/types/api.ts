@@ -695,6 +695,8 @@ export interface PayrollRun {
   totalEmployees: number
   totalGross: number
   totalDeductions: number
+  /** Other Credits, added to net pay outside gross. */
+  totalCredits: number
   totalNet: number
   totalPaid: number
   totalPending: number
@@ -740,6 +742,8 @@ export interface PayrollItem {
   grossEarnings: number
   totalBonus: number
   totalDeductions: number
+  /** Other Credits, added to net pay outside gross. */
+  totalCredits: number
   employerContributions: number
   pfWage: number
   pfWageCeiling: number
@@ -770,7 +774,7 @@ export interface PayrollComponent {
   id: string
   code: string
   name: string
-  componentType: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
+  componentType: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
   calculationType: 'FIXED' | 'PERCENTAGE'
   source: string
   fullAmount: number
@@ -785,6 +789,8 @@ export interface PayrollItemDetail extends PayrollItem {
   components: PayrollComponent[]
   earnings: PayrollComponent[]
   deductions: PayrollComponent[]
+  /** Other Credits: added to net pay after the deductions, not part of gross. */
+  credits: PayrollComponent[]
   /** Named distinctly from the numeric total on PayrollItem. */
   employerContributionComponents: PayrollComponent[]
 }
@@ -860,7 +866,7 @@ export interface PayrollAdjustment {
   adjustmentType: string
   componentCode: string
   componentName: string
-  componentType: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION'
+  componentType: 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
   amount: number
   applyYear: number
   applyMonth: number
