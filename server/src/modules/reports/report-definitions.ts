@@ -72,6 +72,90 @@ const EMPLOYEE_COLUMNS: ReportColumn[] = [
   { key: 'designation_name', label: 'Section', format: 'text' },
 ]
 
+/**
+ * A payroll item's (`i`) pay split into its categories, joined as `pc`, so the
+ * columns of a salary report add up for every row and for the totals:
+ *
+ *   gross - total deductions + overtime + other credits = net
+ *
+ * Overtime is added to net pay outside gross. On an item calculated before
+ * that, it was an earning inside gross, so it is taken back out of gross here
+ * and shown with the rest of the overtime: every month reports the overtime it
+ * paid, and adds up the same way.
+ */
+const PAY_CATEGORIES_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT coalesce(sum(pcc.amount) FILTER (WHERE pcc.component_code = 'PF_EMPLOYEE'), 0)  AS pf_employee,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.component_code = 'ESI_EMPLOYEE'), 0) AS esi_employee,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.component_code = 'PTAX'), 0)         AS ptax,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.component_code = 'LWF_EMPLOYEE'), 0) AS lwf,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.source = 'OVERTIME'), 0)            AS overtime,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.source = 'OVERTIME' AND pcc.component_type = 'EARNING'), 0)
+             AS overtime_in_gross
+      FROM payroll_item_components pcc
+     WHERE pcc.payroll_item_id = i.id
+  ) pc ON true`
+
+/** Each category as a select expression over `i` and `pc`. */
+const PAY_CATEGORY_SQL = {
+  gross: '(i.gross_earnings - pc.overtime_in_gross)',
+  pfEmployee: 'pc.pf_employee',
+  esiEmployee: 'pc.esi_employee',
+  ptax: 'pc.ptax',
+  lwf: 'pc.lwf',
+  otherDeductions: '(i.total_deductions - pc.pf_employee - pc.esi_employee - pc.ptax - pc.lwf)',
+  totalDeductions: 'i.total_deductions',
+  overtime: 'pc.overtime',
+  otherCredits: 'i.total_credits',
+  net: 'i.net_salary',
+}
+
+const PAY_CATEGORY_COLUMNS: ReportColumn[] = [
+  { key: 'gross_earnings', label: 'Gross Earnings', format: 'currency', total: true },
+  { key: 'pf_employee', label: 'PF (Employee)', format: 'currency', total: true },
+  { key: 'esi_employee', label: 'ESI (Employee)', format: 'currency', total: true },
+  { key: 'ptax', label: 'P.Tax', format: 'currency', total: true },
+  { key: 'lwf', label: 'LWF', format: 'currency', total: true },
+  { key: 'other_deductions', label: 'Other Deductions', format: 'currency', total: true },
+  { key: 'total_deductions', label: 'Total Deductions', format: 'currency', total: true },
+  { key: 'overtime_amount', label: 'Overtime', format: 'currency', total: true },
+  { key: 'total_credits', label: 'Other Credits', format: 'currency', total: true },
+  { key: 'net_salary', label: 'Net Salary', format: 'currency', total: true },
+]
+
+/** The per-item select list for PAY_CATEGORY_COLUMNS. */
+const PAY_CATEGORY_SELECT = `
+             ${PAY_CATEGORY_SQL.gross} AS gross_earnings,
+             ${PAY_CATEGORY_SQL.pfEmployee} AS pf_employee,
+             ${PAY_CATEGORY_SQL.esiEmployee} AS esi_employee,
+             ${PAY_CATEGORY_SQL.ptax} AS ptax,
+             ${PAY_CATEGORY_SQL.lwf} AS lwf,
+             ${PAY_CATEGORY_SQL.otherDeductions} AS other_deductions,
+             ${PAY_CATEGORY_SQL.totalDeductions} AS total_deductions,
+             ${PAY_CATEGORY_SQL.overtime} AS overtime_amount,
+             ${PAY_CATEGORY_SQL.otherCredits} AS total_credits,
+             ${PAY_CATEGORY_SQL.net} AS net_salary`
+
+/** The same, summed over a group of items. */
+const PAY_CATEGORY_SUMS = `
+             sum(${PAY_CATEGORY_SQL.gross}) AS gross_earnings,
+             sum(${PAY_CATEGORY_SQL.pfEmployee}) AS pf_employee,
+             sum(${PAY_CATEGORY_SQL.esiEmployee}) AS esi_employee,
+             sum(${PAY_CATEGORY_SQL.ptax}) AS ptax,
+             sum(${PAY_CATEGORY_SQL.lwf}) AS lwf,
+             sum(${PAY_CATEGORY_SQL.otherDeductions}) AS other_deductions,
+             sum(${PAY_CATEGORY_SQL.totalDeductions}) AS total_deductions,
+             sum(${PAY_CATEGORY_SQL.overtime}) AS overtime_amount,
+             sum(${PAY_CATEGORY_SQL.otherCredits}) AS total_credits,
+             sum(${PAY_CATEGORY_SQL.net}) AS net_salary`
+
+const PAY_CATEGORIES_NOTE =
+  'Gross earnings less total deductions, plus overtime and other credits, is the net salary - on every row and in the totals.'
+
+/** The overtime paid on a payroll item (`i`), for reports without the full breakdown. */
+const OVERTIME_AMOUNT = `coalesce((SELECT sum(oc.amount) FROM payroll_item_components oc
+                          WHERE oc.payroll_item_id = i.id AND oc.source = 'OVERTIME'), 0)`
+
 export const REPORT_DEFINITIONS: ReportDefinition[] = [
   // -------------------------------------------------------------------------
   // Employee reports
@@ -427,7 +511,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'salary-register',
     name: 'Salary Register',
-    description: 'The full payroll register for a month.',
+    description: `The full payroll register for a month, split by category. ${PAY_CATEGORIES_NOTE}`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -436,11 +520,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'paid_days', label: 'Paid Days', format: 'days', total: true },
-      { key: 'gross_earnings', label: 'Gross', format: 'currency', total: true },
-      { key: 'total_bonus', label: 'Bonus', format: 'currency', total: true },
-      { key: 'total_deductions', label: 'Deductions', format: 'currency', total: true },
-      { key: 'total_credits', label: 'Other Credits', format: 'currency', total: true },
-      { key: 'net_salary', label: 'Net', format: 'currency', total: true },
+      ...PAY_CATEGORY_COLUMNS,
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
       { key: 'payment_status', label: 'Payment Status', format: 'text' },
@@ -450,18 +530,13 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              i.employee_name,
              i.department_name,
              i.designation_name,
-             i.paid_days,
-             i.gross_earnings,
-             i.total_bonus,
-             i.total_deductions,
-             i.total_credits,
-             i.net_salary,
+             i.paid_days,${PAY_CATEGORY_SELECT},
              i.paid_amount,
              i.pending_amount,
              i.payment_status::text AS payment_status
         FROM payroll_items i
         JOIN payroll_runs r ON r.id = i.payroll_run_id
-        JOIN employees e ON e.id = i.employee_id
+        JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
     `,
     orderBy: 'i.employee_code',
@@ -469,7 +544,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'payment-status',
     name: 'Payment Status Report',
-    description: 'What has been paid and what is still outstanding for a month.',
+    description: `What has been paid and what is still outstanding for a month, with the net salary split by category. ${PAY_CATEGORIES_NOTE}`,
     category: 'PAYMENT',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -477,7 +552,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     requiredFilters: ['year', 'month'],
     columns: [
       ...EMPLOYEE_COLUMNS,
-      { key: 'net_salary', label: 'Net Salary', format: 'currency', total: true },
+      ...PAY_CATEGORY_COLUMNS,
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
       { key: 'payment_status', label: 'Status', format: 'text' },
@@ -487,8 +562,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       SELECT i.employee_code,
              i.employee_name,
              i.department_name,
-             i.designation_name,
-             i.net_salary,
+             i.designation_name,${PAY_CATEGORY_SELECT},
              i.paid_amount,
              i.pending_amount,
              i.payment_status::text AS payment_status,
@@ -496,7 +570,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
                WHERE t.payroll_item_id = i.id AND t.reversed_at IS NULL) AS last_payment_date
         FROM payroll_items i
         JOIN payroll_runs r ON r.id = i.payroll_run_id
-        JOIN employees e ON e.id = i.employee_id
+        JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
     `,
     orderBy: 'i.payment_status, i.employee_code',
@@ -538,7 +612,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'bonus-report',
     name: 'Bonus Report',
-    description: 'Bonuses by employee and payroll month.',
+    description: 'Bonuses by employee and month, and how and when each was paid. Bonuses are paid separately from salary.',
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -550,6 +624,9 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'amount', label: 'Amount', format: 'currency', total: true },
       { key: 'bonus_date', label: 'Bonus Date', format: 'date' },
       { key: 'status', label: 'Status', format: 'text' },
+      { key: 'paid_on', label: 'Paid On', format: 'date' },
+      { key: 'payment_method', label: 'Paid By', format: 'text' },
+      { key: 'reference_number', label: 'Reference', format: 'text' },
     ],
     sql: `
       SELECT e.employee_code,
@@ -559,7 +636,10 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              b.bonus_name,
              b.amount,
              b.bonus_date,
-             b.status::text AS status
+             b.status::text AS status,
+             b.paid_on,
+             b.payment_method::text AS payment_method,
+             b.reference_number
         FROM employee_bonuses b
         JOIN employees e ON e.id = b.employee_id
         LEFT JOIN departments  d ON d.id = e.department_id
@@ -707,7 +787,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'pl-wages-report',
     name: 'PL Wages Report',
-    description: 'PL Wages eligibility and credit amount by employee and credit year.',
+    description: 'PL Wages eligibility and credit amount by employee and credit year, and how and when each was paid. PL Wages are paid separately from salary.',
     category: 'STATUTORY',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -721,6 +801,9 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'daily_wage_rate', label: 'Daily Wage Rate', format: 'currency' },
       { key: 'credit_amount', label: 'Credit Amount', format: 'currency', total: true },
       { key: 'status', label: 'Status', format: 'text' },
+      { key: 'paid_on', label: 'Paid On', format: 'date' },
+      { key: 'payment_method', label: 'Paid By', format: 'text' },
+      { key: 'reference_number', label: 'Reference', format: 'text' },
     ],
     sql: `
       SELECT e.employee_code,
@@ -732,7 +815,10 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              c.eligible_days,
              c.daily_wage_rate,
              c.credit_amount,
-             c.status::text AS status
+             c.status::text AS status,
+             c.paid_on,
+             c.payment_method::text AS payment_method,
+             c.reference_number
         FROM pl_wages_credits c
         JOIN employees e ON e.id = c.employee_id
         LEFT JOIN departments  d ON d.id = e.department_id
@@ -755,6 +841,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'pf_number', label: 'PF Number', format: 'text' },
       { key: 'pf_name', label: 'Name (as per PF)', format: 'text' },
       { key: 'total_wages', label: 'Total Wages', format: 'currency', total: true },
+      { key: 'overtime_amount', label: 'Overtime', format: 'currency', total: true },
       { key: 'pf_wage_ceiling', label: 'PF Wage Ceiling', format: 'currency' },
       { key: 'pf_covered_amount', label: 'PF Covered Amount', format: 'currency', total: true },
       { key: 'employee_contribution', label: 'Employee Contribution', format: 'currency', total: true },
@@ -770,7 +857,9 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              i.designation_name,
              coalesce(pf.pf_member_id, pf.uan_number) AS pf_number,
              coalesce(pf.pf_name, i.employee_name) AS pf_name,
-             i.gross_earnings AS total_wages,
+             -- Every wage earned in the month, overtime included.
+             (i.gross_earnings + i.total_overtime) AS total_wages,
+             ${OVERTIME_AMOUNT} AS overtime_amount,
              i.pf_wage_ceiling,
              i.pf_wage AS pf_covered_amount,
              coalesce((SELECT c.amount FROM payroll_item_components c
@@ -821,7 +910,9 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       SELECT esi.esi_number AS ip_number,
              coalesce(esi.esi_name, i.employee_name) AS ip_name,
              ceil(i.paid_days)::int AS days_paid,
-             i.gross_earnings AS total_wages,
+             -- Every wage earned in the month, overtime included. The columns are
+             -- the ESIC upload template, so overtime has no column of its own.
+             (i.gross_earnings + i.total_overtime) AS total_wages,
              CASE
                WHEN i.gross_earnings > 0 THEN 0
                WHEN e.employment_status IN ('INACTIVE', 'RESIGNED', 'TERMINATED') AND e.exit_date IS NOT NULL THEN 2
@@ -844,7 +935,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'department-salary',
     name: 'Department Salary Report',
-    description: 'Payroll totals grouped by department.',
+    description: `Payroll totals grouped by department, split by category. ${PAY_CATEGORIES_NOTE}`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -853,25 +944,18 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     columns: [
       { key: 'department_name', label: 'Department', format: 'text' },
       { key: 'employees', label: 'Employees', format: 'number', total: true },
-      { key: 'gross_earnings', label: 'Gross', format: 'currency', total: true },
-      { key: 'total_deductions', label: 'Deductions', format: 'currency', total: true },
-      { key: 'total_credits', label: 'Other Credits', format: 'currency', total: true },
-      { key: 'net_salary', label: 'Net', format: 'currency', total: true },
+      ...PAY_CATEGORY_COLUMNS,
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
     ],
     sql: `
       SELECT coalesce(i.department_name, 'Unassigned') AS department_name,
-             count(*) AS employees,
-             sum(i.gross_earnings)   AS gross_earnings,
-             sum(i.total_deductions) AS total_deductions,
-             sum(i.total_credits)    AS total_credits,
-             sum(i.net_salary)       AS net_salary,
+             count(*) AS employees,${PAY_CATEGORY_SUMS},
              sum(i.paid_amount)      AS paid_amount,
              sum(i.pending_amount)   AS pending_amount
         FROM payroll_items i
         JOIN payroll_runs r ON r.id = i.payroll_run_id
-        JOIN employees e ON e.id = i.employee_id
+        JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
        GROUP BY coalesce(i.department_name, 'Unassigned')
     `,

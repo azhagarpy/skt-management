@@ -695,6 +695,8 @@ export interface PayrollRun {
   totalEmployees: number
   totalGross: number
   totalDeductions: number
+  /** Overtime, added to net pay outside gross. */
+  totalOvertime: number
   /** Other Credits, added to net pay outside gross. */
   totalCredits: number
   totalNet: number
@@ -740,8 +742,12 @@ export interface PayrollItem {
   salaryStructureName: string | null
   attendance: PayrollAttendance
   grossEarnings: number
-  totalBonus: number
   totalDeductions: number
+  /**
+   * Overtime, added to net pay outside gross. 0 on an item calculated before
+   * overtime moved out of gross, whose overtime is an earning instead.
+   */
+  totalOvertime: number
   /** Other Credits, added to net pay outside gross. */
   totalCredits: number
   employerContributions: number
@@ -838,7 +844,17 @@ export interface Payslip {
   downloadPath: string
 }
 
-export interface Bonus {
+/** How something paid outside salary (a bonus, a PL Wages credit) was paid. */
+export interface Payout {
+  paidOn: string | null
+  paymentMethod: string | null
+  referenceNumber: string | null
+  paymentNotes: string | null
+  hasProof: boolean
+  proofFilename: string | null
+}
+
+export interface Bonus extends Payout {
   id: string
   employeeId: string
   employeeCode: string | null
@@ -847,10 +863,11 @@ export interface Bonus {
   bonusName: string
   amount: number
   bonusDate: string
+  /** The month the bonus belongs to. It is paid separately, not through payroll. */
   payrollYear: number
   payrollMonth: number
   reason: string | null
-  status: string
+  status: 'PENDING' | 'APPROVED' | 'PAID' | 'CANCELLED'
   wagePercentage: number | null
   wageBase: number | null
   manDays: number | null
@@ -893,7 +910,7 @@ export interface LwfContribution {
   proofFilename: string | null
 }
 
-export interface PlWagesCredit {
+export interface PlWagesCredit extends Payout {
   id: string
   employeeId: string
   employeeCode: string | null
@@ -906,9 +923,9 @@ export interface PlWagesCredit {
   dailyWageRate: number
   creditAmount: number
   status: 'NOT_ELIGIBLE' | 'PENDING' | 'APPROVED' | 'PAID'
+  /** Set only on a credit paid through salary, before PL Wages were paid separately. */
   payrollYear: number | null
   payrollMonth: number | null
-  paidOn: string | null
 }
 
 export interface NotificationItem {

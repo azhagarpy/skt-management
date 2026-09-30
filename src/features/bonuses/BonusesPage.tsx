@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileSpreadsheet, Plus, Trash2 } from 'lucide-react'
-import { del, download, get, getWithMeta, post } from '../../lib/api'
+import { BadgeCheck, FileSpreadsheet, Plus, Trash2, Wallet } from 'lucide-react'
+import { del, download, get, getWithMeta, patch, post } from '../../lib/api'
 import { MONTH_NAMES, formatCurrency, formatDate, formatDays, todayIso } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
 import {
+  Badge,
   Button,
   Card,
   ConfirmDialog,
@@ -23,6 +24,7 @@ import {
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { DepartmentMultiSelector, DepartmentSelector, idsParam, useDepartments } from '../../components/forms/selectors'
 import { MonthRangeFields, type MonthRange } from '../../components/forms/MonthRange'
+import { MarkPaidModal, PayoutSummary } from '../../components/forms/Payout'
 import type { Bonus, EmployeeSummary } from '../../types/api'
 
 /**
@@ -30,9 +32,10 @@ import type { Bonus, EmployeeSummary } from '../../types/api'
  *
  * A bonus is a name and an amount given to some employees: pick them one by one,
  * or give it to everyone in a department. The amount is fixed, or a percentage of
- * the wages earned over a month range (worked out on the Bonus statement tab). It
- * is attached to a payroll month, and only APPROVED bonuses are picked up when
- * that month is calculated.
+ * the wages earned over a month range (worked out on the Bonus statement tab).
+ * It is paid separately from salary: once an approved bonus has been paid, it is
+ * marked paid with the date, how it was paid and a supporting document - one at
+ * a time, or many at once with one document.
  */
 
 type Audience = 'EMPLOYEES' | 'DEPARTMENT'
@@ -87,6 +90,12 @@ export default function BonusesPage() {
   const [adding, setAdding] = useState(false)
   const [tab, setTab] = useState('bonuses')
   const [deleteTarget, setDeleteTarget] = useState<Bonus | null>(null)
+  const [unpaidTarget, setUnpaidTarget] = useState<Bonus | null>(null)
+  // The bonuses the payment dialog is open for, and the one being corrected, if any.
+  const [paying, setPaying] = useState<{ ids: string[]; row: Bonus | null } | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const canManage = can('bonus.manage')
 
   const filters = {
     payrollYear: year,
@@ -113,10 +122,64 @@ export default function BonusesPage() {
     },
   })
 
+  const approveMutation = useMutation({
+    mutationFn: (bonus: Bonus) => patch(`/bonuses/${bonus.id}`, { status: 'APPROVED' }),
+    onSuccess: async () => {
+      toast.success('Bonus approved')
+      await queryClient.invalidateQueries({ queryKey: ['bonuses'] })
+    },
+    onError: (mutationError: Error) => toast.error('Could not approve the bonus', mutationError.message),
+  })
+
+  const unpaidMutation = useMutation({
+    mutationFn: (bonus: Bonus) => patch(`/bonuses/${bonus.id}/mark-unpaid`),
+    onSuccess: async () => {
+      toast.success('Marked as not paid')
+      setUnpaidTarget(null)
+      await queryClient.invalidateQueries({ queryKey: ['bonuses'] })
+    },
+    onError: (mutationError: Error) => {
+      setUnpaidTarget(null)
+      toast.error('Could not mark as not paid', mutationError.message)
+    },
+  })
+
   const rows = data ?? []
-  const total = rows.filter((row) => row.status !== 'CANCELLED').reduce((sum, row) => sum + row.amount, 0)
+  const live = rows.filter((row) => row.status !== 'CANCELLED')
+  const sum = (list: Bonus[]): number => list.reduce((value, row) => value + row.amount, 0)
+  const paidRows = rows.filter((row) => row.status === 'PAID')
+  const unpaidRows = rows.filter((row) => row.status === 'APPROVED')
+
+  // Only approved, unpaid bonuses can be paid together; anything selected that
+  // is no longer shown or no longer unpaid drops out.
+  const selectedRows = unpaidRows.filter((row) => selected.has(row.id))
+  const allUnpaidSelected = unpaidRows.length > 0 && selectedRows.length === unpaidRows.length
+  const toggle = (id: string, checked: boolean): void => {
+    const next = new Set(selected)
+    if (checked) next.add(id)
+    else next.delete(id)
+    setSelected(next)
+  }
 
   const columns: Column<Bonus>[] = [
+    ...(canManage
+      ? [
+          {
+            key: 'select',
+            header: '',
+            render: (row: Bonus) =>
+              row.status === 'APPROVED' ? (
+                <input
+                  type="checkbox"
+                  aria-label={`Select the bonus for ${row.employeeName ?? row.employeeCode ?? ''}`}
+                  checked={selected.has(row.id)}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => toggle(row.id, event.target.checked)}
+                />
+              ) : null,
+          },
+        ]
+      : []),
     {
       key: 'employee',
       header: 'Employee',
@@ -146,27 +209,68 @@ export default function BonusesPage() {
     },
     {
       key: 'period',
-      header: 'Payroll month',
+      header: 'Month',
       render: (row) => `${MONTH_NAMES[row.payrollMonth - 1]} ${row.payrollYear}`,
     },
     { key: 'date', header: 'Bonus date', hideOnMobile: true, render: (row) => formatDate(row.bonusDate) },
-    { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-    ...(can('bonus.manage')
+    {
+      key: 'status',
+      header: 'Status',
+      render: (row) => (
+        <div>
+          {row.status === 'APPROVED' ? <Badge tone="warning">Not paid</Badge> : <StatusBadge status={row.status} />}
+          {row.status === 'PAID' ? (
+            <PayoutSummary payout={row} proofPath={`/bonuses/${row.id}/proof`} proofName={`bonus-${row.employeeCode ?? row.id}`} />
+          ) : null}
+        </div>
+      ),
+    },
+    ...(canManage
       ? [
           {
             key: 'actions',
             header: '',
             align: 'right' as const,
-            render: (row: Bonus) =>
-              row.status === 'PAID' ? null : (
-                <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setDeleteTarget(row)}>
-                  Remove
-                </Button>
-              ),
+            render: (row: Bonus) => (
+              <div className="row" style={{ gap: '0.35rem', justifyContent: 'flex-end' }}>
+                {row.status === 'PENDING' ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<BadgeCheck size={13} />}
+                    loading={approveMutation.isPending && approveMutation.variables?.id === row.id}
+                    onClick={() => approveMutation.mutate(row)}
+                  >
+                    Approve
+                  </Button>
+                ) : null}
+                {row.status === 'APPROVED' ? (
+                  <Button size="sm" variant="secondary" icon={<Wallet size={13} />} onClick={() => setPaying({ ids: [row.id], row: null })}>
+                    Mark paid
+                  </Button>
+                ) : null}
+                {row.status === 'PAID' ? (
+                  <>
+                    <Button size="sm" variant="ghost" onClick={() => setPaying({ ids: [row.id], row })}>
+                      Edit payment
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setUnpaidTarget(row)}>
+                      Mark not paid
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setDeleteTarget(row)}>
+                    Remove
+                  </Button>
+                )}
+              </div>
+            ),
           },
         ]
       : []),
   ]
+
+  const payingRows = paying ? rows.filter((row) => paying.ids.includes(row.id)) : []
 
   const years = Array.from({ length: 5 }, (_, index) => now.getFullYear() - index)
 
@@ -174,9 +278,9 @@ export default function BonusesPage() {
     <div className="page">
       <PageHeader
         title="Bonuses"
-        description="Bonuses are paid through payroll as an earning, in the month they are assigned to."
+        description="Bonuses are paid separately from salary. Once a bonus has been paid, mark it paid with the date, how it was paid and a supporting document."
         actions={
-          can('bonus.manage') ? (
+          canManage ? (
             <Button icon={<Plus size={15} />} onClick={() => setAdding(true)}>
               Add bonus
             </Button>
@@ -198,10 +302,15 @@ export default function BonusesPage() {
       {tab === 'bonuses' ? (
         <>
       <div className="grid grid-4">
-        <StatTile label="Bonuses" value={rows.length} sublabel={month === '' ? `${year}` : `${MONTH_NAMES[Number(month) - 1]} ${year}`} tone="info" />
-        <StatTile label="Total value" value={formatCurrency(total)} tone="accent" />
-        <StatTile label="Approved" value={rows.filter((row) => row.status === 'APPROVED').length} tone="success" />
-        <StatTile label="Pending" value={rows.filter((row) => row.status === 'PENDING').length} tone="warning" />
+        <StatTile
+          label="Total value"
+          value={formatCurrency(sum(live))}
+          sublabel={`${live.length} bonus${live.length === 1 ? '' : 'es'} · ${month === '' ? year : `${MONTH_NAMES[Number(month) - 1]} ${year}`}`}
+          tone="accent"
+        />
+        <StatTile label="Paid" value={formatCurrency(sum(paidRows))} sublabel={`${paidRows.length} paid`} tone="success" />
+        <StatTile label="Not paid yet" value={formatCurrency(sum(unpaidRows))} sublabel={`${unpaidRows.length} approved, waiting to be paid`} tone="warning" />
+        <StatTile label="Pending approval" value={rows.filter((row) => row.status === 'PENDING').length} tone="info" />
       </div>
 
       <Card padded={false}>
@@ -238,13 +347,30 @@ export default function BonusesPage() {
           <Field label="Status" htmlFor="bonus-status">
             <Select id="bonus-status" value={status} onChange={(event) => setStatus(event.target.value)}>
               <option value="">All statuses</option>
-              <option value="PENDING">Pending</option>
-              <option value="APPROVED">Approved</option>
+              <option value="PENDING">Pending approval</option>
+              <option value="APPROVED">Not paid</option>
               <option value="PAID">Paid</option>
               <option value="CANCELLED">Cancelled</option>
             </Select>
           </Field>
         </div>
+
+        {canManage && unpaidRows.length > 0 ? (
+          <div className="row" style={{ gap: '0.5rem', padding: '0 1rem 0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setSelected(allUnpaidSelected ? new Set() : new Set(unpaidRows.map((row) => row.id)))}
+            >
+              {allUnpaidSelected ? 'Clear selection' : `Select all not paid (${unpaidRows.length})`}
+            </Button>
+            {selectedRows.length > 0 ? (
+              <Button size="sm" icon={<Wallet size={13} />} onClick={() => setPaying({ ids: selectedRows.map((row) => row.id), row: null })}>
+                Mark {selectedRows.length} paid · {formatCurrency(sum(selectedRows))}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
 
         <DataTable
           columns={columns}
@@ -261,6 +387,35 @@ export default function BonusesPage() {
       ) : null}
 
       <AddBonusModal open={adding} years={years} onClose={() => setAdding(false)} />
+
+      <MarkPaidModal
+        open={paying !== null}
+        title={paying?.row ? 'Edit payment' : 'Mark as paid'}
+        description={
+          paying?.row
+            ? `How the ${formatCurrency(paying.row.amount)} bonus for ${paying.row.employeeName ?? paying.row.employeeCode} was paid.`
+            : payingRows.length > 1
+              ? `Record that these ${payingRows.length} bonuses, ${formatCurrency(sum(payingRows))} in all, have been paid.`
+              : `Record that the ${formatCurrency(sum(payingRows))} bonus for ${payingRows[0]?.employeeName ?? 'this employee'} has been paid.`
+        }
+        basePath="/bonuses"
+        ids={paying?.ids ?? []}
+        initial={paying?.row ?? null}
+        queryKey="bonuses"
+        onClose={() => setPaying(null)}
+        onDone={() => setSelected(new Set())}
+      />
+
+      <ConfirmDialog
+        open={unpaidTarget !== null}
+        title="Mark as not paid"
+        message={`Mark the ${unpaidTarget ? formatCurrency(unpaidTarget.amount) : ''} bonus for ${unpaidTarget?.employeeName ?? ''} as not paid? Its payment details and supporting document are removed.`}
+        confirmLabel="Mark not paid"
+        tone="danger"
+        loading={unpaidMutation.isPending}
+        onConfirm={() => unpaidTarget && unpaidMutation.mutate(unpaidTarget)}
+        onCancel={() => setUnpaidTarget(null)}
+      />
 
       <ConfirmDialog
         open={deleteTarget !== null}
@@ -370,7 +525,7 @@ function AddBonusModal({ open, years, onClose }: { open: boolean; years: number[
     <Modal
       open={open}
       title="Add bonus"
-      description="Only approved bonuses are picked up when payroll is calculated."
+      description="A bonus is paid separately from salary. Once it has been paid, mark it paid on this page."
       onClose={close}
       size="lg"
       footer={
@@ -464,7 +619,7 @@ function AddBonusModal({ open, years, onClose }: { open: boolean; years: number[
         )}
 
         <div className="grid grid-2">
-          <Field label="Payroll month" htmlFor="bonus-payroll-month" required>
+          <Field label="Month" htmlFor="bonus-payroll-month" required>
             <Select
               id="bonus-payroll-month"
               value={form.payrollMonth}
@@ -477,7 +632,7 @@ function AddBonusModal({ open, years, onClose }: { open: boolean; years: number[
               ))}
             </Select>
           </Field>
-          <Field label="Payroll year" htmlFor="bonus-payroll-year" required>
+          <Field label="Year" htmlFor="bonus-payroll-year" required>
             <Select
               id="bonus-payroll-year"
               value={form.payrollYear}
@@ -528,7 +683,7 @@ function AddBonusModal({ open, years, onClose }: { open: boolean; years: number[
         <div className="grid grid-2">
           <Field label="Status" htmlFor="bonus-form-status">
             <Select id="bonus-form-status" value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-              <option value="APPROVED">Approved (will be paid)</option>
+              <option value="APPROVED">Approved (ready to pay)</option>
               <option value="PENDING">Pending approval</option>
             </Select>
           </Field>

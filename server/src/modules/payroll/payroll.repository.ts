@@ -19,6 +19,7 @@ export interface PayrollRunRow {
   total_employees: number
   total_gross: string
   total_deductions: string
+  total_overtime: string
   total_credits: string
   total_net: string
   total_paid: string
@@ -60,8 +61,11 @@ export interface PayrollItemRow {
   paid_days: string
   payable_days_basis: string
   gross_earnings: string
+  /** Bonuses paid inside salary before they were paid separately; 0 since. */
   total_bonus: string
   total_deductions: string
+  /** Overtime added to net pay outside gross; 0 on items calculated before that, whose overtime is in gross. */
+  total_overtime: string
   total_credits: string
   employer_contributions: string
   pf_wage: string
@@ -256,6 +260,7 @@ export async function refreshRunTotals(runId: string, db: Queryable = pool): Pro
         SET total_employees = t.count,
             total_gross = t.gross,
             total_deductions = t.deductions,
+            total_overtime = t.overtime,
             total_credits = t.credits,
             total_net = t.net,
             total_paid = t.paid,
@@ -264,6 +269,7 @@ export async function refreshRunTotals(runId: string, db: Queryable = pool): Pro
          SELECT count(*)                     AS count,
                 coalesce(sum(gross_earnings), 0)   AS gross,
                 coalesce(sum(total_deductions), 0) AS deductions,
+                coalesce(sum(total_overtime), 0)   AS overtime,
                 coalesce(sum(total_credits), 0)    AS credits,
                 coalesce(sum(net_salary), 0)       AS net,
                 coalesce(sum(paid_amount), 0)      AS paid,
@@ -303,7 +309,7 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
        calendar_days, working_days, present_days, absent_days, leave_days,
        paid_leave_days, unpaid_leave_days, half_day_leave_days, holiday_days,
        weekly_off_days, unmarked_days, paid_days, payable_days_basis,
-       gross_earnings, total_bonus, total_deductions, employer_contributions,
+       gross_earnings, total_overtime, total_deductions, employer_contributions,
        pf_wage, pf_wage_ceiling, esi_wage, net_salary,
        paid_amount, pending_amount, payment_status, remarks, calculation_snapshot, total_credits
      ) VALUES (
@@ -337,7 +343,7 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
       values.paid_days,
       values.payable_days_basis,
       values.gross_earnings,
-      values.total_bonus,
+      values.total_overtime ?? '0',
       values.total_deductions,
       values.employer_contributions,
       values.pf_wage ?? '0',

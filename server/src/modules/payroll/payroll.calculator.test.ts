@@ -85,10 +85,8 @@ function baseInput(overrides: Partial<CalculatorInput> = {}): CalculatorInput {
     components: monthlyComponents(),
     overrideTotalMinor: null,
     overtime: [],
-    bonuses: [],
     tax: null,
     lwf: null,
-    plWages: null,
     adjustments: [],
     pf: { applicable: false, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
     esi: { applicable: false, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) },
@@ -913,57 +911,25 @@ describe('calculatePayrollItem - PF and ESI', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Bonuses and the worked example from the plan
+// Statutory deductions, and what is added to net pay
 // ---------------------------------------------------------------------------
 
-describe('calculatePayrollItem - bonuses', () => {
-  it('adds a bonus as an earning', () => {
-    const result = calculatePayrollItem(
-      baseInput({
-        bonuses: [
-          {
-            id: 'bonus-1',
-            code: 'FESTIVAL',
-            name: 'Festival Bonus',
-            amountType: 'FIXED_AMOUNT',
-            amountMinor: toMinor(2_000),
-            percentage: 0,
-            taxable: true,
-          },
-        ],
-      }),
-    )
-
-    expect(toMajor(result.totalBonusMinor)).toBe(2_000)
-    expect(toMajor(result.grossEarningsMinor)).toBe(44_000)
-  })
-
-  it('combines a bonus and PF, with ESI excluded above the limit', () => {
+describe('calculatePayrollItem - deductions and credits', () => {
+  it('applies PF with ESI excluded above the limit', () => {
     const result = calculatePayrollItem(
       baseInput({
         components: [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(40_000) })],
-        bonuses: [
-          {
-            id: 'bonus-1',
-            code: 'PERFORMANCE',
-            name: 'Performance Bonus',
-            amountType: 'FIXED_AMOUNT',
-            amountMinor: toMinor(2_000),
-            percentage: 0,
-            taxable: true,
-          },
-        ],
         pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
         // The structure's gross (40,000) is above ₹21,000, so ESI does not apply at all.
         esi: { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) },
       }),
     )
 
-    expect(toMajor(result.grossEarningsMinor)).toBe(42_000)
+    expect(toMajor(result.grossEarningsMinor)).toBe(40_000)
     expect(result.components.find((entry) => entry.code === 'ESI_EMPLOYEE')).toBeUndefined()
     // PF 1,800 (12% of the 15,000 ceiling).
     expect(toMajor(result.totalDeductionsMinor)).toBe(1_800)
-    expect(toMajor(result.netSalaryMinor)).toBe(40_200)
+    expect(toMajor(result.netSalaryMinor)).toBe(38_200)
   })
 
   it('deducts the tax set for the month as its own line, counted in total deductions', () => {
@@ -1000,55 +966,22 @@ describe('calculatePayrollItem - bonuses', () => {
     expect(result.components.find((entry) => entry.code === 'LWF_EMPLOYEE')).toBeUndefined()
   })
 
-  it('adds a released PL Wages credit as an earning, excluded from the statutory wage', () => {
-    const result = calculatePayrollItem(
-      baseInput({
-        plWages: { id: 'pl-1', amountMinor: toMinor(3_800), note: 'PL Wages for 2025 (5 day(s) at 760.00/day)' },
-        pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
-      }),
-    )
-
-    const line = result.components.find((entry) => entry.code === 'PL_WAGES')
-    expect(line).toMatchObject({ name: 'PL Wages', componentType: 'EARNING', referenceId: 'pl-1' })
-    expect(toMajor(line?.amountMinor ?? 0)).toBe(3_800)
-    expect(toMajor(result.grossEarningsMinor)).toBe(45_800)
-    // PF stays on the structure's wage (42,000, capped at the 15,000 ceiling) - unaffected by the credit.
-    expect(toMajor(result.pfWageMinor)).toBe(15_000)
-  })
-
-  it('adds nothing when no PL Wages credit is released for the month', () => {
-    const result = calculatePayrollItem(baseInput())
-    expect(result.components.find((entry) => entry.code === 'PL_WAGES')).toBeUndefined()
-  })
-
-  it('excludes bonus and overtime pay from the PF and ESI wage base', () => {
+  it('keeps overtime pay out of gross and the PF and ESI wage base', () => {
     // Structure alone is 10,000 - comfortably under both the 15,000 PF
-    // ceiling and the 21,000 ESI limit, so any bonus/OT leaking into the
-    // statutory wage would show up directly in pfWageMinor/esiWageMinor
-    // rather than being masked by the ceiling.
+    // ceiling and the 21,000 ESI limit, so any OT leaking into the statutory
+    // wage would show up directly in pfWageMinor/esiWageMinor rather than
+    // being masked by the ceiling.
     const result = calculatePayrollItem(
       baseInput({
         components: [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(10_000) })],
-        bonuses: [
-          {
-            id: 'bonus-1',
-            code: 'FESTIVAL',
-            name: 'Festival Bonus',
-            amountType: 'FIXED_AMOUNT',
-            amountMinor: toMinor(5_000),
-            percentage: 0,
-            taxable: true,
-          },
-        ],
         overtime: [{ hours: 10, basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: toMinor(500) }],
         pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
         esi: { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) },
       }),
     )
 
-    // Gross earnings include the bonus and OT ...
-    expect(toMajor(result.grossEarningsMinor)).toBe(20_000)
-    // ... but the statutory wage stays at the structure's 10,000, uninflated.
+    // Gross earnings and the statutory wage stay at the structure's 10,000 ...
+    expect(toMajor(result.grossEarningsMinor)).toBe(10_000)
     expect(toMajor(result.pfWageMinor)).toBe(10_000)
     expect(toMajor(result.esiWageMinor)).toBe(10_000)
 
@@ -1056,6 +989,10 @@ describe('calculatePayrollItem - bonuses', () => {
     expect(toMajor(pfEmployee?.amountMinor ?? 0)).toBe(1_200) // 12% of 10,000
     const esiEmployee = result.components.find((entry) => entry.code === 'ESI_EMPLOYEE')
     expect(toMajor(esiEmployee?.amountMinor ?? 0)).toBe(75) // 0.75% of 10,000, rounded up
+
+    // ... and the 5,000 of OT is added to net after the deductions.
+    expect(toMajor(result.totalOvertimeMinor)).toBe(5_000)
+    expect(toMajor(result.netSalaryMinor)).toBe(10_000 - 1_200 - 75 + 5_000)
   })
 
   it('warns when deductions exceed earnings', () => {
@@ -1159,17 +1096,7 @@ describe('calculatePayrollItem - reproducibility', () => {
   it('produces identical output for identical input', () => {
     const input = baseInput({
       pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
-      bonuses: [
-        {
-          id: 'bonus-1',
-          code: 'PERF',
-          name: 'Performance',
-          amountType: 'PERCENTAGE',
-          amountMinor: 0,
-          percentage: 5,
-          taxable: true,
-        },
-      ],
+      overtime: [{ hours: 5, basis: 'DAY_SALARY', dayDivisor: 8, ratePerHourMinor: null }],
       days: septemberDays({
         '2026-09-03': { status: 'ABSENT' },
         '2026-09-10': { status: 'HALF_DAY_LEAVE', leaveIsPaid: false },
@@ -1246,7 +1173,18 @@ describe('calculatePayrollItem - overtime', () => {
     // 42,000 over a 30-day basis is 1,400 a day, 175 an hour: 4 hours = 700.
     const result = calculatePayrollItem(baseInput({ overtime: [daySalary(4)] }))
     expect(toMajor(overtimeLine(result)?.amountMinor ?? 0)).toBe(700)
-    expect(toMajor(result.grossEarningsMinor)).toBe(42_700)
+  })
+
+  it('adds overtime straight to net pay as its own line, outside gross', () => {
+    const without = calculatePayrollItem(baseInput())
+    const result = calculatePayrollItem(baseInput({ overtime: [daySalary(4)] }))
+
+    expect(overtimeLine(result)).toMatchObject({ componentType: 'CREDIT', source: 'OVERTIME' })
+    expect(result.grossEarningsMinor).toBe(without.grossEarningsMinor)
+    expect(toMajor(result.totalOvertimeMinor)).toBe(700)
+    // Overtime is kept apart from Other Credits.
+    expect(result.totalCreditsMinor).toBe(0)
+    expect(toMajor(result.netSalaryMinor - without.netSalaryMinor)).toBe(700)
   })
 
   it('works out part of an hourly rate in one step, so the paise are not lost', () => {

@@ -182,7 +182,7 @@ const MODULE_STEPS: TourStep[] = [
     target: navTarget('/bonuses'),
     title: 'Bonuses',
     body:
-      'Add a bonus to a payroll month rather than a date. Only approved bonuses are picked up when that month is calculated — a pending one is ignored.',
+      'Give a bonus to chosen employees or a whole department. Bonuses are paid separately from salary: once one has been paid, mark it paid with the date, how it was paid and a supporting document — one at a time, or many at once.',
   },
   {
     id: 'other-deductions',
@@ -217,7 +217,7 @@ const MODULE_STEPS: TourStep[] = [
     target: navTarget('/pl-wages'),
     title: 'PL Wages',
     body:
-      'Generate once a year: anyone who worked at least 20 days in 3 or more separate months earns 1 day’s wage for every 20 days worked across the year. Review the batch, release it into a payroll month, and mark it paid once that run is settled.',
+      'Generate once a year: anyone who worked at least 20 days in 3 or more separate months earns 1 day’s wage for every 20 days worked across the year. Review and approve the batch. PL Wages are paid separately from salary: once paid, mark them paid with the date, how they were paid and a supporting document.',
   },
   {
     id: 'my-profile',

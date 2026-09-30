@@ -272,7 +272,9 @@ export default function PayrollRunPage() {
     { key: 'esiEmployee', header: 'ESI (employee)', align: 'right', hideOnMobile: true, render: (row) => formatCurrency(row.contributions?.esiEmployee ?? 0) },
     { key: 'otherDeductions', header: 'Other deductions', align: 'right', hideOnMobile: true, render: (row) => formatCurrency(row.contributions?.otherDeductions ?? row.totalDeductions) },
     { key: 'deductions', header: 'Total deductions', align: 'right', render: (row) => formatCurrency(row.totalDeductions) },
-    // Other Credits go straight to net, so net is gross less deductions plus these.
+    // Overtime and Other Credits go straight to net, so net is gross less
+    // deductions plus these two.
+    { key: 'overtime', header: 'Overtime', align: 'right', hideOnMobile: true, render: (row) => formatCurrency(row.totalOvertime) },
     { key: 'credits', header: 'Other credits', align: 'right', hideOnMobile: true, render: (row) => formatCurrency(row.totalCredits) },
     {
       key: 'pfEmployer',
@@ -416,9 +418,36 @@ export default function PayrollRunPage() {
       <div className="grid grid-4">
         <StatTile label="Status" value={<StatusBadge status={run.status} />} sublabel={run.approvedAt ? `Approved ${formatDateTime(run.approvedAt)}` : undefined} tone="info" />
         <StatTile label="Employees" value={run.totalEmployees} tone="neutral" />
-        <StatTile label="Gross" value={formatCurrency(run.totalGross)} sublabel={`Deductions ${formatCurrency(run.totalDeductions)}${run.totalCredits > 0 ? ` · Credits ${formatCurrency(run.totalCredits)}` : ''}`} tone="accent" />
+        <StatTile label="Gross" value={formatCurrency(run.totalGross)} sublabel={`Deductions ${formatCurrency(run.totalDeductions)}`} tone="accent" />
         <StatTile label="Net payable" value={formatCurrency(run.totalNet)} sublabel={`${formatCurrency(run.totalPaid)} paid`} tone="success" />
       </div>
+
+      {run.totalEmployees > 0 ? (
+        <Card title="How net pay adds up" description="Every employee's net salary in this run, totalled by category.">
+          <div className="breakdown-list">
+            <div className="breakdown-row">
+              <span>Gross earnings</span>
+              <span className="numeric">{formatCurrency(run.totalGross)}</span>
+            </div>
+            <div className="breakdown-row">
+              <span>Less deductions</span>
+              <span className="numeric">− {formatCurrency(run.totalDeductions)}</span>
+            </div>
+            <div className="breakdown-row">
+              <span>Plus overtime</span>
+              <span className="numeric">+ {formatCurrency(run.totalOvertime)}</span>
+            </div>
+            <div className="breakdown-row">
+              <span>Plus other credits</span>
+              <span className="numeric">+ {formatCurrency(run.totalCredits)}</span>
+            </div>
+          </div>
+          <div className="breakdown-total">
+            <span>Net payable</span>
+            <span className="numeric">{formatCurrency(run.totalNet)}</span>
+          </div>
+        </Card>
+      ) : null}
 
       {run.isLocked ? (
         <div className="alert alert-info">

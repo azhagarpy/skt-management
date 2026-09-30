@@ -12,6 +12,7 @@ import { storage } from '../documents/storage.service.js'
 import { sanitiseFilename, sniffContentType, extensionForType } from '../../utils/files.js'
 import { randomUUID } from 'node:crypto'
 import * as payrollRepository from '../payroll/payroll.repository.js'
+import { idListFromForm } from './payout.js'
 import type { AuthContext } from '../../types/express.js'
 import type { IsoDate } from '../../utils/dates.js'
 
@@ -40,25 +41,14 @@ export const paymentReverseSchema = z.object({
   reason: z.string().trim().min(3, 'A reason is required').max(300),
 })
 
-/**
- * A bulk payment may arrive as JSON, or as multipart form data when it carries a
- * reference document. Form fields are all strings, so the list of item ids comes
- * through as a JSON-encoded array and is decoded here.
- */
-const idListFromForm = (value: unknown): unknown => {
-  if (typeof value !== 'string') return value
-  try {
-    return JSON.parse(value)
-  } catch {
-    return value
-  }
-}
-
 export const bulkPaymentSchema = z.object({
   payrollRunId: z.string().uuid(),
   paymentDate: isoDateSchema,
   paymentMethod: z.enum(['BANK_TRANSFER', 'CASH', 'CHEQUE', 'UPI', 'OTHER']).default('BANK_TRANSFER'),
-  /** Pay the full outstanding amount for these items. */
+  /**
+   * Pay the full outstanding amount for these items. A bulk payment may arrive
+   * as JSON, or as multipart form data when it carries a reference document.
+   */
   payrollItemIds: z.preprocess(idListFromForm, z.array(z.string().uuid()).min(1).max(1000)),
   referencePrefix: z.string().trim().max(40).nullish(),
   notes: z.string().trim().max(300).nullish(),

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
+import { pool, queryOne, queryRows } from '../../database/pool.js'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
 import { requirePermissions } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
@@ -19,6 +19,7 @@ import {
   type StatementQuery,
 } from './bonus-statement.js'
 import { idListParam } from '../../utils/query-params.js'
+import { mountPayoutRoutes, presentPayout, type PayoutColumns } from '../payments/payout.js'
 
 /**
  * Bonuses (plan section 25).
@@ -26,10 +27,15 @@ import { idListParam } from '../../utils/query-params.js'
  * A bonus is a name and an amount given to one or many employees, either picked
  * one by one or everyone in a department. The amount is either fixed, or a
  * percentage of the wages each person earned over a range of payroll months
- * (see bonus-statement.ts). It is attached to a payroll
- * month rather than a date, so the payroll engine can pick up everything due for
- * the month it is calculating. Only APPROVED bonuses are paid; PENDING ones are
- * ignored by the calculator.
+ * (see bonus-statement.ts). It belongs to a month, for finding it again.
+ *
+ * A bonus is paid separately from salary, never through payroll:
+ *
+ *   PENDING --approve--> APPROVED --mark paid--> PAID
+ *                            ^---- mark not paid ----'
+ *
+ * Marking paid records the date, how it was paid, a reference and a supporting
+ * document, for one bonus or many at once (see payments/payout.ts).
  */
 
 // ---------------------------------------------------------------------------
@@ -45,7 +51,8 @@ const bonusFieldsSchema = z.object({
   payrollYear: z.coerce.number().int().min(1970).max(2200),
   payrollMonth: z.coerce.number().int().min(1).max(12),
   reason: z.string().trim().max(300).nullish(),
-  status: bonusStatusSchema.default('APPROVED'),
+  // PAID is reached only by marking a bonus paid, with its payment details.
+  status: z.enum(['PENDING', 'APPROVED', 'CANCELLED']).default('APPROVED'),
 })
 
 /**
@@ -139,6 +146,12 @@ export interface BonusRow {
   man_days: string | null
   wage_period_from: IsoDate | null
   wage_period_to: IsoDate | null
+  paid_on: IsoDate | null
+  payment_method: string | null
+  reference_number: string | null
+  payment_notes: string | null
+  proof_path: string | null
+  proof_filename: string | null
 }
 
 const BONUS_SELECT = `
@@ -147,24 +160,6 @@ const BONUS_SELECT = `
     JOIN employees e ON e.id = b.employee_id
     LEFT JOIN departments d ON d.id = e.department_id
 `
-
-export async function listApprovedBonusesForPeriod(
-  employeeIds: string[],
-  year: number,
-  month: number,
-  db: Queryable = pool,
-): Promise<BonusRow[]> {
-  if (employeeIds.length === 0) return []
-  return queryRows<BonusRow>(
-    db,
-    `${BONUS_SELECT}
-      WHERE b.employee_id = ANY($1::uuid[])
-        AND b.payroll_year = $2
-        AND b.payroll_month = $3
-        AND b.status IN ('APPROVED', 'PAID')`,
-    [employeeIds, year, month],
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -192,6 +187,7 @@ function presentBonus(row: BonusRow) {
     manDays: row.man_days === null ? null : Number(row.man_days),
     wagePeriodFrom: row.wage_period_from,
     wagePeriodTo: row.wage_period_to,
+    ...presentPayout(row satisfies PayoutColumns),
   }
 }
 
@@ -278,19 +274,6 @@ bonusRouter.post(
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const input = req.body as BonusInput
-
-    // A locked payroll must not gain new earnings after the fact.
-    const lockedRun = await queryOne<{ id: string; status: string }>(
-      pool,
-      `SELECT id, status::text AS status FROM payroll_runs
-        WHERE organization_id = $1 AND year = $2 AND month = $3 AND status IN ('APPROVED', 'LOCKED')`,
-      [auth.organizationId, input.payrollYear, input.payrollMonth],
-    )
-    if (lockedRun) {
-      throw ApiError.businessRule(
-        `Payroll for ${input.payrollMonth}/${input.payrollYear} is already ${lockedRun.status.toLowerCase()}. Raise a payroll adjustment instead.`,
-      )
-    }
 
     // Resolve the recipients inside the organization, so an id from elsewhere
     // can never receive a bonus here.
@@ -444,8 +427,9 @@ bonusRouter.patch(
     )
     if (!existing) throw ApiError.notFound('Bonus')
     if (existing.status === 'PAID') {
-      throw ApiError.businessRule('A bonus that has been paid cannot be edited. Raise a payroll adjustment instead.')
+      throw ApiError.businessRule('A bonus that has been paid cannot be edited. Mark it not paid first.')
     }
+    const approving = input.status === 'APPROVED' && existing.status !== 'APPROVED'
 
     const { assignments, params } = buildUpdate(
       {
@@ -460,6 +444,8 @@ bonusRouter.patch(
         payroll_month: input.payrollMonth,
         reason: input.reason,
         status: input.status,
+        approved_by: approving ? auth.userId : undefined,
+        approved_at: approving ? new Date() : undefined,
       },
       3,
     )
@@ -480,7 +466,7 @@ bonusRouter.patch(
       newValues: { amount: input.amount, status: input.status },
     })
 
-    return sendSuccess(res, row ? presentBonus(row) : null, 'Bonus updated successfully')
+    return sendSuccess(res, row ? presentBonus(row) : null, approving ? 'Bonus approved' : 'Bonus updated successfully')
   }),
 )
 
@@ -499,7 +485,7 @@ bonusRouter.delete(
     )
     if (!existing) throw ApiError.notFound('Bonus')
     if (existing.status === 'PAID') {
-      throw ApiError.businessRule('A bonus that has been paid cannot be deleted. Raise a payroll adjustment instead.')
+      throw ApiError.businessRule('A bonus that has been paid cannot be deleted. Mark it not paid first.')
     }
 
     await pool.query('DELETE FROM employee_bonuses WHERE id = $1 AND organization_id = $2', [id, auth.organizationId])
@@ -515,3 +501,15 @@ bonusRouter.delete(
     return sendNoContent(res, 'Bonus deleted successfully')
   }),
 )
+
+mountPayoutRoutes(bonusRouter, {
+  table: 'employee_bonuses',
+  noun: 'bonus',
+  plural: 'bonuses',
+  folder: 'bonus-proof',
+  view: PERMISSIONS.BONUS_VIEW,
+  manage: PERMISSIONS.BONUS_MANAGE,
+  entityType: 'employee_bonus',
+  paidAction: 'BONUS_MARKED_PAID',
+  unpaidAction: 'BONUS_MARKED_UNPAID',
+})

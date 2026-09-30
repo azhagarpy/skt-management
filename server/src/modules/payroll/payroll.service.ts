@@ -18,10 +18,8 @@ import * as attendanceRepository from '../attendance/attendance.repository.js'
 import * as leaveRepository from '../leave/leave.repository.js'
 import * as salaryRepository from '../salary/salary.repository.js'
 import * as overtimeRepository from '../overtime/overtime.repository.js'
-import { listApprovedBonusesForPeriod } from '../bonuses/bonuses.module.js'
 import { listTaxDeductionsForPeriod } from '../tax/tax.module.js'
 import { listLwfForPeriod } from '../lwf/lwf.module.js'
-import { listApprovedPlWagesForPeriod } from '../pl-wages/pl-wages.module.js'
 import { notifyRole, notifyUserForEmployee } from '../notifications/notifications.service.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './payroll.repository.js'
@@ -31,9 +29,7 @@ import {
   type AdjustmentInput,
   type TaxInput,
   type LwfInput,
-  type PlWagesInput,
   type AttendanceStatus,
-  type BonusInput,
   type CalculatorInput,
   type CalculatorOutput,
   type ComponentInput,
@@ -90,6 +86,7 @@ export function presentRun(row: repository.PayrollRunRow) {
     totalEmployees: row.total_employees,
     totalGross: Number(row.total_gross),
     totalDeductions: Number(row.total_deductions),
+    totalOvertime: Number(row.total_overtime),
     totalCredits: Number(row.total_credits),
     totalNet: Number(row.total_net),
     totalPaid: Number(row.total_paid),
@@ -134,8 +131,8 @@ export function presentItem(row: repository.PayrollItemRow) {
       payableDaysBasis: Number(row.payable_days_basis),
     },
     grossEarnings: Number(row.gross_earnings),
-    totalBonus: Number(row.total_bonus),
     totalDeductions: Number(row.total_deductions),
+    totalOvertime: Number(row.total_overtime),
     totalCredits: Number(row.total_credits),
     employerContributions: Number(row.employer_contributions),
     pfWage: Number(row.pf_wage),
@@ -384,16 +381,14 @@ export async function calculateRun(
       // applied and drop out, so every other recalculation would lose them.
       await repository.clearAppliedAdjustmentsForRun(runId, tx)
 
-      const [calendar, attendanceRows, leaveRows, assignments, bonuses, taxDeductions, lwfContributions, plWagesCredits, adjustments, overtimeByEmployee] =
+      const [calendar, attendanceRows, leaveRows, assignments, taxDeductions, lwfContributions, adjustments, overtimeByEmployee] =
         await Promise.all([
           buildCalendarContext(auth.organizationId, contextStart, contextEnd, tx),
           attendanceRepository.listAttendanceForEmployees(employeeIds, contextStart, contextEnd, tx),
           leaveRepository.listApprovedLeaveForPeriod(employeeIds, contextStart, contextEnd, tx),
           salaryRepository.findAssignmentsForDate(employeeIds, periodEnd, tx),
-          listApprovedBonusesForPeriod(employeeIds, run.year, run.month, tx),
           listTaxDeductionsForPeriod(employeeIds, run.year, run.month, tx),
           listLwfForPeriod(employeeIds, run.year, run.month, tx),
-          listApprovedPlWagesForPeriod(employeeIds, run.year, run.month, tx),
           repository.listPendingAdjustments(auth.organizationId, run.year, run.month, employeeIds, tx),
           overtimeRepository.sumOvertimeHoursByRate(employeeIds, periodStart, periodEnd, tx),
         ])
@@ -430,21 +425,6 @@ export async function calculateRun(
         leavePaidByEmployeeDate.set(leave.employee_id, byDate)
       }
 
-      const bonusesByEmployee = new Map<string, BonusInput[]>()
-      for (const bonus of bonuses) {
-        const list = bonusesByEmployee.get(bonus.employee_id) ?? []
-        list.push({
-          id: bonus.id,
-          code: 'BONUS',
-          name: bonus.bonus_name,
-          amountType: bonus.amount_type,
-          amountMinor: toMinor(bonus.amount),
-          percentage: Number(bonus.percentage),
-          taxable: true,
-        })
-        bonusesByEmployee.set(bonus.employee_id, list)
-      }
-
       const taxByEmployee = new Map<string, TaxInput>()
       for (const entry of taxDeductions) {
         taxByEmployee.set(entry.employee_id, {
@@ -460,15 +440,6 @@ export async function calculateRun(
           id: entry.id,
           amountMinor: toMinor(entry.employee_amount),
           note: `Labour Welfare Fund for ${entry.contribution_year}`,
-        })
-      }
-
-      const plWagesByEmployee = new Map<string, PlWagesInput>()
-      for (const entry of plWagesCredits) {
-        plWagesByEmployee.set(entry.employee_id, {
-          id: entry.id,
-          amountMinor: toMinor(entry.credit_amount),
-          note: `PL Wages for ${entry.credit_year} (${entry.eligible_days} day(s) at ${entry.daily_wage_rate}/day)`,
         })
       }
 
@@ -572,10 +543,8 @@ export async function calculateRun(
           components: toComponentInputs(structure),
           overrideTotalMinor: assignment.override_amount === null ? null : toMinor(assignment.override_amount),
           overtime,
-          bonuses: bonusesByEmployee.get(employee.id) ?? [],
           tax: taxByEmployee.get(employee.id) ?? null,
           lwf: lwfByEmployee.get(employee.id) ?? null,
-          plWages: plWagesByEmployee.get(employee.id) ?? null,
           adjustments: employeeAdjustments,
           // PF and ESI rates, and their wage ceiling/limit, live on the salary
           // structure now, not on the employee or a separate statutory rule;
@@ -632,8 +601,8 @@ export async function calculateRun(
             paid_days: result.attendance.paidDays,
             payable_days_basis: result.attendance.payableDaysBasis,
             gross_earnings: toNumericString(result.grossEarningsMinor),
-            total_bonus: toNumericString(result.totalBonusMinor),
             total_deductions: toNumericString(result.totalDeductionsMinor),
+            total_overtime: toNumericString(result.totalOvertimeMinor),
             total_credits: toNumericString(result.totalCreditsMinor),
             employer_contributions: toNumericString(result.employerContributionsMinor),
             pf_wage: toNumericString(result.pfWageMinor),
@@ -829,8 +798,8 @@ export async function approveRun(auth: AuthContext, runId: string, context: Audi
 /**
  * Locks the run and the attendance it consumed.
  *
- * After this, salary, components, attendance, and bonuses for the
- * period are read-only; corrections go through an adjustment (plan section 33).
+ * After this, salary, components and attendance for the period are
+ * read-only; corrections go through an adjustment (plan section 33).
  */
 export async function lockRun(auth: AuthContext, runId: string, context: AuditContext) {
   return withTransaction(async (tx) => {
@@ -923,7 +892,7 @@ export async function getItem(auth: AuthContext, itemId: string) {
     components: components.map(presentComponent),
     earnings: components.filter((component) => component.component_type === 'EARNING').map(presentComponent),
     deductions: components.filter((component) => component.component_type === 'DEDUCTION').map(presentComponent),
-    // Other Credits, added to net pay after the deductions.
+    // Overtime and Other Credits, added to net pay after the deductions.
     credits: components.filter((component) => component.component_type === 'CREDIT').map(presentComponent),
     // Named distinctly from the numeric total on the item itself.
     employerContributionComponents: components

@@ -57,9 +57,9 @@ export interface DayInput {
 }
 
 /**
- * CREDIT is an amount added straight to net pay (Other Credits): not an
- * earning, so it stays out of gross and every wage worked out from it. Only a
- * payroll adjustment is ever a credit, never a salary structure component.
+ * CREDIT is an amount added straight to net pay (overtime and Other Credits):
+ * not an earning, so it stays out of gross and every wage worked out from it.
+ * A salary structure component is never a credit.
  */
 export type ComponentType = 'EARNING' | 'DEDUCTION' | 'EMPLOYER_CONTRIBUTION' | 'CREDIT'
 export type CalculationType = 'FIXED' | 'PERCENTAGE'
@@ -87,16 +87,6 @@ export interface ComponentInput {
   displayOrder: number
 }
 
-export interface BonusInput {
-  id: string
-  code: string
-  name: string
-  amountType: 'FIXED_AMOUNT' | 'PERCENTAGE'
-  amountMinor: Minor
-  percentage: number
-  taxable: boolean
-}
-
 /** The tax set to be deducted from this employee's pay this month (see the tax module). */
 export interface TaxInput {
   id: string
@@ -107,13 +97,6 @@ export interface TaxInput {
 
 /** The employee's Labour Welfare Fund contribution due this month (see the lwf module). */
 export interface LwfInput {
-  id: string
-  amountMinor: Minor
-  note: string | null
-}
-
-/** The employee's PL Wages credit released into this month's payroll (see the pl-wages module). */
-export interface PlWagesInput {
   id: string
   amountMinor: Minor
   note: string | null
@@ -192,13 +175,10 @@ export interface CalculatorInput {
    * proportionally so the breakdown still adds up.
    */
   overrideTotalMinor: Minor | null
-  bonuses: BonusInput[]
   /** Null when no tax is to be deducted from this employee this month. */
   tax: TaxInput | null
   /** Null when no Labour Welfare Fund contribution is due from this employee this month. */
   lwf: LwfInput | null
-  /** Null when no PL Wages credit is released into this employee's pay this month. */
-  plWages: PlWagesInput | null
   adjustments: AdjustmentInput[]
   /** PF is deducted on the structure's wage, capped at `pf.wageLimitMinor`. */
   pf: StatutoryInput
@@ -216,7 +196,6 @@ export interface CalculatorInput {
 
 export type ComponentSource =
   | 'SALARY_STRUCTURE'
-  | 'BONUS'
   | 'OVERTIME'
   | 'HOLIDAY_WORK'
   | 'STATUTORY'
@@ -262,8 +241,9 @@ export interface CalculatorOutput {
   attendance: AttendanceSummary
   components: ComponentResult[]
   grossEarningsMinor: Minor
-  totalBonusMinor: Minor
   totalDeductionsMinor: Minor
+  /** Overtime pay: added to net pay after deductions, never part of gross. */
+  totalOvertimeMinor: Minor
   /** Other Credits: added to net pay after deductions, never part of gross. */
   totalCreditsMinor: Minor
   employerContributionsMinor: Minor
@@ -769,7 +749,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   let structureDeductionsMinor = 0
   let employerContributionsMinor = 0
   // The statutory wage is the structure's own gross earnings plus holiday work
-  // pay (added below) - bonuses and overtime never count toward it.
+  // pay (added below) - adjustments never count toward it.
   let structureGrossMinor = 0
   let holidayWorkMinor = 0
   let basicMinor = 0
@@ -816,66 +796,16 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   }
 
   // ------------------------------------------------------------------
-  // Bonuses become earning components (plan section 25).
-  // ------------------------------------------------------------------
-  let totalBonusMinor = 0
-  for (const bonus of input.bonuses) {
-    const amountMinor =
-      bonus.amountType === 'PERCENTAGE' ? percentOfMinor(grossEarningsMinor, bonus.percentage) : bonus.amountMinor
-    if (amountMinor === 0) continue
-
-    totalBonusMinor += amountMinor
-    components.push({
-      code: bonus.code,
-      name: bonus.name,
-      componentType: 'EARNING',
-      calculationType: bonus.amountType === 'PERCENTAGE' ? 'PERCENTAGE' : 'FIXED',
-      source: 'BONUS',
-      fullAmountMinor: amountMinor,
-      amountMinor,
-      percentage: bonus.amountType === 'PERCENTAGE' ? bonus.percentage : null,
-      taxable: bonus.taxable,
-      displayOrder: 500,
-      referenceId: bonus.id,
-      notes: null,
-    })
-  }
-
-  // Bonuses count toward gross earnings but not toward the statutory wage, which
-  // is derived from the salary structure alone.
-  grossEarningsMinor += totalBonusMinor
-
-  // ------------------------------------------------------------------
-  // PL Wages: a past year's earned-leave wage credit released into this month's
-  // pay by the pl-wages module. Like a bonus, it counts toward gross earnings
-  // but never toward the statutory wage.
-  // ------------------------------------------------------------------
-  if (input.plWages && input.plWages.amountMinor > 0) {
-    grossEarningsMinor += input.plWages.amountMinor
-    components.push({
-      code: 'PL_WAGES',
-      name: 'PL Wages',
-      componentType: 'EARNING',
-      calculationType: 'FIXED',
-      source: 'STATUTORY',
-      fullAmountMinor: input.plWages.amountMinor,
-      amountMinor: input.plWages.amountMinor,
-      percentage: null,
-      taxable: true,
-      displayOrder: 570,
-      referenceId: input.plWages.id,
-      notes: input.plWages.note,
-    })
-  }
-
-  // ------------------------------------------------------------------
-  // PSR overtime pay: hours x rate, as a plain earning (plan: OT for PSR is
-  // salary, not days off - the opposite of a Supply employee's conversion).
-  // Each entry chose its rate when it was recorded: one day's salary / n hours
-  // - a day being the structure's earnings at the same daily rate its
-  // proration uses, as for holiday work pay - or a custom amount per hour.
-  // Like bonuses, it counts toward gross earnings but not the statutory wage,
-  // so no PF or ESI is deducted from it: the whole amount reaches net salary.
+  // Bonuses and PL Wages are not part of salary: each is paid separately and
+  // marked paid in its own module (bonuses.module.ts, pl-wages.module.ts).
+  //
+  // PSR overtime pay: hours x rate (plan: OT for PSR is paid, not days off -
+  // the opposite of a Supply employee's conversion). Each entry chose its rate
+  // when it was recorded: one day's salary / n hours - a day being the
+  // structure's earnings at the same daily rate its proration uses, as for
+  // holiday work pay - or a custom amount per hour. It is added straight to net
+  // pay after the deductions, like Other Credits: it is not part of gross or the
+  // statutory wage, so no PF, ESI or other deduction is taken from it.
   // ------------------------------------------------------------------
   const dayRateMinor = daySalaryMinor(resolved, input.employee.salaryBasis, attendance.payableDaysBasis)
 
@@ -898,11 +828,10 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   }
 
   if (overtimeAmountMinor > 0) {
-    grossEarningsMinor += overtimeAmountMinor
     components.push({
       code: 'OVERTIME',
       name: 'Overtime',
-      componentType: 'EARNING',
+      componentType: 'CREDIT',
       calculationType: 'FIXED',
       source: 'OVERTIME',
       fullAmountMinor: overtimeAmountMinor,
@@ -924,9 +853,9 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // work, i.e. one more day of pay (holiday + work). One day is the salary
   // structure's earnings at the same daily rate its proration uses, so it agrees
   // with the rest of the payslip. It is wages earned in the month, so it counts
-  // toward gross earnings and toward the PF and ESI wage (unlike overtime and
-  // bonuses). A holiday worked for half a day earns half of that: its worked
-  // half is paid through the paid days, and the extra pay is half a day more.
+  // toward gross earnings and toward the PF and ESI wage (unlike overtime). A
+  // holiday worked for half a day earns half of that: its worked half is paid
+  // through the paid days, and the extra pay is half a day more.
   // A component switched out of holiday extra pay (e.g. a special allowance
   // paid for the month's days only) is left out of that extra day.
   // ------------------------------------------------------------------
@@ -1196,8 +1125,9 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     adjustmentDeductionsMinor,
   )
 
-  // A credit goes straight to net pay, after the deductions, so none is taken from it.
-  let netSalaryMinor = grossEarningsMinor - totalDeductionsMinor + totalCreditsMinor
+  // Overtime and credits go straight to net pay, after the deductions, so
+  // none is taken from them.
+  let netSalaryMinor = grossEarningsMinor - totalDeductionsMinor + overtimeAmountMinor + totalCreditsMinor
   netSalaryMinor = roundToDecimals(netSalaryMinor, input.policy.netRoundingDecimals)
 
   if (netSalaryMinor < 0) {
@@ -1213,8 +1143,8 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     attendance,
     components,
     grossEarningsMinor,
-    totalBonusMinor,
     totalDeductionsMinor,
+    totalOvertimeMinor: overtimeAmountMinor,
     totalCreditsMinor,
     employerContributionsMinor,
     pfWageMinor,

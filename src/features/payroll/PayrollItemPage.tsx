@@ -239,15 +239,16 @@ export default function PayrollItemPage() {
 
         {item.credits.length > 0 ? (
           <div style={{ marginTop: '1.5rem' }}>
-            <p className="stat-label">Other credits</p>
+            <p className="stat-label">Added to net pay</p>
             <p className="subtle" style={{ marginBottom: '0.4rem' }}>
-              Added straight to net salary; not part of gross earnings, and nothing is deducted from them.
+              Overtime and other credits go straight to net salary; they are not part of gross earnings, and nothing is deducted from them.
             </p>
             <div className="breakdown-list">
               {item.credits.map((component) => (
                 <div key={component.id} className="breakdown-row">
                   <span>
                     {component.name}
+                    {component.source === 'ADJUSTMENT' ? <Badge tone="info">Other credit</Badge> : null}
                     {component.notes ? <span className="subtle" style={{ display: 'block' }}>{component.notes}</span> : null}
                   </span>
                   <span className="numeric">{formatCurrency(component.amount)}</span>
@@ -255,11 +256,23 @@ export default function PayrollItemPage() {
               ))}
             </div>
             <div className="breakdown-total">
-              <span>Total credits</span>
-              <span className="numeric">{formatCurrency(item.totalCredits)}</span>
+              <span>Total added</span>
+              <span className="numeric">{formatCurrency(item.totalOvertime + item.totalCredits)}</span>
             </div>
           </div>
         ) : null}
+
+        <div className="breakdown-total" style={{ marginTop: '1.5rem' }}>
+          <span>
+            Net salary
+            <span className="subtle" style={{ display: 'block', fontWeight: 400 }}>
+              {formatCurrency(item.grossEarnings)} gross − {formatCurrency(item.totalDeductions)} deductions
+              {item.totalOvertime !== 0 ? ` + ${formatCurrency(item.totalOvertime)} overtime` : ''}
+              {item.totalCredits !== 0 ? ` + ${formatCurrency(item.totalCredits)} other credits` : ''}
+            </span>
+          </span>
+          <span className="numeric">{formatCurrency(item.netSalary)}</span>
+        </div>
 
         {item.employerContributionComponents.length > 0 ? (
           <div style={{ marginTop: '1.5rem' }}>

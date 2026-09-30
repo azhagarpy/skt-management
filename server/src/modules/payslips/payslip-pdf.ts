@@ -170,6 +170,7 @@ export function drawPayslipPage(doc: Pdf, data: PayslipPdfData): void {
   const earnings = components.filter((component) => component.component_type === 'EARNING')
   const deductions = components.filter((component) => component.component_type === 'DEDUCTION')
   const employer = components.filter((component) => component.component_type === 'EMPLOYER_CONTRIBUTION')
+  // Overtime and Other Credits: added to net pay, outside gross.
   const credits = components.filter((component) => component.component_type === 'CREDIT')
 
   const toRow = (component: PayrollItemComponentRow): TableRow => ({
@@ -198,22 +199,28 @@ export function drawPayslipPage(doc: Pdf, data: PayslipPdfData): void {
   total(PAGE.left + HALF + 15, totalsY, 'Total deductions', money(item.total_deductions))
   y = totalsY + 22 + 14
 
-  // --- Other credits -------------------------------------------------------------
-  // Paid on top of earnings less deductions: not part of gross, nothing deducted from it.
+  // --- Added to net pay ---------------------------------------------------------
+  // Overtime and Other Credits are paid on top of earnings less deductions: not
+  // part of gross, and nothing is deducted from them.
+  const overtime = Number(item.total_overtime)
+  const otherCredits = Number(item.total_credits)
   if (credits.length > 0) {
     const creditRows = credits.map(toRow)
     y = ensureSpace(doc, y, tableHeight(creditRows) + 22 + 14 + 80)
-    const creditsEnd = drawSide(doc, PAGE.left, y, 'Other credits', creditRows)
-    total(PAGE.left, creditsEnd, 'Total credits', money(item.total_credits))
+    const creditsEnd = drawSide(doc, PAGE.left, y, 'Added to net pay', creditRows)
+    total(PAGE.left, creditsEnd, 'Total added', money(overtime + otherCredits))
     y = creditsEnd + 22 + 14
   }
+  const additions = [overtime !== 0 ? 'overtime' : null, otherCredits !== 0 ? 'other credits' : null].filter(Boolean)
 
   // --- Net pay -----------------------------------------------------------------
   const net = Number(item.net_salary)
   doc.rect(PAGE.left, y, PAGE.width, 54).lineWidth(1).fillAndStroke(COLOR.tint, COLOR.accent)
   doc.font('Helvetica-Bold').fontSize(8.5).fillColor(COLOR.accent).text('NET PAY (INR)', PAGE.left + 12, y + 9, { lineBreak: false })
   doc.font('Helvetica').fontSize(8).fillColor(COLOR.muted).text(
-    credits.length > 0 ? 'Gross earnings less total deductions, plus other credits' : 'Gross earnings less total deductions',
+    additions.length > 0
+      ? `Gross earnings less total deductions, plus ${additions.join(' and ')}`
+      : 'Gross earnings less total deductions',
     PAGE.left + 12,
     y + 21,
     { lineBreak: false },

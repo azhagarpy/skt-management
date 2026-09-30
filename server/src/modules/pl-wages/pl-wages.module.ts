@@ -11,6 +11,7 @@ import { ApiError } from '../../utils/api-error.js'
 import { roundHalfUp } from '../../utils/money.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
+import { idListFromForm, mountPayoutRoutes, presentPayout } from '../payments/payout.js'
 
 /**
  * PL Wages: an annual credit for earned-leave wages.
@@ -25,9 +26,10 @@ import { PERMISSIONS } from '../auth/permissions.js'
  * payroll rather than re-deriving it from the salary structure, so it can
  * never drift from what the employee was actually paid.
  *
- * The batch is reviewed, then released into a chosen payroll month (where
- * payroll pays it as a PL_WAGES earning - see payroll.calculator.ts), and
- * marked paid once that run has actually been settled.
+ * The batch is reviewed and approved, then paid separately from salary -
+ * never through payroll - and marked paid with the date, how it was paid, a
+ * reference and a supporting document, one credit or many at once (see
+ * payments/payout.ts). A paid credit can be marked not paid again.
  */
 
 export interface PlWagesRow {
@@ -40,43 +42,18 @@ export interface PlWagesRow {
   daily_wage_rate: string
   credit_amount: string
   status: 'NOT_ELIGIBLE' | 'PENDING' | 'APPROVED' | 'PAID'
+  /** The payroll month a credit was paid in, back when it was paid through salary. */
   payroll_year: number | null
   payroll_month: number | null
   paid_on: string | null
+  payment_method: string | null
+  reference_number: string | null
+  payment_notes: string | null
+  proof_path: string | null
+  proof_filename: string | null
   employee_code?: string
   employee_name?: string
   department_name?: string | null
-}
-
-/** What payroll pays out for these employees in this month. */
-export async function listApprovedPlWagesForPeriod(
-  employeeIds: string[],
-  year: number,
-  month: number,
-  db: Queryable = pool,
-): Promise<PlWagesRow[]> {
-  if (employeeIds.length === 0) return []
-  return queryRows<PlWagesRow>(
-    db,
-    `SELECT * FROM pl_wages_credits
-      WHERE employee_id = ANY($1::uuid[]) AND payroll_year = $2 AND payroll_month = $3
-        AND status IN ('APPROVED', 'PAID')`,
-    [employeeIds, year, month],
-  )
-}
-
-async function assertPayrollOpen(organizationId: string, year: number, month: number): Promise<void> {
-  const run = await queryOne<{ status: string }>(
-    pool,
-    `SELECT status::text AS status FROM payroll_runs
-      WHERE organization_id = $1 AND year = $2 AND month = $3 AND status IN ('APPROVED', 'LOCKED')`,
-    [organizationId, year, month],
-  )
-  if (run) {
-    throw ApiError.businessRule(
-      `Payroll for ${month}/${year} is already ${run.status.toLowerCase()}, so PL Wages can no longer be released into it. Choose a later month.`,
-    )
-  }
 }
 
 async function findCredit(id: string, organizationId: string): Promise<PlWagesRow | null> {
@@ -109,7 +86,7 @@ function presentCredit(row: PlWagesRow) {
     status: row.status,
     payrollYear: row.payroll_year,
     payrollMonth: row.payroll_month,
-    paidOn: row.paid_on,
+    ...presentPayout(row),
   }
 }
 
@@ -130,14 +107,14 @@ const generateSchema = z.object({
   creditYear: z.coerce.number().int().min(1970).max(2200),
 })
 
-const approveSchema = z.object({
-  payrollYear: z.coerce.number().int().min(1970).max(2200),
-  payrollMonth: z.coerce.number().int().min(1).max(12),
+/** Approve many pending credits at once. */
+const bulkApproveSchema = z.object({
+  ids: z.preprocess(idListFromForm, z.array(z.string().uuid()).min(1).max(5000)),
 })
 
 export type ListQuery = z.infer<typeof listQuerySchema>
 export type GenerateInput = z.infer<typeof generateSchema>
-export type ApproveInput = z.infer<typeof approveSchema>
+export type BulkApproveInput = z.infer<typeof bulkApproveSchema>
 
 // ---------------------------------------------------------------------------
 // Generation
@@ -329,28 +306,25 @@ plWagesRouter.post(
   }),
 )
 
-/** Releases an eligible credit into a chosen payroll month, where it is paid as an earning. */
+/** Approves an eligible credit, ready to be paid. */
 plWagesRouter.patch(
   '/:id/approve',
   requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
-  validate({ params: idParam, body: approveSchema }),
+  validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const id = req.params.id as string
-    const input = req.body as ApproveInput
 
     const existing = await findCredit(id, auth.organizationId)
     if (!existing) throw ApiError.notFound('PL Wages credit')
     if (existing.status !== 'PENDING') {
-      throw ApiError.businessRule('Only a pending, eligible credit can be released into payroll')
+      throw ApiError.businessRule('Only a pending, eligible credit can be approved')
     }
-    await assertPayrollOpen(auth.organizationId, input.payrollYear, input.payrollMonth)
 
     const row = await queryOne<PlWagesRow>(
       pool,
-      `UPDATE pl_wages_credits SET status = 'APPROVED', payroll_year = $3, payroll_month = $4
-        WHERE id = $1 AND organization_id = $2 RETURNING *`,
-      [id, auth.organizationId, input.payrollYear, input.payrollMonth],
+      `UPDATE pl_wages_credits SET status = 'APPROVED' WHERE id = $1 AND organization_id = $2 RETURNING *`,
+      [id, auth.organizationId],
     )
 
     await recordAudit({
@@ -358,70 +332,45 @@ plWagesRouter.patch(
       action: 'PL_WAGES_APPROVED',
       entityType: 'pl_wages_credit',
       entityId: id,
-      newValues: { payrollPeriod: `${input.payrollYear}-${input.payrollMonth}`, amount: existing.credit_amount },
+      newValues: { amount: existing.credit_amount },
     })
 
-    return sendSuccess(res, row ? presentCredit(row) : null, 'Released into payroll')
+    return sendSuccess(res, row ? presentCredit(row) : null, 'Approved, ready to pay')
   }),
 )
 
-plWagesRouter.patch(
-  '/:id/mark-paid',
+/** Approves every pending credit among the chosen ones; anything else is skipped. */
+plWagesRouter.post(
+  '/approve',
   requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
-  validate({ params: idParam }),
+  validate({ body: bulkApproveSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
-    const id = req.params.id as string
-    const existing = await findCredit(id, auth.organizationId)
-    if (!existing) throw ApiError.notFound('PL Wages credit')
-    if (existing.status !== 'APPROVED') {
-      throw ApiError.businessRule('Only a credit released into payroll can be marked paid')
-    }
+    const ids = [...new Set((req.body as BulkApproveInput).ids)]
 
-    const row = await queryOne<PlWagesRow>(
+    const rows = await queryRows<{ id: string }>(
       pool,
-      `UPDATE pl_wages_credits SET status = 'PAID', paid_on = current_date
-        WHERE id = $1 AND organization_id = $2 RETURNING *`,
-      [id, auth.organizationId],
+      `UPDATE pl_wages_credits SET status = 'APPROVED'
+        WHERE id = ANY($1::uuid[]) AND organization_id = $2 AND status = 'PENDING'
+        RETURNING id`,
+      [ids, auth.organizationId],
     )
+    if (rows.length === 0) throw ApiError.businessRule('None of the chosen credits is pending approval')
+
     await recordAudit({
       ...auditContextFrom(req),
-      action: 'PL_WAGES_MARKED_PAID',
+      action: 'PL_WAGES_APPROVED',
       entityType: 'pl_wages_credit',
-      entityId: id,
-      newValues: {},
+      entityId: null,
+      newValues: { bulk: true, approved: rows.length, skipped: ids.length - rows.length },
     })
-    return sendSuccess(res, row ? presentCredit(row) : null, 'Marked as paid')
-  }),
-)
 
-plWagesRouter.patch(
-  '/:id/mark-unpaid',
-  requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
-  validate({ params: idParam }),
-  asyncHandler(async (req, res) => {
-    const auth = requireAuth(req)
-    const id = req.params.id as string
-    const existing = await findCredit(id, auth.organizationId)
-    if (!existing) throw ApiError.notFound('PL Wages credit')
-    if (existing.status !== 'PAID') {
-      throw ApiError.businessRule('Only a credit marked paid can be reverted')
-    }
-
-    const row = await queryOne<PlWagesRow>(
-      pool,
-      `UPDATE pl_wages_credits SET status = 'APPROVED', paid_on = NULL
-        WHERE id = $1 AND organization_id = $2 RETURNING *`,
-      [id, auth.organizationId],
+    const skipped = ids.length - rows.length
+    return sendSuccess(
+      res,
+      { approved: rows.length, skipped },
+      `Approved ${rows.length} credit${rows.length === 1 ? '' : 's'}${skipped > 0 ? ` (${skipped} skipped: not pending)` : ''}`,
     )
-    await recordAudit({
-      ...auditContextFrom(req),
-      action: 'PL_WAGES_MARKED_UNPAID',
-      entityType: 'pl_wages_credit',
-      entityId: id,
-      newValues: {},
-    })
-    return sendSuccess(res, row ? presentCredit(row) : null, 'Marked as not paid')
   }),
 )
 
@@ -434,7 +383,7 @@ plWagesRouter.delete(
     const existing = await findCredit(req.params.id as string, auth.organizationId)
     if (!existing) throw ApiError.notFound('PL Wages credit')
     if (existing.status === 'APPROVED' || existing.status === 'PAID') {
-      throw ApiError.businessRule('A credit already released into payroll cannot be deleted')
+      throw ApiError.businessRule('An approved or paid credit cannot be deleted')
     }
 
     await pool.query('DELETE FROM pl_wages_credits WHERE id = $1', [existing.id])
@@ -448,3 +397,15 @@ plWagesRouter.delete(
     return sendNoContent(res, 'PL Wages row removed')
   }),
 )
+
+mountPayoutRoutes(plWagesRouter, {
+  table: 'pl_wages_credits',
+  noun: 'PL Wages credit',
+  plural: 'PL Wages credits',
+  folder: 'pl-wages-proof',
+  view: PERMISSIONS.PL_WAGES_VIEW,
+  manage: PERMISSIONS.PL_WAGES_MANAGE,
+  entityType: 'pl_wages_credit',
+  paidAction: 'PL_WAGES_MARKED_PAID',
+  unpaidAction: 'PL_WAGES_MARKED_UNPAID',
+})

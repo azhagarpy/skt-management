@@ -102,8 +102,14 @@ Each step depends on the ones above it.
   unpaid leave or a half day on each side, is not paid. A holiday **worked for half a
   day** is never charged or forfeited; it pays that half day, and if the holiday has
   *extra pay* on, half a day of holiday work pay on top — two half days in all.
-- **Bonuses** — attached to a payroll *month*, not a date. Only `APPROVED` bonuses are
-  paid; `PENDING` ones are ignored by the calculator.
+- **Bonuses** and **PL Wages** — paid separately from salary, never through payroll.
+  An approved one is marked paid once it has actually been paid: the date, how it was
+  paid (bank transfer, cash, cheque, UPI), a reference and a supporting document
+  (PDF, PNG or JPEG). Many can be marked paid at once with one shared document, and a
+  paid one can be marked not paid again, which removes its details and document.
+- **Overtime** — paid hourly overtime is added straight to net pay, like Other
+  Credits: it is not part of gross earnings, so no PF, ESI or other deduction is taken
+  from it. Net salary = gross earnings − total deductions + overtime + other credits.
 - **Tax** — the tax amount for each band of wages (Tax → Tax slabs). The tax report
   applies the bands to each employee's *total wages over a period* (usually a
   half-year) and exports the P.TAX workbook, a sheet per department. From the
@@ -137,7 +143,16 @@ once the run reaches `APPROVED`.
 
 **What the calculator reads** — the employee's salary structure and components,
 every day of the month resolved against the calendar, whether each leave day was
-paid, approved bonuses for that month, the tax set to be deducted, and the PF and ESI rules on the salary structure.
+paid, the overtime recorded, the tax and Labour Welfare Fund set to be deducted, Other
+Deductions and Other Credits, and the PF and ESI rules on the salary structure. Bonuses
+and PL Wages are not part of it.
+
+**Salary reports** — the Salary Register, Payment Status and Department Salary reports
+split each net salary into gross earnings, PF, ESI, P.Tax, LWF, other deductions, total
+deductions, overtime and other credits, each with its own total, so gross − deductions +
+overtime + other credits = net can be checked on every row and in the totals. For a month
+calculated before overtime moved out of gross, its overtime is taken back out of gross in
+these reports and shown under Overtime, so those months add up the same way.
 
 **EPS and EPF** — the employer's PF share is split into the Pension Scheme (EPS, the
 structure's EPS rate, usually 8.33%) and EPF (the rest). For an employee whose PF
