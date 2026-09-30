@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { calculatePayrollItem, forfeitedHolidayDates, summariseAttendance, type CalculatorInput, type ComponentInput, type DayInput, type PolicyInput } from './payroll.calculator.js'
+import {
+  calculatePayrollItem,
+  forfeitedHolidayDates,
+  holidayWorkAmountsMinor,
+  overtimePayMinor,
+  summariseAttendance,
+  type CalculatorInput,
+  type ComponentInput,
+  type DayInput,
+  type PolicyInput,
+} from './payroll.calculator.js'
 import { datesInMonth, weekdayOf, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 
@@ -1244,5 +1254,50 @@ describe('calculatePayrollItem - overtime', () => {
     const result = calculatePayrollItem(baseInput({ components, overtime: [daySalary(6)] }))
     expect(overtimeLine(result)).toBeUndefined()
     expect(result.warnings).toContain('6 overtime hour(s) are recorded but their rate works out to zero; they were not paid.')
+  })
+
+  it('prices one entry, for the overtime report, as the payroll line does', () => {
+    expect(toMajor(overtimePayMinor(daySalary(8), toMinor(556)))).toBe(556)
+    expect(toMajor(overtimePayMinor(daySalary(5), toMinor(919)))).toBe(574.38)
+    expect(toMajor(overtimePayMinor(custom(3, 120), toMinor(556)))).toBe(360)
+    expect(overtimePayMinor(daySalary(4, 0), toMinor(556))).toBe(0)
+  })
+})
+
+describe('holidayWorkAmountsMinor', () => {
+  it('gives a monthly structure one day of the month as the wage, and the same again as extra pay', () => {
+    // 42,000 over a 30-day basis is 1,400 a day.
+    const amounts = holidayWorkAmountsMinor(monthlyComponents(), null, 'MONTHLY', 30, 1)
+    expect(toMajor(amounts.dayWageMinor)).toBe(1_400)
+    expect(toMajor(amounts.extraPayMinor)).toBe(1_400)
+  })
+
+  it('leaves a component switched out of holiday extra pay out of the extra pay only, and halves a half day', () => {
+    // SKT's daily structure: Basic 494 + DA 287 + Special Allowance 138 = 919 a day.
+    const components = [
+      component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(494), displayOrder: 1 }),
+      component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(287), displayOrder: 2 }),
+      component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(138), displayOrder: 3, holidayExtraPay: false }),
+    ]
+    const full = holidayWorkAmountsMinor(components, null, 'DAILY', 30, 1)
+    const half = holidayWorkAmountsMinor(components, null, 'DAILY', 30, 0.5)
+    expect([toMajor(full.dayWageMinor), toMajor(full.extraPayMinor)]).toEqual([919, 781])
+    expect([toMajor(half.dayWageMinor), toMajor(half.extraPayMinor)]).toEqual([459.5, 390.5])
+  })
+
+  it('pays nothing for a component that is not prorated, since it is not paid by the day', () => {
+    const components = [
+      ...monthlyComponents(),
+      component({ code: 'FIXED', name: 'Fixed Allowance', amountMinor: toMinor(3_000), prorate: false }),
+    ]
+    expect(toMajor(holidayWorkAmountsMinor(components, null, 'MONTHLY', 30, 1).dayWageMinor)).toBe(1_400)
+  })
+
+  it('scales the structure to the employee\'s own gross, and agrees with the payslip\'s Holiday Work Pay', () => {
+    const days = septemberDays({ '2026-09-07': { dayKind: 'HOLIDAY', status: 'PRESENT', holidayExtraPay: true } })
+    const payslip = calculatePayrollItem(baseInput({ overrideTotalMinor: toMinor(21_000), days }))
+    const amounts = holidayWorkAmountsMinor(monthlyComponents(), toMinor(21_000), 'MONTHLY', 30, 1)
+    expect(toMajor(amounts.dayWageMinor)).toBe(700)
+    expect(amounts.extraPayMinor).toBe(payslip.components.find((entry) => entry.code === 'HOLIDAY_WORK')?.amountMinor)
   })
 })

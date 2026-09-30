@@ -240,7 +240,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'holiday-report',
     name: 'Holiday Report',
-    description: 'The holidays in a month or date range, and who worked on each - a full day or a half day.',
+    description:
+      'The holidays in a month or date range, who worked on each - a full day or a half day - and what it paid: the day\'s wage, the extra pay for working it, and the two together.',
     category: 'ATTENDANCE',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -249,12 +250,16 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       ['year', 'month'],
       ['from', 'to'],
     ],
+    // The amounts are filled in by report-amounts.ts, with payroll's arithmetic.
     columns: [
       { key: 'holiday_date', label: 'Date', format: 'date' },
       { key: 'holiday_name', label: 'Holiday', format: 'text' },
       ...EMPLOYEE_COLUMNS,
       { key: 'worked', label: 'Worked', format: 'text' },
       { key: 'days_worked', label: 'Days', format: 'days', total: true },
+      { key: 'holiday_wage', label: 'Holiday Wage', format: 'currency', total: true },
+      { key: 'extra_pay', label: 'Extra Pay', format: 'currency', total: true },
+      { key: 'total_amount', label: 'Total Amount', format: 'currency', total: true },
     ],
     // Only mandatory holidays count: an optional one leaves the day a working
     // day (calendar.service.ts). Holidays are matched by date, not by
@@ -269,7 +274,13 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              d.name AS department_name,
              g.name AS designation_name,
              CASE WHEN a.status = 'PRESENT' THEN 'Full day' ELSE 'Half day' END AS worked,
-             CASE WHEN a.status = 'PRESENT' THEN 1 ELSE 0.5 END AS days_worked
+             CASE WHEN a.status = 'PRESENT' THEN 1 ELSE 0.5 END AS days_worked,
+             -- Not shown as columns: what the amounts are worked out from.
+             e.id AS employee_id,
+             e.department_id,
+             e.location_id,
+             e.joining_date,
+             e.exit_date
         FROM attendance a
         JOIN (SELECT organization_id, holiday_date, string_agg(DISTINCT name, ' / ' ORDER BY name) AS name
                 FROM holidays
@@ -282,6 +293,52 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
        WHERE {{scope}} {{filters}} AND a.status IN ('PRESENT', 'HALF_DAY_LEAVE')
     `,
     orderBy: 'a.attendance_date, e.employee_code',
+  },
+  {
+    key: 'overtime-report',
+    name: 'Overtime Report',
+    description:
+      'Overtime hours by employee and date, with the rate and amount each is paid. A month is the payroll month (the 21st to the 20th), so the amounts match that month\'s payslips.',
+    category: 'PAYROLL',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['year', 'month', 'from', 'to', 'departmentId', 'employeeId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['from', 'to'],
+    ],
+    // The rate and amount are filled in by report-amounts.ts, with payroll's arithmetic.
+    columns: [
+      ...EMPLOYEE_COLUMNS,
+      { key: 'work_date', label: 'Date', format: 'date' },
+      { key: 'hours', label: 'OT Hours', format: 'number', total: true },
+      { key: 'rate', label: 'Rate', format: 'text' },
+      { key: 'rate_per_hour', label: 'Rate / Hour', format: 'currency' },
+      { key: 'amount', label: 'Amount', format: 'currency', total: true },
+    ],
+    sql: `
+      SELECT e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             o.work_date,
+             o.hours,
+             -- Not shown as columns: what the rate and amount are worked out from.
+             e.id AS employee_id,
+             e.joining_date,
+             e.exit_date,
+             t.overtime_handling::text AS overtime_handling,
+             o.rate_basis,
+             o.day_divisor,
+             o.rate_per_hour_minor
+        FROM overtime_entries o
+        JOIN employees e ON e.id = o.employee_id
+        JOIN employee_types t ON t.id = e.employee_type_id
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id
+       WHERE {{scope}} {{filters}}
+    `,
+    orderBy: 'e.employee_code, o.work_date',
   },
 
   // -------------------------------------------------------------------------

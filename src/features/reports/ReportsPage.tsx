@@ -139,7 +139,8 @@ export default function ReportsPage() {
       case 'days':
         return formatDays(Number(value))
       case 'number':
-        return formatNumber(Number(value))
+        // Whole numbers stay whole; a fraction such as 1.5 overtime hours keeps its decimals.
+        return formatNumber(Number(value), Number.isInteger(Number(value)) ? 0 : 2)
       case 'percent':
         return `${Number(value).toFixed(2)}%`
       case 'date':

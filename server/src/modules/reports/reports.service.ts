@@ -13,6 +13,8 @@ import {
   type ReportDefinition,
 } from './report-definitions.js'
 import { idListParam } from '../../utils/query-params.js'
+import { payCycleFor, PAYROLL_CYCLE_CUTOFF_DAY } from '../../utils/dates.js'
+import { addHolidayAmounts, addOvertimeAmounts, type ReportRow } from './report-amounts.js'
 
 /**
  * The generic report runner.
@@ -85,6 +87,8 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
     year: 'EXTRACT(YEAR FROM a.attendance_date)::int',
     month: 'EXTRACT(MONTH FROM a.attendance_date)::int',
   },
+  // Its month is turned into dates by resolvePayrollMonth.
+  'overtime-report': { from: 'o.work_date', to: 'o.work_date' },
   'leave-requests': { from: 'r.to_date', to: 'r.from_date' },
   'leave-balances': { year: 'b.leave_year' },
   'salary-register': { year: 'r.year', month: 'r.month' },
@@ -98,6 +102,44 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   'pf-report': { year: 'r.year', month: 'r.month' },
   'esi-report': { year: 'r.year', month: 'r.month' },
   'department-salary': { year: 'r.year', month: 'r.month' },
+}
+
+/**
+ * Reports whose month is the payroll month rather than the calendar month, so
+ * they agree with what that month's payroll paid.
+ */
+const PAYROLL_MONTH_REPORTS = new Set(['overtime-report'])
+
+/**
+ * Columns SQL cannot work out - amounts that follow payroll's own rules - are
+ * filled in afterwards by these. A report with one is paged and totalled in
+ * memory, over every matching row, rather than in SQL.
+ */
+const ENRICH_BY_REPORT: Record<string, (organizationId: string, rows: ReportRow[]) => Promise<ReportRow[]>> = {
+  'holiday-report': addHolidayAmounts,
+  'overtime-report': addOvertimeAmounts,
+}
+
+/**
+ * Turns a payroll-month report's year and month into the dates that month
+ * covers: the run's own dates when the month has a run (they can be changed),
+ * else the standard cycle, the 21st of the previous month to the 20th.
+ */
+async function resolvePayrollMonth(
+  definition: ReportDefinition,
+  auth: AuthContext,
+  filters: ReportFilters,
+): Promise<ReportFilters> {
+  if (!PAYROLL_MONTH_REPORTS.has(definition.key) || !filters.year || !filters.month) return filters
+  const run = await queryOne<{ period_start: string; period_end: string }>(
+    pool,
+    'SELECT period_start, period_end FROM payroll_runs WHERE organization_id = $1 AND year = $2 AND month = $3',
+    [auth.organizationId, filters.year, filters.month],
+  )
+  const period = run
+    ? { start: run.period_start, end: run.period_end }
+    : payCycleFor(filters.year, filters.month, PAYROLL_CYCLE_CUTOFF_DAY)
+  return { ...filters, year: undefined, month: undefined, from: period.start, to: period.end }
 }
 
 interface BuiltQuery {
@@ -271,14 +313,29 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
     throw ApiError.forbidden('You do not have permission to run this report')
   }
   assertRequiredFilters(definition, filters)
+  const queryFilters = await resolvePayrollMonth(definition, auth, filters)
 
-  const paged = buildQuery(definition, auth, scope, filters, true)
-  const counted = buildQuery(definition, auth, scope, filters, false)
+  let rows: ReportRow[]
+  let total: number
+  let grandTotals: Record<string, number>
 
-  const countRow = await queryOne<Record<string, string>>(pool, counted.countSql, counted.params)
-  const rows = await queryRows<Record<string, unknown>>(pool, paged.sql, paged.params)
+  const enrich = ENRICH_BY_REPORT[definition.key]
+  if (enrich) {
+    const all = await enrich(auth.organizationId, await loadAllRows(definition, auth, scope, queryFilters))
+    const offset = (filters.page - 1) * filters.pageSize
+    rows = all.slice(offset, offset + filters.pageSize)
+    total = all.length
+    grandTotals = computeTotals(definition, all)
+  } else {
+    const paged = buildQuery(definition, auth, scope, queryFilters, true)
+    const counted = buildQuery(definition, auth, scope, queryFilters, false)
+    const countRow = await queryOne<Record<string, string>>(pool, counted.countSql, counted.params)
+    rows = await queryRows<ReportRow>(pool, paged.sql, paged.params)
+    total = Number(countRow?.count ?? 0)
+    grandTotals = grandTotalsFrom(definition, countRow)
+  }
 
-  const paginated = buildPaginated(rows, Number(countRow?.count ?? 0), filters.page, filters.pageSize)
+  const paginated = buildPaginated(rows, total, filters.page, filters.pageSize)
 
   return {
     key: definition.key,
@@ -286,7 +343,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
     columns: definition.columns,
     rows: paginated.items,
     totals: computeTotals(definition, rows),
-    grandTotals: grandTotalsFrom(definition, countRow),
+    grandTotals,
     page: paginated.page,
     pageSize: paginated.pageSize,
     total: paginated.total,
@@ -295,7 +352,27 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
   }
 }
 
-/** Runs a report unpaged, for export. Capped so an export cannot exhaust memory. */
+const MAX_REPORT_ROWS = 50_000
+
+/** Every row the filters match, unpaged. Capped so a report cannot exhaust memory. */
+async function loadAllRows(
+  definition: ReportDefinition,
+  auth: AuthContext,
+  scope: EmployeeScope,
+  filters: ReportFilters,
+): Promise<ReportRow[]> {
+  const built = buildQuery(definition, auth, scope, { ...filters, page: 1, pageSize: MAX_REPORT_ROWS }, true)
+  const rows = await queryRows<ReportRow>(pool, built.sql, built.params)
+
+  if (rows.length >= MAX_REPORT_ROWS) {
+    throw ApiError.businessRule(
+      `This report has more than ${MAX_REPORT_ROWS.toLocaleString()} rows. Narrow the filters and try again.`,
+    )
+  }
+  return rows
+}
+
+/** Runs a report unpaged, for export. */
 export async function runReportForExport(
   auth: AuthContext,
   key: string,
@@ -307,15 +384,9 @@ export async function runReportForExport(
   const scope = reportScope(auth)
   assertRequiredFilters(definition, filters)
 
-  const MAX_EXPORT_ROWS = 50_000
-  const built = buildQuery(definition, auth, scope, { ...filters, page: 1, pageSize: MAX_EXPORT_ROWS }, true)
-  const rows = await queryRows<Record<string, unknown>>(pool, built.sql, built.params)
-
-  if (rows.length >= MAX_EXPORT_ROWS) {
-    throw ApiError.businessRule(
-      `This export exceeds ${MAX_EXPORT_ROWS.toLocaleString()} rows. Narrow the filters and try again.`,
-    )
-  }
+  const loaded = await loadAllRows(definition, auth, scope, await resolvePayrollMonth(definition, auth, filters))
+  const enrich = ENRICH_BY_REPORT[definition.key]
+  const rows = enrich ? await enrich(auth.organizationId, loaded) : loaded
 
   return { definition, rows, totals: computeTotals(definition, rows) }
 }

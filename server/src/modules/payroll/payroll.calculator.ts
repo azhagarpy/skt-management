@@ -683,6 +683,58 @@ export function overtimeDaySalaryMinor(
   return daySalaryMinor(applyOverride(resolveComponents(components), overrideTotalMinor), salaryBasis, payableDaysBasis)
 }
 
+/** What hours recorded at one rate pay, given one day's salary for a "day's salary / n" rate. */
+export function overtimePayMinor(overtime: OvertimeInput, dayRateMinor: Minor): Minor {
+  if (overtime.basis === 'CUSTOM') return multiplyMinor(overtime.ratePerHourMinor ?? 0, overtime.hours)
+  const divisor = overtime.dayDivisor ?? 0
+  // Hours x day / n in one step, so n hours pay exactly one day's salary.
+  return divisor > 0 ? multiplyMinor(dayRateMinor, overtime.hours / divisor) : 0
+}
+
+/**
+ * `days` of the structure's prorated earnings, component by component at the
+ * rate proration uses: the per-day amount of a daily structure, or a monthly
+ * one's amount over the payable days basis. `include` narrows the components.
+ */
+function earningsForDaysMinor(
+  resolved: ResolvedComponent[],
+  salaryBasis: 'MONTHLY' | 'DAILY',
+  days: number,
+  payableDaysBasis: number,
+  include: (component: ComponentInput) => boolean,
+): Minor {
+  let totalMinor = 0
+  for (const entry of resolved) {
+    if (entry.input.componentType !== 'EARNING' || !entry.input.prorate || !include(entry.input)) continue
+    totalMinor +=
+      salaryBasis === 'DAILY'
+        ? multiplyMinor(entry.fullAmountMinor, days)
+        : prorateMinor(entry.fullAmountMinor, days, payableDaysBasis)
+  }
+  return totalMinor
+}
+
+/**
+ * What working a holiday comes to, outside a payroll run: the day's own wage,
+ * which the paid days carry whether the holiday is worked or not, and the
+ * extra pay working it earns on a holiday that offers it - the Holiday Work Pay
+ * line, without the components switched out of it. `days` is 1 for a full day
+ * and 0.5 for a half day.
+ */
+export function holidayWorkAmountsMinor(
+  components: ComponentInput[],
+  overrideTotalMinor: Minor | null,
+  salaryBasis: 'MONTHLY' | 'DAILY',
+  payableDaysBasis: number,
+  days: number,
+): { dayWageMinor: Minor; extraPayMinor: Minor } {
+  const resolved = applyOverride(resolveComponents(components), overrideTotalMinor)
+  return {
+    dayWageMinor: earningsForDaysMinor(resolved, salaryBasis, days, payableDaysBasis, () => true),
+    extraPayMinor: earningsForDaysMinor(resolved, salaryBasis, days, payableDaysBasis, (component) => component.holidayExtraPay),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The calculation
 // ---------------------------------------------------------------------------
@@ -825,15 +877,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   const overtimeNotes: string[] = []
   for (const overtime of input.overtime) {
     if (overtime.hours <= 0) continue
-    let amountMinor: Minor
+    const amountMinor = overtimePayMinor(overtime, dayRateMinor)
     if (overtime.basis === 'CUSTOM') {
-      const rateMinor = overtime.ratePerHourMinor ?? 0
-      amountMinor = multiplyMinor(rateMinor, overtime.hours)
-      overtimeNotes.push(`${overtime.hours} hour(s) at ${rateMinor / 100}/hour`)
+      overtimeNotes.push(`${overtime.hours} hour(s) at ${(overtime.ratePerHourMinor ?? 0) / 100}/hour`)
     } else {
       const divisor = overtime.dayDivisor ?? 0
-      // Hours x day / n in one step, so n hours pay exactly one day's salary.
-      amountMinor = divisor > 0 ? multiplyMinor(dayRateMinor, overtime.hours / divisor) : 0
       overtimeNotes.push(
         `${overtime.hours} hour(s) at ${divisor > 0 ? (dayRateMinor / 100 / divisor).toFixed(2) : 0}/hour (one day's salary ${dayRateMinor / 100} / ${divisor})`,
       )
@@ -884,13 +932,13 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   )
   const holidayWorkedDays = holidaysWorked.reduce((total, day) => total + (day.status === 'PRESENT' ? 1 : 0.5), 0)
   if (holidayWorkedDays > 0) {
-    for (const entry of resolved) {
-      if (entry.input.componentType !== 'EARNING' || !entry.input.prorate || !entry.input.holidayExtraPay) continue
-      holidayWorkMinor +=
-        input.employee.salaryBasis === 'DAILY'
-          ? multiplyMinor(entry.fullAmountMinor, holidayWorkedDays)
-          : prorateMinor(entry.fullAmountMinor, holidayWorkedDays, attendance.payableDaysBasis)
-    }
+    holidayWorkMinor = earningsForDaysMinor(
+      resolved,
+      input.employee.salaryBasis,
+      holidayWorkedDays,
+      attendance.payableDaysBasis,
+      (component) => component.holidayExtraPay,
+    )
     if (holidayWorkMinor > 0) {
       grossEarningsMinor += holidayWorkMinor
       components.push({
