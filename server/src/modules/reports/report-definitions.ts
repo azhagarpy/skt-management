@@ -91,7 +91,8 @@ const PAY_CATEGORIES_JOIN = `
            coalesce(sum(pcc.amount) FILTER (WHERE pcc.component_code = 'LWF_EMPLOYEE'), 0) AS lwf,
            coalesce(sum(pcc.amount) FILTER (WHERE pcc.source = 'OVERTIME'), 0)            AS overtime,
            coalesce(sum(pcc.amount) FILTER (WHERE pcc.source = 'OVERTIME' AND pcc.component_type = 'EARNING'), 0)
-             AS overtime_in_gross
+             AS overtime_in_gross,
+           coalesce(sum(pcc.amount) FILTER (WHERE pcc.source = 'HOLIDAY_WORK'), 0)        AS holiday_work
       FROM payroll_item_components pcc
      WHERE pcc.payroll_item_id = i.id
   ) pc ON true`
@@ -511,15 +512,18 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'salary-register',
     name: 'Salary Register',
-    description: `The full payroll register for a month, split by category. ${PAY_CATEGORIES_NOTE}`,
+    description: `The full payroll register for a month, split by category. ${PAY_CATEGORIES_NOTE} Holiday Wage (the day's own pay for the holidays worked) and Holiday Extra Pay (the extra pay for working them) are part of gross earnings.`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
     filters: ['year', 'month', 'departmentId', 'supervisorId', 'payrollRunId', 'paymentStatus'],
     requiredFilters: ['year', 'month'],
+    // Holiday Wage is filled in by report-amounts.ts, as the Holiday Report works it out.
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'paid_days', label: 'Paid Days', format: 'days', total: true },
+      { key: 'holiday_wage', label: 'Holiday Wage', format: 'currency', total: true },
+      { key: 'holiday_extra_pay', label: 'Holiday Extra Pay', format: 'currency', total: true },
       ...PAY_CATEGORY_COLUMNS,
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
@@ -530,13 +534,20 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              i.employee_name,
              i.department_name,
              i.designation_name,
-             i.paid_days,${PAY_CATEGORY_SELECT},
+             i.paid_days,
+             pc.holiday_work AS holiday_extra_pay,${PAY_CATEGORY_SELECT},
              i.paid_amount,
              i.pending_amount,
-             i.payment_status::text AS payment_status
+             i.payment_status::text AS payment_status,
+             -- Not shown as columns: what the Holiday Wage is worked out from.
+             i.salary_structure_id,
+             i.payable_days_basis,
+             i.calculation_snapshot->'days' AS snapshot_days,
+             asg.override_amount
         FROM payroll_items i
         JOIN payroll_runs r ON r.id = i.payroll_run_id
-        JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
+        JOIN employees e ON e.id = i.employee_id
+        LEFT JOIN employee_salary_assignments asg ON asg.id = i.salary_assignment_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
     `,
     orderBy: 'i.employee_code',

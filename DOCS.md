@@ -153,6 +153,10 @@ deductions, overtime and other credits, each with its own total, so gross − de
 overtime + other credits = net can be checked on every row and in the totals. For a month
 calculated before overtime moved out of gross, its overtime is taken back out of gross in
 these reports and shown under Overtime, so those months add up the same way.
+The Salary Register also shows each employee's **Holiday Wage** — their own day's pay for
+the holidays they worked, which the paid days carry, Special Allowance included — and
+**Holiday Extra Pay**, the extra pay for working them, without any component switched out
+of holiday extra pay. Both are already inside gross earnings.
 
 **EPS and EPF** — the employer's PF share is split into the Pension Scheme (EPS, the
 structure's EPS rate, usually 8.33%) and EPF (the rest). For an employee whose PF

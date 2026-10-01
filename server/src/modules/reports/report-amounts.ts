@@ -7,6 +7,7 @@ import {
   overtimeDaySalaryMinor,
   overtimePayMinor,
   type ComponentInput,
+  type DayInput,
 } from '../payroll/payroll.calculator.js'
 import { toComponentInputs } from '../payroll/payroll.service.js'
 import * as salaryRepository from '../salary/salary.repository.js'
@@ -165,6 +166,64 @@ export async function addOvertimeAmounts(organizationId: string, rows: ReportRow
       amount: toMajor(overtimePayMinor({ hours, basis: 'DAY_SALARY', dayDivisor: divisor, ratePerHourMinor: null }, dayMinor)),
     }
   })
+}
+
+/** Days of holiday worked among a payroll item's days: 1 for a full day, 0.5 for a half day. */
+export function holidayDaysWorked(days: DayInput[]): number {
+  let worked = 0
+  for (const day of days) {
+    if (!day.isEmployed || day.dayKind !== 'HOLIDAY') continue
+    if (day.status === 'PRESENT') worked += 1
+    else if (day.status === 'HALF_DAY_LEAVE') worked += 0.5
+  }
+  return worked
+}
+
+/** The Salary Register's working fields, dropped once the Holiday Wage is worked out. */
+const REGISTER_WORKING_FIELDS = ['salary_structure_id', 'payable_days_basis', 'snapshot_days', 'override_amount']
+
+/**
+ * Salary Register: the Holiday Wage for the holidays each employee worked in
+ * the run - the day's own pay, which their paid days already carry - beside
+ * the Holiday Extra Pay payroll added for working them.
+ *
+ * Worked out as the Holiday Report does, but from what payroll itself used for
+ * the item - the days it saw (its snapshot), the structure and override it was
+ * calculated on and its payable days - so it follows that run exactly.
+ */
+export async function addRegisterHolidayPay(organizationId: string, rows: ReportRow[]): Promise<ReportRow[]> {
+  const structures = new Map<string, { basis: 'MONTHLY' | 'DAILY'; components: ComponentInput[] } | null>()
+
+  const result: ReportRow[] = []
+  for (const row of rows) {
+    const worked = holidayDaysWorked((row.snapshot_days as DayInput[] | null) ?? [])
+    let wageMinor = 0
+    if (worked > 0 && row.salary_structure_id) {
+      const structureId = String(row.salary_structure_id)
+      if (!structures.has(structureId)) {
+        const structure = await salaryRepository.findStructure(structureId, organizationId)
+        structures.set(
+          structureId,
+          structure ? { basis: structure.salary_basis, components: toComponentInputs(structure) } : null,
+        )
+      }
+      const structure = structures.get(structureId)
+      if (structure) {
+        wageMinor = holidayWorkAmountsMinor(
+          structure.components,
+          row.override_amount === null || row.override_amount === undefined ? null : toMinor(row.override_amount as string),
+          structure.basis,
+          Number(row.payable_days_basis),
+          worked,
+        ).dayWageMinor
+      }
+    }
+
+    const visible: ReportRow = { ...row, holiday_wage: toMajor(wageMinor) }
+    for (const key of REGISTER_WORKING_FIELDS) delete visible[key]
+    result.push(visible)
+  }
+  return result
 }
 
 /**

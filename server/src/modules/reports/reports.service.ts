@@ -14,7 +14,7 @@ import {
 } from './report-definitions.js'
 import { idListParam } from '../../utils/query-params.js'
 import { payCycleFor, PAYROLL_CYCLE_CUTOFF_DAY } from '../../utils/dates.js'
-import { addHolidayAmounts, addOvertimeAmounts, type ReportRow } from './report-amounts.js'
+import { addHolidayAmounts, addOvertimeAmounts, addRegisterHolidayPay, type ReportRow } from './report-amounts.js'
 
 /**
  * The generic report runner.
@@ -119,6 +119,7 @@ const PAYROLL_MONTH_REPORTS = new Set(['overtime-report'])
 const ENRICH_BY_REPORT: Record<string, (organizationId: string, rows: ReportRow[]) => Promise<ReportRow[]>> = {
   'holiday-report': addHolidayAmounts,
   'overtime-report': addOvertimeAmounts,
+  'salary-register': addRegisterHolidayPay,
 }
 
 /**
