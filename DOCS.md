@@ -158,10 +158,17 @@ deductions, overtime and other credits, each with its own total, so gross − de
 overtime + other credits = net can be checked on every row and in the totals. For a month
 calculated before overtime moved out of gross, its overtime is taken back out of gross in
 these reports and shown under Overtime, so those months add up the same way.
-The Salary Register also shows each employee's **Holiday Wage** — their own day's pay for
-the holidays they worked, which the paid days carry, Special Allowance included — and
-**Holiday Extra Pay**, the extra pay for working them, without any component switched out
-of holiday extra pay. Both are already inside gross earnings.
+The Salary Register also shows, for each employee in the run:
+- **Working Days** — every day worked, a holiday worked included (a half day is 0.5).
+- **Eligible Holidays** — the holidays that earn holiday pay: each one rested on and not
+  forfeited by the sandwich rule, and each one worked on a holiday with *extra pay* on.
+- **Holiday Wages** — that holiday pay, without the components left out of holiday pay
+  (Special Allowance). For a holiday worked it is the holiday work pay, on top of the day's
+  work counted in Working Days.
+
+A worked holiday counts as both a working day and an eligible holiday, because it is paid
+as both. For a daily-rated employee, gross is the working days at the full day rate plus the
+holiday wages (plus any paid leave). All of it is already inside gross earnings.
 
 **EPS and EPF** — the employer's PF share is split into the Pension Scheme (EPS, the
 structure's EPS rate, usually 8.33%) and EPF (the rest). For an employee whose PF

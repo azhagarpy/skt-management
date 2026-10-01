@@ -512,18 +512,19 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'salary-register',
     name: 'Salary Register',
-    description: `The full payroll register for a month, split by category. ${PAY_CATEGORIES_NOTE} Holiday Wage (the day's own pay for the holidays worked) and Holiday Extra Pay (the extra pay for working them) are part of gross earnings.`,
+    description: `The full payroll register for a month, split by category. ${PAY_CATEGORIES_NOTE} Working Days are the days worked, holidays worked included. Eligible Holidays are the holidays that earn holiday pay: those rested on and not lost to leave on both sides, and those worked. Holiday Wages is their holiday pay, without the components left out of holiday pay (Special Allowance) - for a holiday worked, on top of the day's work counted in Working Days - and is part of gross earnings.`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
     filters: ['year', 'month', 'departmentId', 'supervisorId', 'payrollRunId', 'paymentStatus'],
     requiredFilters: ['year', 'month'],
-    // Holiday Wage is filled in by report-amounts.ts, as the Holiday Report works it out.
+    // The working days and holiday figures are filled in by report-amounts.ts.
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'paid_days', label: 'Paid Days', format: 'days', total: true },
-      { key: 'holiday_wage', label: 'Holiday Wage', format: 'currency', total: true },
-      { key: 'holiday_extra_pay', label: 'Holiday Extra Pay', format: 'currency', total: true },
+      { key: 'working_days', label: 'Working Days', format: 'days', total: true },
+      { key: 'eligible_holidays', label: 'Eligible Holidays', format: 'days', total: true },
+      { key: 'holiday_wages', label: 'Holiday Wages', format: 'currency', total: true },
       ...PAY_CATEGORY_COLUMNS,
       { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
       { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
@@ -534,12 +535,16 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
              i.employee_name,
              i.department_name,
              i.designation_name,
-             i.paid_days,
-             pc.holiday_work AS holiday_extra_pay,${PAY_CATEGORY_SELECT},
+             i.paid_days,${PAY_CATEGORY_SELECT},
              i.paid_amount,
              i.pending_amount,
              i.payment_status::text AS payment_status,
-             -- Not shown as columns: what the Holiday Wage is worked out from.
+             -- Not shown as columns: what the working days and holiday figures are
+             -- worked out from - what payroll itself used for the item.
+             pc.holiday_work AS holiday_extra_pay,
+             i.present_days,
+             i.half_day_leave_days,
+             i.holiday_days,
              i.salary_structure_id,
              i.payable_days_basis,
              i.calculation_snapshot->'days' AS snapshot_days,

@@ -168,64 +168,6 @@ export async function addOvertimeAmounts(organizationId: string, rows: ReportRow
   })
 }
 
-/** Days of holiday worked among a payroll item's days: 1 for a full day, 0.5 for a half day. */
-export function holidayDaysWorked(days: DayInput[]): number {
-  let worked = 0
-  for (const day of days) {
-    if (!day.isEmployed || day.dayKind !== 'HOLIDAY') continue
-    if (day.status === 'PRESENT') worked += 1
-    else if (day.status === 'HALF_DAY_LEAVE') worked += 0.5
-  }
-  return worked
-}
-
-/** The Salary Register's working fields, dropped once the Holiday Wage is worked out. */
-const REGISTER_WORKING_FIELDS = ['salary_structure_id', 'payable_days_basis', 'snapshot_days', 'override_amount']
-
-/**
- * Salary Register: the Holiday Wage for the holidays each employee worked in
- * the run - the day's own pay, which their paid days already carry - beside
- * the Holiday Extra Pay payroll added for working them.
- *
- * Worked out as the Holiday Report does, but from what payroll itself used for
- * the item - the days it saw (its snapshot), the structure and override it was
- * calculated on and its payable days - so it follows that run exactly.
- */
-export async function addRegisterHolidayPay(organizationId: string, rows: ReportRow[]): Promise<ReportRow[]> {
-  const structures = new Map<string, { basis: 'MONTHLY' | 'DAILY'; components: ComponentInput[] } | null>()
-
-  const result: ReportRow[] = []
-  for (const row of rows) {
-    const worked = holidayDaysWorked((row.snapshot_days as DayInput[] | null) ?? [])
-    let wageMinor = 0
-    if (worked > 0 && row.salary_structure_id) {
-      const structureId = String(row.salary_structure_id)
-      if (!structures.has(structureId)) {
-        const structure = await salaryRepository.findStructure(structureId, organizationId)
-        structures.set(
-          structureId,
-          structure ? { basis: structure.salary_basis, components: toComponentInputs(structure) } : null,
-        )
-      }
-      const structure = structures.get(structureId)
-      if (structure) {
-        wageMinor = holidayWorkAmountsMinor(
-          structure.components,
-          row.override_amount === null || row.override_amount === undefined ? null : toMinor(row.override_amount as string),
-          structure.basis,
-          Number(row.payable_days_basis),
-          worked,
-        ).dayWageMinor
-      }
-    }
-
-    const visible: ReportRow = { ...row, holiday_wage: toMajor(wageMinor) }
-    for (const key of REGISTER_WORKING_FIELDS) delete visible[key]
-    result.push(visible)
-  }
-  return result
-}
-
 /**
  * Holiday report: for each holiday worked, the day's own wage, the extra pay
  * working it earned, and the two together.
@@ -269,4 +211,131 @@ export async function addHolidayAmounts(organizationId: string, rows: ReportRow[
       total_amount: toMajor(dayWageMinor + earnedExtraMinor),
     }
   })
+}
+
+// ---------------------------------------------------------------------------
+// Salary Register
+// ---------------------------------------------------------------------------
+
+/** What payroll used for one item, as far as the register's holiday figures need it. */
+export interface RegisterHolidayInput {
+  /** The days payroll saw for the item (its calculation snapshot). */
+  days: DayInput[]
+  presentDays: number
+  halfDayLeaveDays: number
+  /** Holidays rested on and paid - not worked, not forfeited (the item's holiday days). */
+  restedHolidays: number
+  /** The Holiday Work Pay payroll added for holidays worked. */
+  holidayExtraPayMinor: Minor
+  /** The structure the item was calculated on; null when it can no longer be found. */
+  salary: Omit<PeriodSalary, 'payableDaysBasis'> | null
+  payableDaysBasis: number
+}
+
+/**
+ * The Salary Register's working days and holiday figures for one item:
+ *
+ *  - Working days: every day worked, a holiday worked included; a half day is
+ *    half a day worked.
+ *  - Eligible holidays: the holidays that earn holiday pay - each one rested on
+ *    and not forfeited by leave on both sides, and each one worked on a holiday
+ *    that pays extra for it (half a holiday worked earns half).
+ *  - Holiday wages: that holiday pay, without the components left out of
+ *    holiday pay (Special Allowance) - the rested holidays at the day rate
+ *    proration uses, plus the Holiday Work Pay payroll added.
+ *
+ * A worked holiday counts both as a working day and as an eligible holiday,
+ * because it is paid as both: the day's work with every component, and the
+ * holiday without the components left out of holiday pay.
+ */
+export function registerHolidayFigures(input: RegisterHolidayInput): {
+  workingDays: number
+  eligibleHolidays: number
+  holidayWagesMinor: Minor
+} {
+  let workedWithExtraPay = 0
+  for (const day of input.days) {
+    if (!day.isEmployed || day.dayKind !== 'HOLIDAY' || !day.holidayExtraPay) continue
+    if (day.status === 'PRESENT') workedWithExtraPay += 1
+    else if (day.status === 'HALF_DAY_LEAVE') workedWithExtraPay += 0.5
+  }
+
+  const restedPayMinor =
+    input.salary && input.restedHolidays > 0
+      ? holidayWorkAmountsMinor(
+          input.salary.components,
+          input.salary.overrideTotalMinor,
+          input.salary.salaryBasis,
+          input.payableDaysBasis,
+          input.restedHolidays,
+        ).extraPayMinor
+      : 0
+
+  return {
+    workingDays: roundDays(input.presentDays + input.halfDayLeaveDays * 0.5),
+    eligibleHolidays: roundDays(input.restedHolidays + workedWithExtraPay),
+    holidayWagesMinor: restedPayMinor + input.holidayExtraPayMinor,
+  }
+}
+
+function roundDays(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/** The register's working fields, dropped once its figures are filled in. */
+const REGISTER_WORKING_FIELDS = [
+  'holiday_extra_pay',
+  'present_days',
+  'half_day_leave_days',
+  'holiday_days',
+  'salary_structure_id',
+  'payable_days_basis',
+  'snapshot_days',
+  'override_amount',
+]
+
+/** Salary Register: fills in each item's working days and holiday figures (registerHolidayFigures). */
+export async function addRegisterHolidayFigures(organizationId: string, rows: ReportRow[]): Promise<ReportRow[]> {
+  const structures = new Map<string, { basis: 'MONTHLY' | 'DAILY'; components: ComponentInput[] } | null>()
+
+  const result: ReportRow[] = []
+  for (const row of rows) {
+    const restedHolidays = Number(row.holiday_days ?? 0)
+    let structure: { basis: 'MONTHLY' | 'DAILY'; components: ComponentInput[] } | null = null
+    if (restedHolidays > 0 && row.salary_structure_id) {
+      const structureId = String(row.salary_structure_id)
+      if (!structures.has(structureId)) {
+        const found = await salaryRepository.findStructure(structureId, organizationId)
+        structures.set(structureId, found ? { basis: found.salary_basis, components: toComponentInputs(found) } : null)
+      }
+      structure = structures.get(structureId) ?? null
+    }
+
+    const figures = registerHolidayFigures({
+      days: (row.snapshot_days as DayInput[] | null) ?? [],
+      presentDays: Number(row.present_days ?? 0),
+      halfDayLeaveDays: Number(row.half_day_leave_days ?? 0),
+      restedHolidays,
+      holidayExtraPayMinor: toMinor(row.holiday_extra_pay as string),
+      salary: structure
+        ? {
+            components: structure.components,
+            overrideTotalMinor:
+              row.override_amount === null || row.override_amount === undefined ? null : toMinor(row.override_amount as string),
+            salaryBasis: structure.basis,
+          }
+        : null,
+      payableDaysBasis: Number(row.payable_days_basis ?? 0),
+    })
+
+    const visible: ReportRow = {
+      ...row,
+      working_days: figures.workingDays,
+      eligible_holidays: figures.eligibleHolidays,
+      holiday_wages: toMajor(figures.holidayWagesMinor),
+    }
+    for (const key of REGISTER_WORKING_FIELDS) delete visible[key]
+    result.push(visible)
+  }
+  return result
 }
