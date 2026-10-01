@@ -1,7 +1,16 @@
 import { pool, queryRows } from '../../database/pool.js'
-import { countDaysBetween, payCycleContaining, PAYROLL_CYCLE_CUTOFF_DAY, type IsoDate } from '../../utils/dates.js'
+import {
+  addDays,
+  countDaysBetween,
+  datesBetween,
+  payCycleContaining,
+  PAYROLL_CYCLE_CUTOFF_DAY,
+  type IsoDate,
+} from '../../utils/dates.js'
 import { roundHalfUp, toMajor, toMinor, type Minor } from '../../utils/money.js'
-import { buildCalendarContext } from '../calendar/calendar.service.js'
+import * as attendanceRepository from '../attendance/attendance.repository.js'
+import { buildCalendarContext, type CalendarContext } from '../calendar/calendar.service.js'
+import * as leaveRepository from '../leave/leave.repository.js'
 import {
   holidayWorkAmountsMinor,
   overtimeDaySalaryMinor,
@@ -9,7 +18,7 @@ import {
   type ComponentInput,
   type DayInput,
 } from '../payroll/payroll.calculator.js'
-import { toComponentInputs } from '../payroll/payroll.service.js'
+import { employeeDays, HOLIDAY_CONTEXT_DAYS, indexLeavePaid, toComponentInputs } from '../payroll/payroll.service.js'
 import * as salaryRepository from '../salary/salary.repository.js'
 
 /**
@@ -168,27 +177,119 @@ export async function addOvertimeAmounts(organizationId: string, rows: ReportRow
   })
 }
 
+/** A holiday report row for a holiday rested on - marked as one, or never marked - rather than worked. */
+function isRestedRow(row: ReportRow): boolean {
+  return row.attendance_status !== 'PRESENT' && row.attendance_status !== 'HALF_DAY_LEAVE'
+}
+
 /**
- * Holiday report: for each holiday worked, the day's own wage, the extra pay
- * working it earned, and the two together.
+ * A holiday payroll pays as one rested on: the employee was employed, did not
+ * work it (it is marked a holiday, or never marked on a day their calendar
+ * keeps a holiday), and did not lose it to the sandwich rule.
+ */
+export function isPaidRestedHoliday(day: DayInput): boolean {
+  const rested = day.status === 'HOLIDAY' || (day.status === null && day.dayKind === 'HOLIDAY')
+  return day.isEmployed && rested && !day.holidayForfeited
+}
+
+/**
+ * Which of the rested rows payroll pays the holiday for, as `employeeId|date`
+ * keys. Each employee's days are built as payroll builds them (employeeDays),
+ * over `from`..`to`, which should reach a few days beyond the holidays so each
+ * is judged by the days around it.
+ */
+async function paidRestedHolidays(
+  rows: ReportRow[],
+  calendar: CalendarContext,
+  from: IsoDate,
+  to: IsoDate,
+): Promise<Set<string>> {
+  const paid = new Set<string>()
+  if (rows.length === 0) return paid
+
+  const employeeIds = [...new Set(rows.map((row) => String(row.employee_id)))]
+  const [attendanceRows, leaveRows] = await Promise.all([
+    attendanceRepository.listAttendanceForEmployees(employeeIds, from, to),
+    leaveRepository.listApprovedLeaveForPeriod(employeeIds, from, to),
+  ])
+  const dates = datesBetween(from, to)
+  const leavePaid = indexLeavePaid(leaveRows, dates)
+  const attendanceByEmployee = new Map<string, Map<IsoDate, attendanceRepository.AttendanceRow>>()
+  for (const record of attendanceRows) {
+    const byDate = attendanceByEmployee.get(record.employee_id) ?? new Map()
+    byDate.set(record.attendance_date, record)
+    attendanceByEmployee.set(record.employee_id, byDate)
+  }
+
+  const daysByEmployee = new Map<string, Map<IsoDate, DayInput>>()
+  for (const row of rows) {
+    const employeeId = String(row.employee_id)
+    let days = daysByEmployee.get(employeeId)
+    if (!days) {
+      const built = employeeDays(
+        dates,
+        calendar,
+        {
+          id: employeeId,
+          department_id: (row.department_id as string | null) ?? null,
+          location_id: (row.location_id as string | null) ?? null,
+          joining_date: row.joining_date as IsoDate,
+          exit_date: (row.exit_date as IsoDate | null) ?? null,
+        },
+        attendanceByEmployee.get(employeeId) ?? new Map(),
+        leavePaid.get(employeeId) ?? new Map(),
+      )
+      days = new Map(built.map((day) => [day.date, day]))
+      daysByEmployee.set(employeeId, days)
+    }
+    const day = days.get(row.holiday_date as IsoDate)
+    if (day && isPaidRestedHoliday(day)) paid.add(`${employeeId}|${row.holiday_date}`)
+  }
+  return paid
+}
+
+/**
+ * Holiday report: what each holiday paid each employee.
  *
- * Extra pay is due only on a holiday that offers it, and only where the
- * employee's calendar keeps the day a holiday - one falling on their weekly off
- * stays a weekly off, as it does in payroll.
+ *  - Worked, a full day or a half day: the day's own wage, the extra pay
+ *    working it earned, and the two together. Extra pay is due only on a
+ *    holiday that offers it, and only where the employee's calendar keeps the
+ *    day a holiday - one falling on their weekly off stays a weekly off, as it
+ *    does in payroll.
+ *  - Rested: the holiday pay, without the components left out of holiday pay
+ *    (Special Allowance), as Extra Pay - what the Salary Register counts in
+ *    Holiday Wages. A rested holiday payroll does not pay (isPaidRestedHoliday)
+ *    is dropped from the report.
  */
 export async function addHolidayAmounts(organizationId: string, rows: ReportRow[]): Promise<ReportRow[]> {
   if (rows.length === 0) return rows
 
+  const span = dateSpan(rows.map((row) => row.holiday_date as IsoDate))
+  const contextFrom = addDays(span.from, -HOLIDAY_CONTEXT_DAYS)
+  const contextTo = addDays(span.to, HOLIDAY_CONTEXT_DAYS)
+  const calendar = await buildCalendarContext(organizationId, contextFrom, contextTo)
+  const paidRested = await paidRestedHolidays(rows.filter(isRestedRow), calendar, contextFrom, contextTo)
+  const kept = rows.filter((row) => !isRestedRow(row) || paidRested.has(`${row.employee_id}|${row.holiday_date}`))
+
   const salaryFor = await loadPeriodSalaries(
     organizationId,
-    rows.map((row) => employeeDate(row, 'holiday_date')),
+    kept.map((row) => employeeDate(row, 'holiday_date')),
   )
-  const span = dateSpan(rows.map((row) => row.holiday_date as IsoDate))
-  const calendar = await buildCalendarContext(organizationId, span.from, span.to)
 
-  return rows.map((row) => {
+  return kept.map((row) => {
     const salary = salaryFor(employeeDate(row, 'holiday_date'))
     if (!salary) return { ...row, holiday_wage: null, extra_pay: null, total_amount: null }
+
+    if (isRestedRow(row)) {
+      const { extraPayMinor } = holidayWorkAmountsMinor(
+        salary.components,
+        salary.overrideTotalMinor,
+        salary.salaryBasis,
+        salary.payableDaysBasis,
+        1,
+      )
+      return { ...row, holiday_wage: 0, extra_pay: toMajor(extraPayMinor), total_amount: toMajor(extraPayMinor) }
+    }
 
     const { dayWageMinor, extraPayMinor } = holidayWorkAmountsMinor(
       salary.components,

@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { calculatePayrollItem, type CalculatorInput, type ComponentInput, type DayInput } from '../payroll/payroll.calculator.js'
-import { datesInMonth, weekdayOf } from '../../utils/dates.js'
+import {
+  calculatePayrollItem,
+  type CalculatorInput,
+  type ComponentInput,
+  type DayInput,
+  type DayKind,
+} from '../payroll/payroll.calculator.js'
+import { employeeDays } from '../payroll/payroll.service.js'
+import type { CalendarContext, DayInfo } from '../calendar/calendar.service.js'
+import { datesBetween, datesInMonth, weekdayOf, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
-import { registerHolidayFigures } from './report-amounts.js'
+import { isPaidRestedHoliday, registerHolidayFigures } from './report-amounts.js'
 
 const component = (overrides: Partial<ComponentInput> & Pick<ComponentInput, 'code' | 'name'>): ComponentInput => ({
   componentType: 'EARNING',
@@ -143,5 +151,93 @@ describe('registerHolidayFigures', () => {
     })
     expect(figures.eligibleHolidays).toBe(2)
     expect(toMajor(figures.holidayWagesMinor)).toBe(781)
+  })
+})
+
+describe('isPaidRestedHoliday', () => {
+  // Mon 14 September 2026 is the holiday; weekends are weekly offs.
+  const HOLIDAY: IsoDate = '2026-09-14'
+  const dates = datesBetween('2026-09-07', '2026-09-21')
+
+  function calendarWith(kinds: Record<IsoDate, DayKind>): CalendarContext {
+    const dayFor = (date: IsoDate): DayInfo => {
+      const weekend = weekdayOf(date) === 'SATURDAY' || weekdayOf(date) === 'SUNDAY'
+      const kind = kinds[date] ?? (weekend ? 'WEEKLY_OFF' : 'WORKING')
+      return {
+        date,
+        kind,
+        isHalfWeeklyOff: false,
+        holidayId: null,
+        holidayName: kind === 'HOLIDAY' ? 'Vinayakar Chaturthi' : null,
+        holidayIsOptional: false,
+        holidayIsPaid: true,
+        holidayExtraPay: kind === 'HOLIDAY',
+      }
+    }
+    return {
+      from: dates[0] as IsoDate,
+      to: dates[dates.length - 1] as IsoDate,
+      dayFor,
+      daysFor: () => dates.map((date) => dayFor(date)),
+      countWorkingDays: () => 0,
+    }
+  }
+
+  /** Whether the 14th is paid as a rested holiday, given the marked days around it. */
+  function paid(
+    marked: Record<IsoDate, string>,
+    options: { kinds?: Record<IsoDate, DayKind>; leavePaid?: Record<IsoDate, boolean>; exitDate?: IsoDate } = {},
+  ): boolean {
+    const days = employeeDays(
+      dates,
+      calendarWith(options.kinds ?? { [HOLIDAY]: 'HOLIDAY' }),
+      { id: 'emp-1', department_id: null, location_id: null, joining_date: '2020-01-01', exit_date: options.exitDate ?? null },
+      new Map(Object.entries(marked).map(([date, status]) => [date as IsoDate, { status }])),
+      new Map(Object.entries(options.leavePaid ?? {}) as [IsoDate, boolean][]),
+    )
+    return isPaidRestedHoliday(days.find((day) => day.date === HOLIDAY) as DayInput)
+  }
+
+  const workedAround = { '2026-09-11': 'PRESENT', '2026-09-15': 'PRESENT' }
+
+  it('pays a holiday marked as one', () => {
+    expect(paid({ ...workedAround, [HOLIDAY]: 'HOLIDAY' })).toBe(true)
+  })
+
+  it('pays a holiday never marked, when the calendar keeps the day a holiday', () => {
+    expect(paid(workedAround)).toBe(true)
+  })
+
+  it('does not pay an unmarked holiday that falls on the employee\'s weekly off', () => {
+    expect(paid(workedAround, { kinds: { [HOLIDAY]: 'WEEKLY_OFF' } })).toBe(false)
+  })
+
+  it('does not count a holiday worked or taken absent as rested', () => {
+    expect(paid({ ...workedAround, [HOLIDAY]: 'PRESENT' })).toBe(false)
+    expect(paid({ ...workedAround, [HOLIDAY]: 'ABSENT' })).toBe(false)
+  })
+
+  it('loses the holiday to absences on the days right next to it', () => {
+    expect(paid({ '2026-09-13': 'ABSENT', [HOLIDAY]: 'HOLIDAY', '2026-09-15': 'ABSENT' })).toBe(false)
+  })
+
+  it('keeps the holiday when a weekly off sits between it and an absence', () => {
+    // Fri 11th and Tue 15th absent, but Sunday the 13th is a weekly off.
+    expect(paid({ '2026-09-11': 'ABSENT', [HOLIDAY]: 'HOLIDAY', '2026-09-15': 'ABSENT' })).toBe(true)
+  })
+
+  it('keeps the holiday when only one side is an absence', () => {
+    expect(paid({ '2026-09-13': 'ABSENT', [HOLIDAY]: 'HOLIDAY', '2026-09-15': 'PRESENT' })).toBe(true)
+  })
+
+  it('loses the holiday to half days or unpaid leave on both sides, but not to paid leave', () => {
+    expect(paid({ '2026-09-13': 'HALF_DAY_LEAVE', [HOLIDAY]: 'HOLIDAY', '2026-09-15': 'HALF_DAY_LEAVE' })).toBe(false)
+    const leave = { '2026-09-13': 'ON_LEAVE', [HOLIDAY]: 'HOLIDAY', '2026-09-15': 'ON_LEAVE' }
+    expect(paid(leave, { leavePaid: { '2026-09-13': false, '2026-09-15': false } })).toBe(false)
+    expect(paid(leave, { leavePaid: { '2026-09-13': true, '2026-09-15': true } })).toBe(true)
+  })
+
+  it('does not pay a holiday after the employee left', () => {
+    expect(paid(workedAround, { exitDate: '2026-09-11' })).toBe(false)
   })
 })

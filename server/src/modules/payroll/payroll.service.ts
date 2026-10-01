@@ -13,7 +13,7 @@ import { toMajor, toMinor, toNumericString } from '../../utils/money.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { assertEmployeeInScope, resolveScope, scopeClause } from '../employees/employee-access.js'
-import { buildCalendarContext } from '../calendar/calendar.service.js'
+import { buildCalendarContext, type CalendarContext } from '../calendar/calendar.service.js'
 import * as attendanceRepository from '../attendance/attendance.repository.js'
 import * as leaveRepository from '../leave/leave.repository.js'
 import * as salaryRepository from '../salary/salary.repository.js'
@@ -67,7 +67,74 @@ const DEFAULT_POLICY: PolicyInput = {
 }
 
 /** Days read either side of a payroll period to judge the holidays at its edges. */
-const HOLIDAY_CONTEXT_DAYS = 7
+export const HOLIDAY_CONTEXT_DAYS = 7
+
+/** Approved leave, by employee and date: whether the leave on that date is paid. */
+export function indexLeavePaid(
+  leaveRows: { employee_id: string; from_date: IsoDate; to_date: IsoDate; is_paid: boolean }[],
+  dates: IsoDate[],
+): Map<string, Map<IsoDate, boolean>> {
+  const byEmployee = new Map<string, Map<IsoDate, boolean>>()
+  for (const leave of leaveRows) {
+    const byDate = byEmployee.get(leave.employee_id) ?? new Map<IsoDate, boolean>()
+    for (const date of dates) {
+      if (date >= leave.from_date && date <= leave.to_date) byDate.set(date, leave.is_paid)
+    }
+    byEmployee.set(leave.employee_id, byDate)
+  }
+  return byEmployee
+}
+
+/**
+ * One employee's days as the calculator reads them, with each holiday lost to
+ * the sandwich rule flagged (forfeitedHolidayDates). `dates` must be
+ * consecutive and should reach a few days beyond the dates that matter, so a
+ * holiday at either edge is judged by the days around it.
+ */
+export function employeeDays(
+  dates: IsoDate[],
+  calendar: CalendarContext,
+  employee: {
+    id: string
+    department_id: string | null
+    location_id: string | null
+    joining_date: IsoDate
+    exit_date: IsoDate | null
+  },
+  attendanceByDate: Map<IsoDate, { status: string }>,
+  leavePaidByDate: Map<IsoDate, boolean>,
+  policy: PolicyInput = DEFAULT_POLICY,
+): DayInput[] {
+  const scope = { departmentId: employee.department_id, locationId: employee.location_id, employeeId: employee.id }
+
+  const days: DayInput[] = dates.map((date) => {
+    const calendarDay = calendar.dayFor(date, scope)
+    const record = attendanceByDate.get(date)
+
+    // Employment window, honouring the policy's proration switches: when
+    // proration is off, the full month is treated as employed.
+    const beforeJoining = date < employee.joining_date
+    const afterExit = employee.exit_date !== null && date > employee.exit_date
+    const isEmployed = (!beforeJoining || !policy.prorateOnJoining) && (!afterExit || !policy.prorateOnExit)
+
+    const status = (record?.status as AttendanceStatus | undefined) ?? null
+    const leaveIsPaid =
+      status === 'ON_LEAVE' || status === 'HALF_DAY_LEAVE' ? (leavePaidByDate.get(date) ?? false) : null
+
+    return {
+      date,
+      dayKind: calendarDay.kind,
+      status,
+      leaveIsPaid,
+      isEmployed,
+      holidayExtraPay: calendarDay.holidayExtraPay,
+      holidayName: calendarDay.holidayName,
+    }
+  })
+
+  const forfeited = forfeitedHolidayDates(days)
+  return days.map((day) => (forfeited.has(day.date) ? { ...day, holidayForfeited: true } : day))
+}
 
 // ---------------------------------------------------------------------------
 // Presenters
@@ -415,15 +482,10 @@ export async function calculateRun(
         attendanceByEmployee.set(row.employee_id, byDate)
       }
 
+      const contextDates = datesBetween(contextStart, contextEnd)
+
       // Leave paid/unpaid per date, so the calculator can value each leave day.
-      const leavePaidByEmployeeDate = new Map<string, Map<IsoDate, boolean>>()
-      for (const leave of leaveRows) {
-        const byDate = leavePaidByEmployeeDate.get(leave.employee_id) ?? new Map()
-        for (const date of datesBetween(contextStart, contextEnd)) {
-          if (date >= leave.from_date && date <= leave.to_date) byDate.set(date, leave.is_paid)
-        }
-        leavePaidByEmployeeDate.set(leave.employee_id, byDate)
-      }
+      const leavePaidByEmployeeDate = indexLeavePaid(leaveRows, contextDates)
 
       const taxByEmployee = new Map<string, TaxInput>()
       for (const entry of taxDeductions) {
@@ -460,7 +522,6 @@ export async function calculateRun(
       // --- Replace any previous calculation. --------------------------------
       await repository.deleteRunItems(runId, tx)
 
-      const contextDates = datesBetween(contextStart, contextEnd)
       const skipped: CalculationSummary['skipped'] = []
       const warnings: CalculationSummary['warnings'] = []
       const appliedAdjustmentIds: string[] = []
@@ -488,39 +549,14 @@ export async function calculateRun(
           continue
         }
 
-        const attendanceByDate = attendanceByEmployee.get(employee.id) ?? new Map()
-        const leaveByDate = leavePaidByEmployeeDate.get(employee.id) ?? new Map()
-        const scope = { departmentId: employee.department_id, locationId: employee.location_id, employeeId: employee.id }
-
-        const contextDays: DayInput[] = contextDates.map((date) => {
-          const calendarDay = calendar.dayFor(date, scope)
-          const record = attendanceByDate.get(date)
-
-          // Employment window, honouring the policy's proration switches: when
-          // proration is off, the full month is treated as employed.
-          const beforeJoining = date < employee.joining_date
-          const afterExit = employee.exit_date !== null && date > employee.exit_date
-          const isEmployed =
-            (!beforeJoining || !policy.prorateOnJoining) && (!afterExit || !policy.prorateOnExit)
-
-          const status = (record?.status as AttendanceStatus | undefined) ?? null
-          const leaveIsPaid =
-            status === 'ON_LEAVE' || status === 'HALF_DAY_LEAVE' ? (leaveByDate.get(date) ?? false) : null
-
-          return {
-            date,
-            dayKind: calendarDay.kind,
-            status,
-            leaveIsPaid,
-            isEmployed,
-            holidayExtraPay: calendarDay.holidayExtraPay,
-            holidayName: calendarDay.holidayName,
-          }
-        })
-        const forfeited = forfeitedHolidayDates(contextDays)
-        const days = contextDays
-          .filter((day) => day.date >= periodStart && day.date <= periodEnd)
-          .map((day) => (forfeited.has(day.date) ? { ...day, holidayForfeited: true } : day))
+        const days = employeeDays(
+          contextDates,
+          calendar,
+          employee,
+          attendanceByEmployee.get(employee.id) ?? new Map(),
+          leavePaidByEmployeeDate.get(employee.id) ?? new Map(),
+          policy,
+        ).filter((day) => day.date >= periodStart && day.date <= periodEnd)
 
         const employeeAdjustments = adjustmentsByEmployee.get(employee.id) ?? []
 

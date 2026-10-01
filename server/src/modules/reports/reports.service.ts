@@ -82,10 +82,10 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   'daily-attendance': { from: 'a.attendance_date', to: 'a.attendance_date' },
   'monthly-attendance-summary': { from: 'a.attendance_date', to: 'a.attendance_date' },
   'holiday-report': {
-    from: 'a.attendance_date',
-    to: 'a.attendance_date',
-    year: 'EXTRACT(YEAR FROM a.attendance_date)::int',
-    month: 'EXTRACT(MONTH FROM a.attendance_date)::int',
+    from: 'h.holiday_date',
+    to: 'h.holiday_date',
+    year: 'EXTRACT(YEAR FROM h.holiday_date)::int',
+    month: 'EXTRACT(MONTH FROM h.holiday_date)::int',
   },
   // Its month is turned into dates by resolvePayrollMonth.
   'overtime-report': { from: 'o.work_date', to: 'o.work_date' },

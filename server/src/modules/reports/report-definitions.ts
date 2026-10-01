@@ -326,7 +326,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     key: 'holiday-report',
     name: 'Holiday Report',
     description:
-      'The holidays in a month or date range, who worked on each - a full day or a half day - and what it paid: the day\'s wage, the extra pay for working it, and the two together.',
+      'The holidays in a month or date range and everyone paid for them. Those who worked a holiday - a full day or a half day - get the day\'s wage and the extra pay for working it. Those who rested on it get the holiday pay as Extra Pay, without the components left out of holiday pay (Special Allowance), unless they lost it by being absent or on a half day on both sides of it.',
     category: 'ATTENDANCE',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -341,7 +341,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'holiday_name', label: 'Holiday', format: 'text' },
       ...EMPLOYEE_COLUMNS,
       { key: 'worked', label: 'Worked', format: 'text' },
-      { key: 'days_worked', label: 'Days', format: 'days', total: true },
+      { key: 'days_worked', label: 'Days Worked', format: 'days', total: true },
       { key: 'holiday_wage', label: 'Holiday Wage', format: 'currency', total: true },
       { key: 'extra_pay', label: 'Extra Pay', format: 'currency', total: true },
       { key: 'total_amount', label: 'Total Amount', format: 'currency', total: true },
@@ -351,33 +351,43 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     // attendance.holiday_id, because a day imported as worked carries no
     // holiday link. Two calendars listing the same date give one row, with
     // both names. A half day on a holiday is half of it worked, as payroll pays it.
+    //
+    // A rested holiday - marked as one, or never marked - is a candidate here
+    // for everyone employed that day whom payroll pays (not INACTIVE).
+    // report-amounts.ts drops the ones payroll would not pay: lost to the
+    // sandwich rule, or unmarked on a day their calendar does not keep a holiday.
     sql: `
-      SELECT a.attendance_date AS holiday_date,
+      SELECT h.holiday_date,
              h.name AS holiday_name,
              e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
-             CASE WHEN a.status = 'PRESENT' THEN 'Full day' ELSE 'Half day' END AS worked,
-             CASE WHEN a.status = 'PRESENT' THEN 1 ELSE 0.5 END AS days_worked,
+             CASE a.status WHEN 'PRESENT' THEN 'Full day' WHEN 'HALF_DAY_LEAVE' THEN 'Half day' ELSE 'Rested' END AS worked,
+             CASE a.status WHEN 'PRESENT' THEN 1 WHEN 'HALF_DAY_LEAVE' THEN 0.5 ELSE 0 END AS days_worked,
              -- Not shown as columns: what the amounts are worked out from.
+             a.status AS attendance_status,
              e.id AS employee_id,
              e.department_id,
              e.location_id,
              e.joining_date,
              e.exit_date
-        FROM attendance a
-        JOIN (SELECT organization_id, holiday_date, string_agg(DISTINCT name, ' / ' ORDER BY name) AS name
+        FROM (SELECT organization_id, holiday_date, string_agg(DISTINCT name, ' / ' ORDER BY name) AS name
                 FROM holidays
                WHERE NOT is_optional
                GROUP BY organization_id, holiday_date) h
-          ON h.organization_id = a.organization_id AND h.holiday_date = a.attendance_date
-        JOIN employees e ON e.id = a.employee_id
+        JOIN employees e ON e.organization_id = h.organization_id
+        LEFT JOIN attendance a ON a.employee_id = e.id AND a.attendance_date = h.holiday_date
         LEFT JOIN departments  d ON d.id = e.department_id
         LEFT JOIN designations g ON g.id = e.designation_id
-       WHERE {{scope}} {{filters}} AND a.status IN ('PRESENT', 'HALF_DAY_LEAVE')
+       WHERE {{scope}} {{filters}}
+         AND (a.status IN ('PRESENT', 'HALF_DAY_LEAVE')
+              OR ((a.status IS NULL OR a.status = 'HOLIDAY')
+                  AND e.joining_date <= h.holiday_date
+                  AND (e.exit_date IS NULL OR e.exit_date >= h.holiday_date)
+                  AND e.employment_status <> 'INACTIVE'))
     `,
-    orderBy: 'a.attendance_date, e.employee_code',
+    orderBy: 'h.holiday_date, e.employee_code',
   },
   {
     key: 'overtime-report',
