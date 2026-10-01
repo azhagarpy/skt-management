@@ -7,6 +7,7 @@ import { uploadPaymentProof, uploadSingleDocument } from '../../middleware/uploa
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendCreated, sendNoContent, sendSuccess } from '../../utils/http.js'
 import { ApiError } from '../../utils/api-error.js'
+import { monthLabel } from '../../utils/dates.js'
 import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as paymentsService from '../payments/payments.service.js'
@@ -289,8 +290,15 @@ payrollRouter.delete(
   validate({ params: z.object({ id: z.string().uuid() }) }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
-    await service.deleteAdjustment(auth, req.params.id as string, auditContextFrom(req))
-    return sendNoContent(res, 'Payroll adjustment removed successfully')
+    const result = await service.deleteAdjustment(auth, req.params.id as string, auditContextFrom(req))
+    const run = result.runReturnedToDraft
+    return sendSuccess(
+      res,
+      result,
+      run
+        ? `Removed. The ${monthLabel(run.year, run.month)} payroll is back in draft - calculate it again before approving.`
+        : 'Payroll adjustment removed successfully',
+    )
   }),
 )
 

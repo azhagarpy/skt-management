@@ -123,6 +123,16 @@ Each step depends on the ones above it.
   calculates that month. Repeating it for the same month replaces it, until that
   payroll is approved. There is no deductions module; PF, ESI and P.Tax are the
   payroll deductions besides salary-structure components and adjustments.
+- **P.Tax on exit** — saving an employee as *Resigned* or *Terminated* with an exit
+  date asks whether to deduct the half-year's P.Tax from their final salary: the
+  payroll month whose dates hold the exit date (the standard 21st–20th cycle when
+  no run exists yet). Payroll works the amount out when it calculates that month —
+  the slab for the half-year's wages so far, that month's included — and shows it
+  as `P.Tax (on exit)`, beside any tax set from the report for the half-year that
+  just ended. Until then the deduction shows an estimate from the months already
+  calculated. Moving or clearing the exit date withdraws it (unless that payroll is
+  approved), and "Deduct from salary" on the tax report leaves out a leaver whose
+  tax for the period already came out on exit.
 
 **At month end**
 
@@ -141,6 +151,10 @@ DRAFT ──calculate──> CALCULATED ──(optional)──> UNDER_REVIEW
 | Lock | `APPROVED` | any other status |
 | Record a payment | `APPROVED`, `LOCKED` | already paid in full, or dated before the period starts |
 | Raise an adjustment | `LOCKED` | — |
+| Remove an Other Deduction / Other Credit (or any adjustment) | no run yet, `DRAFT`, `CALCULATED`, `UNDER_REVIEW` | its month's run is `APPROVED` or `LOCKED` |
+
+Removing one that a calculation already put on a payslip sends that month's run back to
+`DRAFT`, as changing its dates does: it must be calculated again before it can be approved.
 
 Payment status is separate from run status: `PENDING` → `PARTIALLY_PAID` → `PAID`.
 A run can be locked while money is still going out. Employees see their payslip

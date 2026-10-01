@@ -123,6 +123,8 @@ export interface PayrollAdjustmentRow {
   employee_code?: string
   first_name?: string
   last_name?: string | null
+  /** The apply month's payroll run status, when listed; null when no run exists yet. */
+  run_status?: PayrollRunStatus | null
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +621,14 @@ export async function insertAdjustment(
   return row as PayrollAdjustmentRow
 }
 
+/** An adjustment with its employee and the status of the payroll run for the month it applies to. */
+const ADJUSTMENT_SELECT = `
+  SELECT a.*, e.employee_code, e.first_name, e.last_name, r.status::text AS run_status
+    FROM payroll_adjustments a
+    JOIN employees e ON e.id = a.employee_id
+    LEFT JOIN payroll_runs r
+      ON r.organization_id = a.organization_id AND r.year = a.apply_year AND r.month = a.apply_month`
+
 export async function listAdjustments(
   organizationId: string,
   filters: { employeeId?: string; year?: number; month?: number; appliedOnly?: boolean; componentCodePrefix?: string },
@@ -640,9 +650,7 @@ export async function listAdjustments(
 
   return queryRows<PayrollAdjustmentRow>(
     db,
-    `SELECT a.*, e.employee_code, e.first_name, e.last_name
-       FROM payroll_adjustments a
-       JOIN employees e ON e.id = a.employee_id
+    `${ADJUSTMENT_SELECT}
       WHERE ${conditions.join(' AND ')}
       ORDER BY a.apply_year DESC, a.apply_month DESC, a.created_at DESC`,
     params,
@@ -654,14 +662,10 @@ export async function findAdjustment(
   organizationId: string,
   db: Queryable = pool,
 ): Promise<PayrollAdjustmentRow | null> {
-  return queryOne<PayrollAdjustmentRow>(
-    db,
-    `SELECT a.*, e.employee_code, e.first_name, e.last_name
-       FROM payroll_adjustments a
-       JOIN employees e ON e.id = a.employee_id
-      WHERE a.id = $1 AND a.organization_id = $2`,
-    [id, organizationId],
-  )
+  return queryOne<PayrollAdjustmentRow>(db, `${ADJUSTMENT_SELECT} WHERE a.id = $1 AND a.organization_id = $2`, [
+    id,
+    organizationId,
+  ])
 }
 
 export async function deleteAdjustment(id: string, organizationId: string, db: Queryable = pool): Promise<void> {

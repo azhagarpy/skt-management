@@ -97,6 +97,27 @@ export interface TaxInput {
   note: string | null
 }
 
+/** A tax slab: the tax for wages up to `upToMinor`, or above the slab before it when null. */
+export interface TaxSlabInput {
+  upToMinor: Minor | null
+  taxMinor: Minor
+}
+
+/**
+ * P.Tax for a leaver, taken from their final salary (see tax-on-exit.ts): the
+ * half-year's tax on its wages so far. It depends on this month's wages, so it
+ * is worked out here rather than set as an amount.
+ */
+export interface ExitTaxInput {
+  id: string
+  /** Salary-structure earnings from the half-year's earlier months. */
+  priorWagesMinor: Minor
+  slabs: TaxSlabInput[]
+  /** The half-year's start and the end of this month, for the payslip note. */
+  periodFrom: IsoDate
+  periodTo: IsoDate
+}
+
 /** The employee's Labour Welfare Fund contribution due this month (see the lwf module). */
 export interface LwfInput {
   id: string
@@ -179,6 +200,8 @@ export interface CalculatorInput {
   overrideTotalMinor: Minor | null
   /** Null when no tax is to be deducted from this employee this month. */
   tax: TaxInput | null
+  /** Set only in a leaver's final month, when P.Tax is to be deducted on exit. */
+  exitTax?: ExitTaxInput | null
   /** Null when no Labour Welfare Fund contribution is due from this employee this month. */
   lwf: LwfInput | null
   adjustments: AdjustmentInput[]
@@ -260,6 +283,8 @@ export interface CalculatorOutput {
   pfWageCeilingMinor: Minor
   esiWageMinor: Minor
   netSalaryMinor: Minor
+  /** What the P.Tax on exit came to, for the tax module to record. Null when none was due. */
+  exitTax: { id: string; wageBaseMinor: Minor; amountMinor: Minor } | null
   /** Non-fatal conditions the reviewer should see before approving. */
   warnings: string[]
 }
@@ -1092,6 +1117,37 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   }
 
   // ------------------------------------------------------------------
+  // P.Tax on exit: the slab for the half-year's wages so far - the
+  // structure earnings of its earlier months and of this one, the same
+  // wages the tax report totals. A line of its own, beside any tax set
+  // from the report for the half-year that has just ended.
+  // ------------------------------------------------------------------
+  let exitTax: CalculatorOutput['exitTax'] = null
+  if (input.exitTax) {
+    const wageBaseMinor = input.exitTax.priorWagesMinor + structureGrossMinor
+    const amountMinor = taxForWagesMinor(wageBaseMinor, input.exitTax.slabs)
+    exitTax = { id: input.exitTax.id, wageBaseMinor, amountMinor }
+
+    if (amountMinor > 0) {
+      statutoryDeductionsMinor += amountMinor
+      components.push({
+        code: 'PTAX',
+        name: 'P.Tax (on exit)',
+        componentType: 'DEDUCTION',
+        calculationType: 'FIXED',
+        source: 'STATUTORY',
+        fullAmountMinor: amountMinor,
+        amountMinor,
+        percentage: null,
+        taxable: false,
+        displayOrder: 751,
+        referenceId: input.exitTax.id,
+        notes: `On wages ${wageBaseMinor / 100} for ${input.exitTax.periodFrom} to ${input.exitTax.periodTo}`,
+      })
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Labour Welfare Fund: a fixed amount set by the lwf module for a chosen
   // month. Only the employee's share ever touches payroll - the employer's
   // matching share is tracked in the lwf module alone, never deducted from
@@ -1180,6 +1236,15 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     pfWageCeilingMinor,
     esiWageMinor,
     netSalaryMinor,
+    exitTax,
     warnings,
   }
+}
+
+/** The tax for a wage: the first slab whose limit it does not exceed. No slabs at all means no tax. */
+export function taxForWagesMinor(wagesMinor: Minor, slabs: TaxSlabInput[]): Minor {
+  for (const slab of slabs) {
+    if (slab.upToMinor === null || wagesMinor <= slab.upToMinor) return slab.taxMinor
+  }
+  return 0
 }

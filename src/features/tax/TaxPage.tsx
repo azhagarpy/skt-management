@@ -5,7 +5,7 @@ import { del, download, get, post, put } from '../../lib/api'
 import { MONTH_NAMES, formatCurrency, formatDate } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
-import { Button, Card, ConfirmDialog, Field, Input, PageHeader, Select, Spinner, StatTile, Tabs } from '../../components/ui'
+import { Badge, Button, Card, ConfirmDialog, Field, Input, PageHeader, Select, Spinner, StatTile, Tabs } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import { MonthRangeFields, type MonthRange } from '../../components/forms/MonthRange'
@@ -31,6 +31,8 @@ interface TaxDeduction {
   periodTo: string
   wageBase: number
   taxAmount: number
+  /** Taken from a leaver's final salary; payroll works the amount out when it calculates the month. */
+  onExit: boolean
 }
 
 interface Slab {
@@ -346,7 +348,20 @@ function DeductionsTab({ canManage }: { canManage: boolean }) {
     },
     { key: 'wages', header: 'Total wages', align: 'right', render: (row) => formatCurrency(row.wageBase) },
     { key: 'tax', header: 'Tax', align: 'right', render: (row) => <strong>{formatCurrency(row.taxAmount)}</strong> },
-    { key: 'month', header: 'Deducted in', render: (row) => `${MONTH_NAMES[row.payrollMonth - 1]} ${row.payrollYear}` },
+    {
+      key: 'month',
+      header: 'Deducted in',
+      render: (row) => (
+        <div>
+          {MONTH_NAMES[row.payrollMonth - 1]} {row.payrollYear}
+          {row.onExit ? (
+            <p>
+              <Badge tone="warning">On exit</Badge>
+            </p>
+          ) : null}
+        </div>
+      ),
+    },
     ...(canManage
       ? [
           {
@@ -372,7 +387,7 @@ function DeductionsTab({ canManage }: { canManage: boolean }) {
 
       <Card
         title="Deducted from salary"
-        description="Panchayat tax set to come out of pay, by payroll month. Payroll deducts it as P.Tax when it calculates that month."
+        description="Panchayat tax set to come out of pay, by payroll month. Payroll deducts it as P.Tax when it calculates that month. Tax on exit comes out of a leaver's final salary: payroll works it out on the half-year's wages, that month's included, so it shows an estimate until then."
         padded={false}
       >
         <div className="filter-bar">

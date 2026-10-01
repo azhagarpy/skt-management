@@ -19,6 +19,8 @@ import * as leaveRepository from '../leave/leave.repository.js'
 import * as salaryRepository from '../salary/salary.repository.js'
 import * as overtimeRepository from '../overtime/overtime.repository.js'
 import { listTaxDeductionsForPeriod } from '../tax/tax.module.js'
+import { loadSlabs } from '../tax/tax-report.js'
+import { priorHalfYearWages, recordExitTaxCalculated } from '../tax/tax-on-exit.js'
 import { listLwfForPeriod } from '../lwf/lwf.module.js'
 import { notifyRole, notifyUserForEmployee } from '../notifications/notifications.service.js'
 import type { AuthContext } from '../../types/express.js'
@@ -27,6 +29,7 @@ import {
   calculatePayrollItem,
   forfeitedHolidayDates,
   type AdjustmentInput,
+  type ExitTaxInput,
   type TaxInput,
   type LwfInput,
   type AttendanceStatus,
@@ -487,8 +490,35 @@ export async function calculateRun(
       // Leave paid/unpaid per date, so the calculator can value each leave day.
       const leavePaidByEmployeeDate = indexLeavePaid(leaveRows, contextDates)
 
+      // Tax on exit is worked out by the calculator from the half-year's wages,
+      // this month's included; the earlier months' come from their payroll.
+      const exitTaxEntries = taxDeductions.filter((entry) => entry.on_exit)
+      const priorWages = await priorHalfYearWages(
+        auth.organizationId,
+        exitTaxEntries.map((entry) => entry.employee_id),
+        run.year,
+        run.month,
+        tx,
+      )
+      const slabs = exitTaxEntries.length > 0 ? await loadSlabs(auth.organizationId, tx) : []
+      const slabsMinor = slabs.map((slab) => ({
+        upToMinor: slab.upTo === null ? null : toMinor(slab.upTo),
+        taxMinor: toMinor(slab.taxAmount),
+      }))
+
       const taxByEmployee = new Map<string, TaxInput>()
+      const exitTaxByEmployee = new Map<string, ExitTaxInput>()
       for (const entry of taxDeductions) {
+        if (entry.on_exit) {
+          exitTaxByEmployee.set(entry.employee_id, {
+            id: entry.id,
+            priorWagesMinor: toMinor(priorWages.get(entry.employee_id) ?? 0),
+            slabs: slabsMinor,
+            periodFrom: entry.period_from,
+            periodTo: entry.period_to,
+          })
+          continue
+        }
         taxByEmployee.set(entry.employee_id, {
           id: entry.id,
           amountMinor: toMinor(entry.tax_amount),
@@ -580,6 +610,7 @@ export async function calculateRun(
           overrideTotalMinor: assignment.override_amount === null ? null : toMinor(assignment.override_amount),
           overtime,
           tax: taxByEmployee.get(employee.id) ?? null,
+          exitTax: exitTaxByEmployee.get(employee.id) ?? null,
           lwf: lwfByEmployee.get(employee.id) ?? null,
           adjustments: employeeAdjustments,
           // PF and ESI rates, and their wage ceiling/limit, live on the salary
@@ -691,6 +722,15 @@ export async function calculateRun(
           })),
           tx,
         )
+
+        if (result.exitTax) {
+          await recordExitTaxCalculated(
+            result.exitTax.id,
+            toNumericString(result.exitTax.wageBaseMinor),
+            toNumericString(result.exitTax.amountMinor),
+            tx,
+          )
+        }
 
         for (const adjustment of employeeAdjustments) {
           appliedAdjustmentIds.push(adjustment.id)
@@ -1031,6 +1071,8 @@ function presentAdjustment(row: repository.PayrollAdjustmentRow) {
     applyMonth: row.apply_month,
     reason: row.reason,
     appliedAt: row.applied_at,
+    /** The apply month's payroll run status; null when no run exists. Removal stops once it is approved. */
+    runStatus: row.run_status ?? null,
   }
 }
 
@@ -1042,30 +1084,57 @@ export async function listAdjustments(
   return rows.map(presentAdjustment)
 }
 
-/** An adjustment can only be removed before it has been picked up by a calculated run. */
-export async function deleteAdjustment(auth: AuthContext, id: string, context: AuditContext) {
-  const existing = await repository.findAdjustment(id, auth.organizationId)
-  if (!existing) throw ApiError.notFound('Payroll adjustment')
-  if (existing.applied_at) {
-    throw ApiError.businessRule(
-      'This adjustment has already been applied to a calculated payroll run and cannot be deleted. Raise a reversing adjustment instead.',
-    )
-  }
+/**
+ * An adjustment can be removed until the payroll month it applies to is
+ * approved.
+ *
+ * One already calculated into that month's run is on a payslip, so the run goes
+ * back to DRAFT, as when its dates change: it must be calculated again before
+ * it can be approved, and the old figures stay visible until then. Returns the
+ * run sent back, if any.
+ */
+export async function deleteAdjustment(
+  auth: AuthContext,
+  id: string,
+  context: AuditContext,
+): Promise<{ runReturnedToDraft: { id: string; year: number; month: number } | null }> {
+  return withTransaction(async (tx) => {
+    const existing = await repository.findAdjustment(id, auth.organizationId, tx)
+    if (!existing) throw ApiError.notFound('Payroll adjustment')
 
-  const targetRun = await repository.findRunByPeriod(auth.organizationId, existing.apply_year, existing.apply_month)
-  if (targetRun && (targetRun.status === 'APPROVED' || targetRun.status === 'LOCKED')) {
-    throw ApiError.payroll(
-      `Payroll for ${monthLabel(existing.apply_year, existing.apply_month)} is already ${targetRun.status.toLowerCase()} and cannot be changed.`,
-    )
-  }
+    const month = monthLabel(existing.apply_year, existing.apply_month)
+    const found = await repository.findRunByPeriod(auth.organizationId, existing.apply_year, existing.apply_month, tx)
+    // Wait out a calculation of that run, so it cannot apply the adjustment
+    // after it is gone, then read the run as the calculation left it.
+    const run = found
+      ? await withAdvisoryLock(tx, `payroll-run:${found.id}`, () =>
+          repository.findRunForUpdate(found.id, auth.organizationId, tx),
+        )
+      : null
+    if (run && (run.status === 'APPROVED' || run.status === 'LOCKED')) {
+      throw ApiError.payroll(
+        `Payroll for ${month} is already ${run.status.toLowerCase()}, so this can no longer be removed. Raise a reversing adjustment in a later month instead.`,
+      )
+    }
 
-  await repository.deleteAdjustment(id, auth.organizationId)
-  await recordAudit({
-    ...context,
-    action: 'PAYROLL_ADJUSTMENT_DELETED',
-    entityType: 'payroll_adjustment',
-    entityId: id,
-    oldValues: presentAdjustment(existing),
+    await repository.deleteAdjustment(id, auth.organizationId, tx)
+
+    const sendBack = run !== null && existing.applied_at !== null && run.status !== 'DRAFT'
+    if (sendBack) await repository.updateRun(run.id, auth.organizationId, { status: 'DRAFT' }, tx)
+
+    await recordAudit(
+      {
+        ...context,
+        action: 'PAYROLL_ADJUSTMENT_DELETED',
+        entityType: 'payroll_adjustment',
+        entityId: id,
+        oldValues: presentAdjustment(existing),
+        newValues: sendBack ? { payrollRun: run.id, runStatus: 'DRAFT' } : undefined,
+      },
+      tx,
+    )
+
+    return { runReturnedToDraft: sendBack ? { id: run.id, year: run.year, month: run.month } : null }
   })
 }
 

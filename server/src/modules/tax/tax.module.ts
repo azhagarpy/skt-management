@@ -8,7 +8,7 @@ import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendNoContent, sendSuccess } from '../../utils/http.js'
 import { ApiError } from '../../utils/api-error.js'
-import { firstDayOfMonth, lastDayOfMonth, type IsoDate } from '../../utils/dates.js'
+import { firstDayOfMonth, lastDayOfMonth, monthLabel, type IsoDate } from '../../utils/dates.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import {
@@ -23,6 +23,7 @@ import {
   type TaxDeductInput,
   type TaxReportQuery,
 } from './tax-report.js'
+import { buildExitTaxPreview, withdrawExitTax } from './tax-on-exit.js'
 
 /**
  * Tax: the tax amount for each band of wages, and the report that applies the
@@ -31,7 +32,8 @@ import {
  * The administrator then chooses the payroll month the tax comes out of pay.
  * That choice is stored per employee (tax_deductions) with the wages it was
  * worked out on, and payroll deducts it as a "P.Tax" line when it calculates that
- * month.
+ * month. A leaver's tax can instead come out of their final salary (see
+ * tax-on-exit.ts).
  */
 
 export interface TaxDeductionRow {
@@ -43,6 +45,8 @@ export interface TaxDeductionRow {
   period_to: IsoDate
   wage_base: string
   tax_amount: string
+  /** Tax on exit, which payroll works out when it calculates the month. */
+  on_exit: boolean
   employee_code?: string
   employee_name?: string
   department_name?: string | null
@@ -80,6 +84,7 @@ async function assertPayrollOpen(organizationId: string, year: number, month: nu
 }
 
 const idParam = z.object({ id: z.string().uuid() })
+const employeeIdParam = z.object({ employeeId: z.string().uuid() })
 const deductionListSchema = z.object({
   payrollYear: z.coerce.number().int().min(1970).max(2200),
   payrollMonth: z.coerce.number().int().min(1).max(12).optional(),
@@ -98,6 +103,7 @@ function presentDeduction(row: TaxDeductionRow) {
     periodTo: row.period_to,
     wageBase: Number(row.wage_base),
     taxAmount: Number(row.tax_amount),
+    onExit: row.on_exit,
   }
 }
 
@@ -234,6 +240,9 @@ taxRouter.get(
  * Doing it again for the same month replaces what was set (an employee whose tax
  * has since fallen to nothing has theirs removed), so it can be repeated after a
  * slab or wage correction until payroll for that month is approved.
+ *
+ * A leaver whose tax for the period already came out of their final salary
+ * (tax on exit) is left out, so it is never taken twice.
  */
 taxRouter.post(
   '/deductions',
@@ -255,8 +264,24 @@ taxRouter.post(
 
     const periodFrom = firstDayOfMonth(input.fromYear, input.fromMonth)
     const periodTo = lastDayOfMonth(input.toYear, input.toMonth)
-    const charged = rows.filter((row) => row.tax > 0)
-    const cleared = rows.filter((row) => row.tax <= 0)
+    const takenOnExit = new Set(
+      (
+        await queryRows<{ employee_id: string }>(
+          pool,
+          `SELECT DISTINCT employee_id FROM tax_deductions
+            WHERE organization_id = $1 AND on_exit
+              AND (payroll_year * 12 + payroll_month - 1) BETWEEN $2 AND $3`,
+          [
+            auth.organizationId,
+            input.fromYear * 12 + input.fromMonth - 1,
+            input.toYear * 12 + input.toMonth - 1,
+          ],
+        )
+      ).map((row) => row.employee_id),
+    )
+    const charged = rows.filter((row) => row.tax > 0 && !takenOnExit.has(row.employeeId))
+    const cleared = rows.filter((row) => row.tax <= 0 || takenOnExit.has(row.employeeId))
+    const onExit = rows.filter((row) => row.tax > 0 && takenOnExit.has(row.employeeId)).length
 
     await withTransaction(async (tx) => {
       for (const row of charged) {
@@ -265,7 +290,7 @@ taxRouter.post(
              (organization_id, employee_id, payroll_year, payroll_month, period_from, period_to,
               wage_base, tax_amount, created_by)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           ON CONFLICT (employee_id, payroll_year, payroll_month) DO UPDATE
+           ON CONFLICT (employee_id, payroll_year, payroll_month, on_exit) DO UPDATE
              SET period_from = EXCLUDED.period_from,
                  period_to = EXCLUDED.period_to,
                  wage_base = EXCLUDED.wage_base,
@@ -288,7 +313,7 @@ taxRouter.post(
         await tx.query(
           `DELETE FROM tax_deductions
             WHERE organization_id = $1 AND payroll_year = $2 AND payroll_month = $3
-              AND employee_id = ANY($4::uuid[])`,
+              AND employee_id = ANY($4::uuid[]) AND NOT on_exit`,
           [auth.organizationId, input.payrollYear, input.payrollMonth, cleared.map((row) => row.employeeId)],
         )
       }
@@ -306,13 +331,103 @@ taxRouter.post(
         departmentId: input.departmentId ?? null,
         employees: charged.length,
         total,
+        leftOutTakenOnExit: onExit,
       },
     })
 
     return sendSuccess(
       res,
-      { employees: charged.length, total, noTax: cleared.length },
-      `Tax of ${total} will be deducted from ${charged.length} employee${charged.length === 1 ? '' : 's'} in ${input.payrollMonth}/${input.payrollYear}`,
+      { employees: charged.length, total, noTax: cleared.length - onExit, takenOnExit: onExit },
+      `Tax of ${total} will be deducted from ${charged.length} employee${charged.length === 1 ? '' : 's'} in ${input.payrollMonth}/${input.payrollYear}` +
+        (onExit > 0 ? ` (${onExit} left out: already deducted from their final salary)` : ''),
+    )
+  }),
+)
+
+/** The tax on exit an employee would have, for the administrator to confirm when marking them as left. */
+taxRouter.get(
+  '/exit-deductions/:employeeId',
+  requirePermissions(PERMISSIONS.TAX_VIEW),
+  validate({ params: employeeIdParam }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(res, await buildExitTaxPreview(auth.organizationId, req.params.employeeId as string))
+  }),
+)
+
+/**
+ * Deducts a leaver's P.Tax for the half-year from their final salary.
+ *
+ * The row holds the estimate until payroll calculates that month and records
+ * the real figure. Setting it again for the same exit refreshes the estimate.
+ */
+taxRouter.post(
+  '/exit-deductions/:employeeId',
+  requirePermissions(PERMISSIONS.TAX_MANAGE),
+  validate({ params: employeeIdParam }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const preview = await buildExitTaxPreview(auth.organizationId, req.params.employeeId as string)
+    if (preview.employmentStatus === 'INACTIVE') {
+      throw ApiError.businessRule('An inactive employee is left out of payroll, so there is no final salary to deduct P.Tax from.')
+    }
+    await assertPayrollOpen(auth.organizationId, preview.payrollYear, preview.payrollMonth)
+    const final = { year: preview.payrollYear, month: preview.payrollMonth }
+
+    const row = await withTransaction(async (tx) => {
+      // One left in another month belonged to an earlier exit date.
+      await withdrawExitTax(auth.organizationId, preview.employeeId, final, tx)
+      return queryOne<TaxDeductionRow>(
+        tx,
+        `INSERT INTO tax_deductions
+           (organization_id, employee_id, payroll_year, payroll_month, period_from, period_to,
+            wage_base, tax_amount, on_exit, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9)
+         ON CONFLICT (employee_id, payroll_year, payroll_month, on_exit) DO UPDATE
+           SET period_from = EXCLUDED.period_from,
+               period_to = EXCLUDED.period_to,
+               wage_base = EXCLUDED.wage_base,
+               tax_amount = EXCLUDED.tax_amount,
+               created_by = EXCLUDED.created_by
+         RETURNING *`,
+        [
+          auth.organizationId,
+          preview.employeeId,
+          final.year,
+          final.month,
+          preview.periodFrom,
+          preview.periodTo,
+          preview.wagesSoFar,
+          preview.taxSoFar,
+          auth.userId,
+        ],
+      )
+    })
+
+    await recordAudit({
+      ...auditContextFrom(req),
+      action: 'TAX_DEDUCTION_SET',
+      entityType: 'tax_deduction',
+      entityId: row?.id ?? null,
+      newValues: {
+        onExit: true,
+        employeeId: preview.employeeId,
+        exitDate: preview.exitDate,
+        payrollMonth: `${final.year}-${final.month}`,
+        period: `${preview.periodFrom} to ${preview.periodTo}`,
+        estimate: preview.taxSoFar,
+      },
+    })
+
+    const month = monthLabel(final.year, final.month)
+    const recalculate =
+      preview.payrollStatus === 'CALCULATED' || preview.payrollStatus === 'UNDER_REVIEW'
+        ? ` Recalculate the ${month} payroll to apply it.`
+        : ''
+    return sendSuccess(
+      res,
+      row ? presentDeduction(row) : null,
+      `P.Tax will be deducted from ${preview.employeeName}'s ${month} salary.${recalculate}`,
     )
   }),
 )

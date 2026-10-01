@@ -8,7 +8,7 @@ import { useToast } from '../../app/providers/ToastProvider'
 import { Badge, Button, Card, ConfirmDialog, Field, Input, PageHeader, Select, StatTile, Textarea } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { EmployeeSelector } from '../../components/forms/selectors'
-import type { PayrollAdjustment } from '../../types/api'
+import type { AdjustmentRemoved, PayrollAdjustment } from '../../types/api'
 
 /**
  * Other Deductions: a one-off amount taken out of an employee's pay for a
@@ -35,6 +35,13 @@ function categoryLabel(componentCode: string, componentName: string): string {
   return CATEGORIES.find((category) => category.code === componentCode)?.label ?? componentName
 }
 
+/** Removable until the payroll for its month is approved. */
+const isRemovable = (row: PayrollAdjustment): boolean => row.runStatus !== 'APPROVED' && row.runStatus !== 'LOCKED'
+
+/** Already calculated into a payroll run that removing it would send back to draft. */
+const isInCalculatedRun = (row: PayrollAdjustment): boolean =>
+  row.appliedAt !== null && (row.runStatus === 'CALCULATED' || row.runStatus === 'UNDER_REVIEW')
+
 export default function OtherDeductionsPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
@@ -60,11 +67,12 @@ export default function OtherDeductionsPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (row: PayrollAdjustment) => del(`/payroll/adjustments/${row.id}`),
-    onSuccess: async () => {
-      toast.success('Deduction removed')
+    mutationFn: (row: PayrollAdjustment) => del<AdjustmentRemoved>(`/payroll/adjustments/${row.id}`),
+    onSuccess: async (response) => {
+      toast.success(response.data?.runReturnedToDraft ? (response.message ?? 'Deduction removed') : 'Deduction removed')
       setDeleteTarget(null)
-      await queryClient.invalidateQueries({ queryKey: ['payroll', 'adjustments', 'other-deductions'] })
+      // The run it was calculated into may now be back in draft.
+      await queryClient.invalidateQueries({ queryKey: ['payroll'] })
     },
     onError: (mutationError: Error) => {
       setDeleteTarget(null)
@@ -103,11 +111,11 @@ export default function OtherDeductionsPage() {
             header: '',
             align: 'right' as const,
             render: (row: PayrollAdjustment) =>
-              row.appliedAt ? null : (
+              isRemovable(row) ? (
                 <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setDeleteTarget(row)}>
                   Remove
                 </Button>
-              ),
+              ) : null,
           },
         ]
       : []),
@@ -117,7 +125,7 @@ export default function OtherDeductionsPage() {
     <div className="page">
       <PageHeader
         title="Other Deductions"
-        description="A one-off deduction for a chosen payroll month, such as a penalty or a recovery. Applied automatically when that month's payroll is calculated."
+        description="A one-off deduction for a chosen payroll month, such as a penalty or a recovery. Applied automatically when that month's payroll is calculated, and can be removed until that payroll is approved."
       />
 
       {canManage ? <AddDeductionForm years={years} /> : null}
@@ -172,7 +180,19 @@ export default function OtherDeductionsPage() {
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Remove deduction"
-        message={`Remove the ${deleteTarget ? formatCurrency(deleteTarget.amount) : ''} deduction for ${deleteTarget?.employeeName}?`}
+        message={
+          <>
+            <p style={{ margin: 0 }}>
+              Remove the {deleteTarget ? formatCurrency(deleteTarget.amount) : ''} deduction for {deleteTarget?.employeeName}?
+            </p>
+            {deleteTarget && isInCalculatedRun(deleteTarget) ? (
+              <p style={{ margin: '0.6rem 0 0' }}>
+                It is already in the calculated {MONTH_NAMES[deleteTarget.applyMonth - 1]} {deleteTarget.applyYear} payroll.
+                That payroll goes back to draft and must be calculated again before it can be approved.
+              </p>
+            ) : null}
+          </>
+        }
         confirmLabel="Remove"
         tone="danger"
         loading={deleteMutation.isPending}

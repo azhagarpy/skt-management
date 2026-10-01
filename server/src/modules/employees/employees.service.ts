@@ -6,6 +6,7 @@ import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.j
 import { recordAudit, diffValues, type AuditContext } from '../audit/audit.service.js'
 import { hashPassword } from '../auth/password.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
+import { exitPayrollMonth, withdrawExitTax } from '../tax/tax-on-exit.js'
 import { nextEmployeeCode } from './employee-code.js'
 import { buildStorageKey, sniffContentType } from '../../utils/files.js'
 import { storage } from '../documents/storage.service.js'
@@ -676,6 +677,15 @@ export async function updateEmployee(
     const updated = await repository.updateEmployee(employeeId, auth.organizationId, updates, tx)
     if (!updated) throw ApiError.notFound('Employee')
 
+    // P.Tax on exit comes out of the final salary. Once the exit date moves to
+    // another payroll month, or is cleared, that salary is no longer the last,
+    // so the tax is withdrawn there; it is offered again for the new date.
+    let exitTaxWithdrawn = 0
+    if (input.exitDate !== undefined && input.exitDate !== existing.exit_date) {
+      const final = input.exitDate ? await exitPayrollMonth(auth.organizationId, input.exitDate, tx) : null
+      exitTaxWithdrawn = await withdrawExitTax(auth.organizationId, employeeId, final, tx)
+    }
+
     // Record one history row per structural change, so the trail explains itself.
     for (const trigger of HISTORY_TRIGGERS) {
       const nextValue = input[trigger.field]
@@ -725,7 +735,7 @@ export async function updateEmployee(
         entityType: 'employee',
         entityId: employeeId,
         oldValues: diff.old,
-        newValues: diff.new,
+        newValues: exitTaxWithdrawn > 0 ? { ...diff.new, exitTaxWithdrawn } : diff.new,
       },
       tx,
     )

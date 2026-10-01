@@ -889,6 +889,13 @@ export interface PayrollAdjustment {
   applyMonth: number
   reason: string
   appliedAt: string | null
+  /** The apply month's payroll run status; null when no run exists. It can be removed until that run is approved. */
+  runStatus: PayrollRunStatus | null
+}
+
+/** DELETE /payroll/adjustments/:id - the calculated run that removing it sent back to draft, if any. */
+export interface AdjustmentRemoved {
+  runReturnedToDraft: { id: string; year: number; month: number } | null
 }
 
 export interface LwfContribution {

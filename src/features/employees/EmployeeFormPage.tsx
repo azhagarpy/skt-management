@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Save, Upload, X } from 'lucide-react'
 import { ApiError, get, patch, post, upload } from '../../lib/api'
+import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
 import { Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea } from '../../components/ui'
 import {
@@ -16,7 +17,8 @@ import {
   ManagerSelector,
   SupervisorSelector,
 } from '../../components/forms/selectors'
-import type { EmployeeDetail } from '../../types/api'
+import { ExitTaxDialog, type ExitTaxPreview } from '../tax/ExitTaxDialog'
+import type { EmployeeDetail, EmploymentStatus } from '../../types/api'
 
 /**
  * Create and edit an employee.
@@ -66,6 +68,9 @@ const schema = z.object({
 })
 
 type FormValues = z.infer<typeof schema>
+
+/** The statuses of someone who has left but is still paid for their final month. */
+const hasLeft = (status: EmploymentStatus | undefined): boolean => status === 'RESIGNED' || status === 'TERMINATED'
 
 /** Strips the empty strings the form uses for "not set" back to nulls. */
 function toPayload(values: FormValues, isEdit: boolean): Record<string, unknown> {
@@ -122,6 +127,8 @@ export default function EmployeeFormPage() {
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
+  const { can } = useAuth()
+  const [exitTax, setExitTax] = useState<ExitTaxPreview | null>(null)
 
   const { data: existing, isLoading } = useQuery({
     queryKey: ['employee', id],
@@ -268,9 +275,18 @@ export default function EmployeeFormPage() {
       isEdit
         ? patch<EmployeeDetail>(`/employees/${id}`, toPayload(values, true))
         : post<EmployeeDetail>('/employees', toPayload(values, false)),
-    onSuccess: async (response) => {
+    onSuccess: async (response, values) => {
       const employeeId = response.data.id ?? id
       toast.success(isEdit ? 'Employee updated' : 'Employee created')
+
+      // Just marked as left, or the exit date moved - judged against the record
+      // as it was before this save.
+      const exitDate = values.exitDate?.trim() ?? ''
+      const leaving =
+        isEdit &&
+        hasLeft(values.employmentStatus) &&
+        exitDate !== '' &&
+        (exitDate !== (existing?.exitDate ?? '') || !hasLeft(existing?.employmentStatus))
 
       // A failed photo must not lose the employee that was just saved, so it is
       // reported on its own and the form still moves on.
@@ -289,6 +305,25 @@ export default function EmployeeFormPage() {
 
       await queryClient.invalidateQueries({ queryKey: ['employees'] })
       await queryClient.invalidateQueries({ queryKey: ['employee', id] })
+
+      // Offer to take the half-year's P.Tax from a leaver's final salary. The
+      // dialog moves on once answered; if the tax is already set for this exit
+      // there is nothing to ask.
+      if (leaving && employeeId && can('tax.manage')) {
+        try {
+          const preview = await get<ExitTaxPreview>(`/tax/exit-deductions/${employeeId}`)
+          if (!preview.existing) {
+            setExitTax(preview)
+            return
+          }
+        } catch (previewError) {
+          toast.error(
+            'The employee was saved, but P.Tax on exit could not be checked',
+            previewError instanceof Error ? previewError.message : undefined,
+          )
+        }
+      }
+
       navigate(`/employees/${employeeId}`)
     },
     onError: (error: Error) => {
@@ -678,6 +713,15 @@ export default function EmployeeFormPage() {
           </Button>
         </div>
       </form>
+
+      <ExitTaxDialog
+        preview={exitTax}
+        onDone={() => {
+          const employeeId = exitTax?.employeeId
+          setExitTax(null)
+          navigate(`/employees/${employeeId ?? id}`)
+        }}
+      />
     </div>
   )
 }

@@ -5,6 +5,7 @@ import {
   holidayWorkAmountsMinor,
   overtimePayMinor,
   summariseAttendance,
+  taxForWagesMinor,
   type CalculatorInput,
   type ComponentInput,
   type DayInput,
@@ -947,6 +948,7 @@ describe('calculatePayrollItem - deductions and credits', () => {
   it('deducts nothing when no tax is set for the month', () => {
     const result = calculatePayrollItem(baseInput())
     expect(result.components.find((entry) => entry.code === 'PTAX')).toBeUndefined()
+    expect(result.exitTax).toBeNull()
   })
 
   it('deducts the Labour Welfare Fund contribution set for the month as its own line', () => {
@@ -1047,6 +1049,111 @@ describe('calculatePayrollItem - deductions and credits', () => {
 // ---------------------------------------------------------------------------
 // Mid-month joiners and leavers
 // ---------------------------------------------------------------------------
+
+describe('calculatePayrollItem - P.Tax on exit', () => {
+  // The standard bands.
+  const slabs = [
+    { upToMinor: toMinor(21_000), taxMinor: 0 },
+    { upToMinor: toMinor(30_000), taxMinor: toMinor(120) },
+    { upToMinor: toMinor(45_000), taxMinor: toMinor(300) },
+    { upToMinor: toMinor(60_000), taxMinor: toMinor(590) },
+    { upToMinor: toMinor(75_000), taxMinor: toMinor(890) },
+    { upToMinor: null, taxMinor: toMinor(1_180) },
+  ]
+  const exitTax = (priorWages: number) => ({
+    id: 'exit-tax-1',
+    priorWagesMinor: toMinor(priorWages),
+    slabs,
+    periodFrom: '2026-04-01',
+    periodTo: '2026-09-30',
+  })
+  const exitLine = (result: ReturnType<typeof calculatePayrollItem>) =>
+    result.components.find((entry) => entry.referenceId === 'exit-tax-1')
+
+  it("works the tax out on the half-year's wages so far, this month's included", () => {
+    // 20,000 from earlier months + this month's 42,000 = 62,000: the 60,001-75,000 band.
+    const result = calculatePayrollItem(baseInput({ exitTax: exitTax(20_000) }))
+
+    const line = exitLine(result)
+    expect(line).toMatchObject({ code: 'PTAX', name: 'P.Tax (on exit)', componentType: 'DEDUCTION' })
+    expect(toMajor(line?.amountMinor ?? 0)).toBe(890)
+    expect(line?.notes).toBe('On wages 62000 for 2026-04-01 to 2026-09-30')
+    expect(result.exitTax).toEqual({ id: 'exit-tax-1', wageBaseMinor: toMinor(62_000), amountMinor: toMinor(890) })
+    expect(toMajor(result.totalDeductionsMinor)).toBe(890)
+    expect(toMajor(result.netSalaryMinor)).toBe(42_000 - 890)
+  })
+
+  it('counts only what was earned this month', () => {
+    // Ten weekdays absent: 42,000 x 20/30 = 28,000, the 21,001-30,000 band.
+    const absent = Object.fromEntries(
+      datesInMonth(2026, 9)
+        .filter((date) => !['SATURDAY', 'SUNDAY'].includes(weekdayOf(date)))
+        .slice(0, 10)
+        .map((date) => [date, { status: 'ABSENT' as const }]),
+    )
+    const result = calculatePayrollItem(baseInput({ days: septemberDays(absent), exitTax: exitTax(0) }))
+
+    expect(result.exitTax?.wageBaseMinor).toBe(toMinor(28_000))
+    expect(toMajor(exitLine(result)?.amountMinor ?? 0)).toBe(120)
+  })
+
+  it('leaves overtime out of the wages, as the tax report does', () => {
+    // 3,000 + 42,000 = 45,000 is the top of the 300 band; the overtime would tip it over.
+    const result = calculatePayrollItem(
+      baseInput({
+        exitTax: exitTax(3_000),
+        overtime: [{ hours: 8, basis: 'CUSTOM', dayDivisor: null, ratePerHourMinor: toMinor(100) }],
+      }),
+    )
+
+    expect(result.exitTax?.wageBaseMinor).toBe(toMinor(45_000))
+    expect(toMajor(exitLine(result)?.amountMinor ?? 0)).toBe(300)
+  })
+
+  it('records a tax of nothing, with no line, when the wages are below the first band', () => {
+    const result = calculatePayrollItem(baseInput({ overrideTotalMinor: toMinor(15_000), exitTax: exitTax(0) }))
+
+    expect(exitLine(result)).toBeUndefined()
+    expect(result.exitTax).toEqual({ id: 'exit-tax-1', wageBaseMinor: toMinor(15_000), amountMinor: 0 })
+    expect(result.totalDeductionsMinor).toBe(0)
+  })
+
+  it('deducts it beside the tax set from the report for the half-year just ended', () => {
+    const result = calculatePayrollItem(
+      baseInput({
+        tax: { id: 'tax-1', amountMinor: toMinor(1_180), note: 'On wages 88061 for 2025-10-01 to 2026-03-31' },
+        exitTax: exitTax(20_000),
+      }),
+    )
+
+    const lines = result.components.filter((entry) => entry.code === 'PTAX')
+    expect(lines.map((entry) => [entry.referenceId, toMajor(entry.amountMinor)])).toEqual([
+      ['tax-1', 1_180],
+      ['exit-tax-1', 890],
+    ])
+    expect(toMajor(result.totalDeductionsMinor)).toBe(2_070)
+  })
+})
+
+describe('taxForWagesMinor', () => {
+  const slabs = [
+    { upToMinor: toMinor(21_000), taxMinor: 0 },
+    { upToMinor: toMinor(30_000), taxMinor: toMinor(120) },
+    { upToMinor: null, taxMinor: toMinor(300) },
+  ]
+
+  it('takes the band whose limit the wages reach exactly', () => {
+    expect(taxForWagesMinor(toMinor(30_000), slabs)).toBe(toMinor(120))
+  })
+
+  it('moves to the next band a paisa above the limit', () => {
+    expect(taxForWagesMinor(toMinor(30_000) + 1, slabs)).toBe(toMinor(300))
+  })
+
+  it('is nothing with no slabs', () => {
+    expect(taxForWagesMinor(toMinor(100_000), [])).toBe(0)
+  })
+})
 
 describe('calculatePayrollItem - partial months', () => {
   it('pays a mid-month joiner only for their employed days', () => {
