@@ -1267,3 +1267,93 @@ describe('holidayWorkAmountsMinor', () => {
     expect(amounts.extraPayMinor).toBe(payslip.components.find((entry) => entry.code === 'HOLIDAY_WORK')?.amountMinor)
   })
 })
+
+describe('calculatePayrollItem - holiday pay without the components left out of it', () => {
+  // SKT's daily structure: Basic 494 + DA 287, and a Special Allowance of 138
+  // that is left out of holiday pay.
+  const employee = { id: 'emp-2', code: 'EMP002', name: 'Daily Worker', salaryBasis: 'DAILY' } as const
+  const components = [
+    component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(494), displayOrder: 1 }),
+    component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(287), displayOrder: 2 }),
+    component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(138), displayOrder: 3, holidayExtraPay: false }),
+  ]
+  // Wednesday 9 Sept 2026 is a holiday with extra pay for whoever works it.
+  const HOLIDAY = '2026-09-09'
+  const amount = (result: ReturnType<typeof calculatePayrollItem>, code: string): number =>
+    toMajor(result.components.find((entry) => entry.code === code)?.amountMinor ?? 0)
+
+  it('pays a holiday the employee rested on without the Special Allowance', () => {
+    const result = calculatePayrollItem(
+      baseInput({ employee, components, days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HOLIDAY', holidayExtraPay: true } }) }),
+    )
+
+    expect(result.attendance.paidDays).toBe(30)
+    expect(result.attendance.paidHolidayDays).toBe(1)
+    // Basic and DA are paid for all 30 paid days, the holiday included...
+    expect(amount(result, 'BASIC')).toBe(494 * 30)
+    expect(amount(result, 'DA')).toBe(287 * 30)
+    // ...the Special Allowance for the 29 that are not the holiday.
+    expect(amount(result, 'SA')).toBe(138 * 29)
+    expect(amount(result, 'HOLIDAY_WORK')).toBe(0)
+    expect(toMajor(result.grossEarningsMinor)).toBe(919 * 30 - 138)
+  })
+
+  it('pays a worked holiday as a day worked, with the Special Allowance, and the extra pay without it', () => {
+    const result = calculatePayrollItem(
+      baseInput({ employee, components, days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'PRESENT', holidayExtraPay: true } }) }),
+    )
+
+    expect(result.attendance.paidHolidayDays).toBe(0)
+    expect(amount(result, 'SA')).toBe(138 * 30)
+    expect(amount(result, 'HOLIDAY_WORK')).toBe(781)
+    expect(toMajor(result.grossEarningsMinor)).toBe(919 * 30 + 781)
+  })
+
+  it('pays nothing at all for a holiday forfeited by an absence either side, and takes nothing more off', () => {
+    const result = calculatePayrollItem(
+      baseInput({
+        employee,
+        components,
+        days: septemberDays({
+          '2026-09-08': { status: 'ABSENT' },
+          [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HOLIDAY', holidayForfeited: true },
+          '2026-09-10': { status: 'ABSENT' },
+        }),
+      }),
+    )
+
+    expect(result.attendance.paidDays).toBe(27)
+    expect(result.attendance.paidHolidayDays).toBe(0)
+    expect(amount(result, 'BASIC')).toBe(494 * 27)
+    expect(amount(result, 'SA')).toBe(138 * 27)
+  })
+
+  it('prorates a monthly component left out of holiday pay over the days that are not a rested holiday', () => {
+    const monthly = [
+      component({ code: 'BASIC', name: 'Basic Salary', amountMinor: toMinor(25_000), displayOrder: 1 }),
+      component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(5_000), displayOrder: 2, holidayExtraPay: false }),
+    ]
+    const result = calculatePayrollItem(
+      baseInput({ components: monthly, days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HOLIDAY' } }) }),
+    )
+
+    // A full month: Basic in full, the Special Allowance for 29 of the 30 days.
+    expect(amount(result, 'BASIC')).toBe(25_000)
+    expect(amount(result, 'SA')).toBe(4_833.33)
+  })
+
+  it('counts a holiday rested on, never forfeited, as a paid holiday in the attendance summary', () => {
+    const rested = summariseAttendance(septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: null } }), DEFAULT_POLICY)
+    const forfeited = summariseAttendance(
+      septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HOLIDAY', holidayForfeited: true } }),
+      DEFAULT_POLICY,
+    )
+    const worked = summariseAttendance(septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'PRESENT' } }), DEFAULT_POLICY)
+    expect([rested.paidHolidayDays, forfeited.paidHolidayDays, worked.paidHolidayDays]).toEqual([1, 0, 0])
+  })
+
+  it('leaves every component in full for a holiday when none is left out of holiday pay', () => {
+    const result = calculatePayrollItem(baseInput({ days: septemberDays({ [HOLIDAY]: { dayKind: 'HOLIDAY', status: 'HOLIDAY' } }) }))
+    expect(toMajor(result.grossEarningsMinor)).toBe(42_000)
+  })
+})

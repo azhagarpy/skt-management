@@ -577,7 +577,7 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
     },
     {
       key: 'holidayExtraPay',
-      header: 'Holiday extra pay',
+      header: 'Holiday pay',
       render: (row) => (row.holidayExtraPay ? 'Included' : <span className="subtle">Not included</span>),
     },
     { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
@@ -657,9 +657,9 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
           </div>
 
           <Field
-            label="Holiday extra pay"
+            label="Holiday pay"
             htmlFor="component-holiday-extra-pay"
-            hint="Working a holiday earns one extra day's pay. Untick to leave this component out of that extra day - it is still paid for every paid day."
+            hint="Untick to leave this component out of holiday pay: it is not paid for a holiday the employee rests on, nor in the extra day's pay for working one. It is still paid for every day worked - a worked holiday included - and for paid leave."
           >
             <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
               <input
@@ -668,7 +668,7 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
                 checked={form.holidayExtraPay}
                 onChange={(event) => setForm({ ...form, holidayExtraPay: event.target.checked })}
               />
-              <span>Include in holiday extra pay</span>
+              <span>Include in holiday pay</span>
             </label>
           </Field>
 

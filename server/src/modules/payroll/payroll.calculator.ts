@@ -80,8 +80,10 @@ export interface ComponentInput {
   /** When false the component is paid in full regardless of attendance. */
   prorate: boolean
   /**
-   * When false the component is left out of holiday work pay: it is still paid
-   * for every paid day, but working a holiday earns the extra day without it.
+   * When false the component is left out of holiday pay ("Include in holiday
+   * extra pay" unticked): it is not paid for a holiday the employee rested on,
+   * and working a holiday earns the extra day without it. It is still paid for
+   * every day worked - a worked holiday included - and for paid leave.
    */
   holidayExtraPay: boolean
   displayOrder: number
@@ -232,6 +234,11 @@ export interface AttendanceSummary {
   weeklyOffDays: number
   unmarkedDays: number
   paidDays: number
+  /**
+   * How many of `paidDays` are holidays the employee rested on (not worked,
+   * not forfeited). A component left out of holiday pay is not paid for them.
+   */
+  paidHolidayDays: number
   /** The denominator used to prorate a monthly salary. */
   payableDaysBasis: number
 }
@@ -350,6 +357,10 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
   let workingPaidDays = 0
   let attendanceDays = 0
   let attendancePaidDays = 0
+  // The rested holidays inside each basis's paid days.
+  let holidayPaidDays = 0
+  let workingHolidayPaidDays = 0
+  let attendanceHolidayPaidDays = 0
 
   for (const day of days) {
     if (!day.isEmployed) continue
@@ -426,24 +437,35 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
     paidDays += dayPaid
     if (isWorkingDay) workingPaidDays += dayPaid
     if (day.status !== null) attendancePaidDays += dayPaid
+
+    // A rested holiday is paid as the holiday, not as work (see paidHolidayDays).
+    if (effective === 'HOLIDAY' && !day.holidayForfeited) {
+      holidayPaidDays += dayPaid
+      if (isWorkingDay) workingHolidayPaidDays += dayPaid
+      if (day.status !== null) attendanceHolidayPaidDays += dayPaid
+    }
   }
 
   let payableDaysBasis: number
   let effectivePaidDays: number
+  let effectiveHolidayPaidDays: number
 
   switch (policy.paidDaysBasis) {
     case 'WORKING_DAYS':
       payableDaysBasis = workingDays
       effectivePaidDays = workingPaidDays
+      effectiveHolidayPaidDays = workingHolidayPaidDays
       break
     case 'ACTUAL_ATTENDANCE_DAYS':
       payableDaysBasis = attendanceDays
       effectivePaidDays = attendancePaidDays
+      effectiveHolidayPaidDays = attendanceHolidayPaidDays
       break
     case 'CALENDAR_DAYS':
     default:
       payableDaysBasis = calendarDays
       effectivePaidDays = paidDays
+      effectiveHolidayPaidDays = holidayPaidDays
       break
   }
 
@@ -460,6 +482,7 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
     weeklyOffDays: roundDays(weeklyOffDays),
     unmarkedDays: roundDays(unmarkedDays),
     paidDays: roundDays(effectivePaidDays),
+    paidHolidayDays: roundDays(effectiveHolidayPaidDays),
     payableDaysBasis: roundDays(payableDaysBasis),
   }
 }
@@ -702,10 +725,10 @@ function earningsForDaysMinor(
 }
 
 /**
- * What working a holiday comes to, outside a payroll run: the day's own wage,
- * which the paid days carry whether the holiday is worked or not, and the
- * extra pay working it earns on a holiday that offers it - the Holiday Work Pay
- * line, without the components switched out of it. `days` is 1 for a full day
+ * What working a holiday comes to, outside a payroll run: the day's own wage -
+ * the holiday paid as a day worked, so with every component - and the extra
+ * pay working it earns on a holiday that offers it - the Holiday Work Pay line,
+ * without the components left out of holiday pay. `days` is 1 for a full day
  * and 0.5 for a half day.
  */
 export function holidayWorkAmountsMinor(
@@ -757,14 +780,20 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   for (const entry of resolved) {
     const component = entry.input
     let amountMinor: Minor
+    // A holiday is paid without the components left out of holiday pay (SKT's
+    // Special Allowance): they are paid only for the days worked or on leave.
+    // A worked holiday is a day worked, so it keeps them.
+    const componentPaidDays = component.holidayExtraPay
+      ? attendance.paidDays
+      : roundDays(attendance.paidDays - attendance.paidHolidayDays)
 
     if (input.employee.salaryBasis === 'DAILY') {
       // A daily structure holds per-day amounts: rate x paid days (plan section 22).
       amountMinor = component.prorate
-        ? multiplyMinor(entry.fullAmountMinor, attendance.paidDays)
+        ? multiplyMinor(entry.fullAmountMinor, componentPaidDays)
         : entry.fullAmountMinor
     } else if (component.prorate) {
-      amountMinor = prorateMinor(entry.fullAmountMinor, attendance.paidDays, attendance.payableDaysBasis)
+      amountMinor = prorateMinor(entry.fullAmountMinor, componentPaidDays, attendance.payableDaysBasis)
     } else {
       amountMinor = entry.fullAmountMinor
     }

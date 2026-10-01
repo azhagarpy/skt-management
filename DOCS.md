@@ -102,6 +102,11 @@ Each step depends on the ones above it.
   unpaid leave or a half day on each side, is not paid. A holiday **worked for half a
   day** is never charged or forfeited; it pays that half day, and if the holiday has
   *extra pay* on, half a day of holiday work pay on top — two half days in all.
+- **Holiday pay** — a holiday the employee rests on is paid, unless the sandwich rule above
+  forfeits it, but **without** the salary components whose *Include in holiday pay* is
+  unticked (SKT's Special Allowance). A holiday **worked** is paid as a day worked, with
+  every component, plus — on a holiday with *extra pay* on — one more day of holiday work
+  pay, again without those components.
 - **Bonuses** and **PL Wages** — paid separately from salary, never through payroll.
   An approved one is marked paid once it has actually been paid: the date, how it was
   paid (bank transfer, cash, cheque, UPI), a reference and a supporting document
