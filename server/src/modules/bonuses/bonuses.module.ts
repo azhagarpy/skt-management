@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { pool, queryOne, queryRows } from '../../database/pool.js'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission, requirePermissions } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendCreated, sendNoContent, sendSuccess } from '../../utils/http.js'
@@ -20,6 +20,15 @@ import {
 } from './bonus-statement.js'
 import { idListParam } from '../../utils/query-params.js'
 import { mountPayoutRoutes, presentPayout, type PayoutColumns } from '../payments/payout.js'
+import {
+  assertCanManageEmployee,
+  assertCanManageEmployees,
+  manageableTeamIds,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
+import type { AuthContext } from '../../types/express.js'
 
 /**
  * Bonuses (plan section 25).
@@ -194,26 +203,42 @@ function presentBonus(row: BonusRow) {
 export const bonusRouter = Router()
 bonusRouter.use(authenticate)
 
+// A supervisor's bonuses are their team's, never their own to award or pay.
+const canView = requireAnyPermission(PERMISSIONS.BONUS_VIEW, PERMISSIONS.BONUS_VIEW_TEAM)
+const canManage = requireAnyPermission(PERMISSIONS.BONUS_MANAGE, PERMISSIONS.BONUS_MANAGE_TEAM)
+const viewScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.BONUS_VIEW, team: PERMISSIONS.BONUS_VIEW_TEAM })
+const manageScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.BONUS_MANAGE, team: PERMISSIONS.BONUS_MANAGE_TEAM })
+
+/** The statement covers everyone, or only the employees a supervisor could award. */
+async function statementScope(auth: AuthContext) {
+  return viewScope(auth) === 'ALL'
+    ? { organizationId: auth.organizationId }
+    : { organizationId: auth.organizationId, employeeIds: await manageableTeamIds(auth) }
+}
+
 /** The month-by-month wages and the bonus a percentage of them comes to. */
 bonusRouter.get(
   '/statement',
-  requirePermissions(PERMISSIONS.BONUS_VIEW),
+  canView,
   validate({ query: statementQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
-    const statement = await buildStatement({ organizationId: auth.organizationId }, req.query as unknown as StatementQuery)
+    const statement = await buildStatement(await statementScope(auth), req.query as unknown as StatementQuery)
     return sendSuccess(res, statement)
   }),
 )
 
 bonusRouter.get(
   '/statement/export',
-  requirePermissions(PERMISSIONS.BONUS_VIEW, PERMISSIONS.REPORT_EXPORT),
+  canView,
+  requirePermissions(PERMISSIONS.REPORT_EXPORT),
   validate({ query: statementQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const query = req.query as unknown as StatementQuery
-    const statement = await buildStatement({ organizationId: auth.organizationId }, query)
+    const statement = await buildStatement(await statementScope(auth), query)
 
     const organization = await queryOne<{ name: string }>(pool, 'SELECT name FROM organizations WHERE id = $1', [
       auth.organizationId,
@@ -239,14 +264,15 @@ bonusRouter.get(
 
 bonusRouter.get(
   '/',
-  requirePermissions(PERMISSIONS.BONUS_VIEW),
+  canView,
   validate({ query: bonusListQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const filters = req.query as unknown as BonusListQuery
 
-    const conditions = ['e.organization_id = $1']
-    const params: unknown[] = [auth.organizationId]
+    const scope = scopeClause(auth, viewScope(auth), 'e', 1)
+    const conditions = [`(${scope.sql})`]
+    const params: unknown[] = [...scope.params]
     const push = (value: unknown): number => {
       params.push(value)
       return params.length
@@ -269,11 +295,12 @@ bonusRouter.get(
 
 bonusRouter.post(
   '/',
-  requirePermissions(PERMISSIONS.BONUS_MANAGE),
+  canManage,
   validate({ body: bonusSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const input = req.body as BonusInput
+    const scope = manageScope(auth)
 
     // Resolve the recipients inside the organization, so an id from elsewhere
     // can never receive a bonus here.
@@ -286,8 +313,17 @@ bonusRouter.post(
         [auth.organizationId, input.departmentId],
       )
       employeeIds = rows.map((row) => row.id)
+      // A supervisor's "whole department" is the part of it on their team.
+      if (scope === 'TEAM') {
+        const team = new Set(await manageableTeamIds(auth))
+        employeeIds = employeeIds.filter((id) => team.has(id))
+      }
       if (employeeIds.length === 0) {
-        throw ApiError.businessRule('There are no active employees in that department')
+        throw ApiError.businessRule(
+          scope === 'TEAM'
+            ? 'There are no active employees from your team in that department'
+            : 'There are no active employees in that department',
+        )
       }
     } else {
       const requested = [...new Set(input.employeeIds ?? [])]
@@ -297,6 +333,7 @@ bonusRouter.post(
         [auth.organizationId, requested],
       )
       if (rows.length !== requested.length) throw ApiError.notFound('Employee')
+      await assertCanManageEmployees(auth, requested, scope)
       employeeIds = requested
     }
 
@@ -413,7 +450,7 @@ bonusRouter.post(
 
 bonusRouter.patch(
   '/:id',
-  requirePermissions(PERMISSIONS.BONUS_MANAGE),
+  canManage,
   validate({ params: idParam, body: bonusUpdateSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -426,6 +463,7 @@ bonusRouter.patch(
       [id, auth.organizationId],
     )
     if (!existing) throw ApiError.notFound('Bonus')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     if (existing.status === 'PAID') {
       throw ApiError.businessRule('A bonus that has been paid cannot be edited. Mark it not paid first.')
     }
@@ -472,7 +510,7 @@ bonusRouter.patch(
 
 bonusRouter.delete(
   '/:id',
-  requirePermissions(PERMISSIONS.BONUS_MANAGE),
+  canManage,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -484,6 +522,7 @@ bonusRouter.delete(
       [id, auth.organizationId],
     )
     if (!existing) throw ApiError.notFound('Bonus')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     if (existing.status === 'PAID') {
       throw ApiError.businessRule('A bonus that has been paid cannot be deleted. Mark it not paid first.')
     }
@@ -509,6 +548,8 @@ mountPayoutRoutes(bonusRouter, {
   folder: 'bonus-proof',
   view: PERMISSIONS.BONUS_VIEW,
   manage: PERMISSIONS.BONUS_MANAGE,
+  viewTeam: PERMISSIONS.BONUS_VIEW_TEAM,
+  manageTeam: PERMISSIONS.BONUS_MANAGE_TEAM,
   entityType: 'employee_bonus',
   paidAction: 'BONUS_MARKED_PAID',
   unpaidAction: 'BONUS_MARKED_UNPAID',

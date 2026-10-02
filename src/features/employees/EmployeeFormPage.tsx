@@ -129,6 +129,9 @@ export default function EmployeeFormPage() {
   const queryClient = useQueryClient()
   const { can } = useAuth()
   const [exitTax, setExitTax] = useState<ExitTaxPreview | null>(null)
+  // A supervisor or manager adds and edits people on their own team only. Who
+  // leads whom, and logins with more access, stay with an administrator.
+  const teamOnly = isEdit ? !can('employee.update') : !can('employee.create')
 
   const { data: existing, isLoading } = useQuery({
     queryKey: ['employee', id],
@@ -309,7 +312,7 @@ export default function EmployeeFormPage() {
       // Offer to take the half-year's P.Tax from a leaver's final salary. The
       // dialog moves on once answered; if the tax is already set for this exit
       // there is nothing to ask.
-      if (leaving && employeeId && can('tax.manage')) {
+      if (leaving && employeeId && (can('tax.manage') || can('tax.manage.team'))) {
         try {
           const preview = await get<ExitTaxPreview>(`/tax/exit-deductions/${employeeId}`)
           if (!preview.existing) {
@@ -516,7 +519,11 @@ export default function EmployeeFormPage() {
               />
             </Field>
 
-            <Field label="Supervisor" htmlFor="supervisorId">
+            <Field
+              label="Supervisor"
+              htmlFor="supervisorId"
+              hint={teamOnly && !isEdit ? 'Leave blank to add them to your own team.' : undefined}
+            >
               <SupervisorSelector
                 id="supervisorId"
                 value={watch('supervisorId') ?? ''}
@@ -566,30 +573,34 @@ export default function EmployeeFormPage() {
               </Field>
             ) : null}
 
-            <Field label="Is a supervisor" htmlFor="isSupervisor" hint="Supervisors can be assigned a team.">
-              <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
-                <input id="isSupervisor" type="checkbox" {...register('isSupervisor')} />
-                <span>This employee supervises others</span>
-              </label>
-            </Field>
+            {teamOnly ? null : (
+              <>
+                <Field label="Is a supervisor" htmlFor="isSupervisor" hint="Supervisors can be assigned a team.">
+                  <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                    <input id="isSupervisor" type="checkbox" {...register('isSupervisor')} />
+                    <span>This employee supervises others</span>
+                  </label>
+                </Field>
 
-            {watch('isSupervisor') ? (
-              <Field label="Manager" htmlFor="managerId" hint="The manager who oversees this supervisor and their team.">
-                <ManagerSelector
-                  id="managerId"
-                  includeAll={false}
-                  value={watch('managerId') ?? ''}
-                  onChange={(value) => setValue('managerId', value)}
-                />
-              </Field>
-            ) : null}
+                {watch('isSupervisor') ? (
+                  <Field label="Manager" htmlFor="managerId" hint="The manager who oversees this supervisor and their team.">
+                    <ManagerSelector
+                      id="managerId"
+                      includeAll={false}
+                      value={watch('managerId') ?? ''}
+                      onChange={(value) => setValue('managerId', value)}
+                    />
+                  </Field>
+                ) : null}
 
-            <Field label="Is a manager" htmlFor="isManager" hint="Managers oversee a set of supervisors and their teams.">
-              <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
-                <input id="isManager" type="checkbox" {...register('isManager')} />
-                <span>This employee manages supervisors</span>
-              </label>
-            </Field>
+                <Field label="Is a manager" htmlFor="isManager" hint="Managers oversee a set of supervisors and their teams.">
+                  <label className="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                    <input id="isManager" type="checkbox" {...register('isManager')} />
+                    <span>This employee manages supervisors</span>
+                  </label>
+                </Field>
+              </>
+            )}
           </div>
         </Card>
 
@@ -682,14 +693,16 @@ export default function EmployeeFormPage() {
                     <Input id="userEmail" type="email" {...register('userEmail')} />
                   </Field>
 
-                  <Field label="Role" htmlFor="userRole">
-                    <Select id="userRole" {...register('userRole')}>
-                      <option value="EMPLOYEE">Employee</option>
-                      <option value="MANAGER">Manager</option>
-                      <option value="SUPERVISOR">Supervisor</option>
-                      <option value="SUPER_ADMIN">Super Admin</option>
-                    </Select>
-                  </Field>
+                  {teamOnly ? null : (
+                    <Field label="Role" htmlFor="userRole">
+                      <Select id="userRole" {...register('userRole')}>
+                        <option value="EMPLOYEE">Employee</option>
+                        <option value="MANAGER">Manager</option>
+                        <option value="SUPERVISOR">Supervisor</option>
+                        <option value="SUPER_ADMIN">Super Admin</option>
+                      </Select>
+                    </Field>
+                  )}
 
                   <Field
                     label="Temporary password"

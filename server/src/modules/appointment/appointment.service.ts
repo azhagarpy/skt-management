@@ -7,6 +7,8 @@ import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import * as salaryRepository from '../salary/salary.repository.js'
 import { toComponentInputs } from '../payroll/payroll.service.js'
 import { resolveFullAmounts } from '../payroll/payroll.calculator.js'
+import { PERMISSIONS } from '../auth/permissions.js'
+import { assertCanManageEmployee, resolveScope } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import { renderAppointmentLetterPdf } from './appointment-pdf.js'
 
@@ -97,6 +99,11 @@ export async function generateAppointmentLetter(
   otherInformation: string | undefined,
   context: AuditContext,
 ) {
+  // A letter issued in the company's name: a supervisor may issue one for their
+  // team, but not for themselves.
+  const scope = resolveScope(auth, { all: PERMISSIONS.PAYSLIP_VIEW_ALL, team: PERMISSIONS.PAYSLIP_VIEW_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
+
   const employee = await queryOne<EmployeeForLetter>(
     pool,
     `SELECT e.id, e.employee_code, e.first_name, e.middle_name, e.last_name,

@@ -209,7 +209,7 @@ export default function EmployeeListPage() {
                 Bulk import
               </Button>
             ) : null}
-            {can('employee.create') ? (
+            {can('employee.create') || can('employee.create.team') ? (
               <Link to="/employees/new">
                 <Button icon={<Plus size={15} />}>Add employee</Button>
               </Link>

@@ -19,7 +19,7 @@ import type { IdentityProfile } from '../../types/api'
 export function IdentitySection({ employeeId, editable }: { employeeId: string; editable: boolean }) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const { can } = useAuth()
+  const { can, user } = useAuth()
 
   const [editing, setEditing] = useState<null | 'PAN' | 'AADHAAR' | 'BANK' | 'PF' | 'ESI'>(null)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
@@ -56,7 +56,8 @@ export function IdentitySection({ employeeId, editable }: { employeeId: string; 
   if (isLoading) return <Spinner />
   if (!data) return null
 
-  const canVerify = can('document.verify')
+  // A supervisor verifies their team's documents, never their own.
+  const canVerify = can('document.verify') || (can('document.verify.team') && employeeId !== user?.employeeId)
 
   interface DetailRow {
     label: string

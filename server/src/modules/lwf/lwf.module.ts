@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
 import { withTransaction } from '../../database/tx.js'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission } from '../../middleware/authorize.js'
 import { uploadPaymentProof } from '../../middleware/upload.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
@@ -15,6 +15,15 @@ import { sanitiseFilename, sniffContentType, extensionForType } from '../../util
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  manageableTeamIds,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
+import type { AuthContext } from '../../types/express.js'
 
 /**
  * Labour Welfare Fund.
@@ -160,16 +169,25 @@ export type LwfListQuery = z.infer<typeof listQuerySchema>
 export const lwfRouter = Router()
 lwfRouter.use(authenticate)
 
+// A supervisor's contributions are their team's, never their own to change.
+const canView = requireAnyPermission(PERMISSIONS.LWF_VIEW, PERMISSIONS.LWF_VIEW_TEAM)
+const canManage = requireAnyPermission(PERMISSIONS.LWF_MANAGE, PERMISSIONS.LWF_MANAGE_TEAM)
+const viewScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.LWF_VIEW, team: PERMISSIONS.LWF_VIEW_TEAM })
+const manageScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.LWF_MANAGE, team: PERMISSIONS.LWF_MANAGE_TEAM })
+
 lwfRouter.get(
   '/',
-  requirePermissions(PERMISSIONS.LWF_VIEW),
+  canView,
   validate({ query: listQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const filters = req.query as unknown as LwfListQuery
 
-    const conditions = ['l.organization_id = $1']
-    const params: unknown[] = [auth.organizationId]
+    const clause = scopeClause(auth, viewScope(auth), 'e', 1)
+    const conditions = [`(${clause.sql})`]
+    const params: unknown[] = [...clause.params]
     const push = (value: unknown): number => {
       params.push(value)
       return params.length
@@ -205,17 +223,21 @@ lwfRouter.get(
  */
 lwfRouter.post(
   '/generate',
-  requirePermissions(PERMISSIONS.LWF_MANAGE),
+  canManage,
   validate({ body: generateSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const input = req.body as GenerateInput
     await assertPayrollOpen(auth.organizationId, input.payrollYear, input.payrollMonth)
 
+    // A supervisor generates rows for their own team only.
+    const team = manageScope(auth) === 'TEAM' ? await manageableTeamIds(auth) : null
     const employees = await queryRows<{ id: string }>(
       pool,
-      `SELECT id FROM employees WHERE organization_id = $1 AND employment_status = 'ACTIVE'`,
-      [auth.organizationId],
+      `SELECT id FROM employees
+        WHERE organization_id = $1 AND employment_status = 'ACTIVE'
+          AND ($2::uuid[] IS NULL OR id = ANY($2::uuid[]))`,
+      [auth.organizationId, team],
     )
     if (employees.length === 0) {
       throw ApiError.businessRule('There are no active employees to generate Labour Welfare Fund rows for')
@@ -269,7 +291,7 @@ lwfRouter.post(
 
 lwfRouter.patch(
   '/:id/mark-paid',
-  requirePermissions(PERMISSIONS.LWF_MANAGE),
+  canManage,
   // multer runs first so a multipart body (the form with a reference document) is parsed;
   // a plain JSON request passes straight through it.
   uploadPaymentProof,
@@ -281,6 +303,7 @@ lwfRouter.patch(
 
     const existing = await findLwf(id, auth.organizationId)
     if (!existing) throw ApiError.notFound('Labour Welfare Fund contribution')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
 
     let proof: { key: string; contentType: string; filename: string } | null = null
     if (req.file) {
@@ -323,12 +346,13 @@ lwfRouter.patch(
 
 lwfRouter.get(
   '/:id/proof',
-  requirePermissions(PERMISSIONS.LWF_VIEW),
+  canView,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const existing = await findLwf(req.params.id as string, auth.organizationId)
     if (!existing) throw ApiError.notFound('Labour Welfare Fund contribution')
+    await assertEmployeeInScope(auth, existing.employee_id, viewScope(auth))
     if (!existing.proof_path) throw ApiError.notFound('Reference document')
 
     const buffer = await storage.get(existing.proof_path)
@@ -343,12 +367,13 @@ lwfRouter.get(
 
 lwfRouter.delete(
   '/:id',
-  requirePermissions(PERMISSIONS.LWF_MANAGE),
+  canManage,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const existing = await findLwf(req.params.id as string, auth.organizationId)
     if (!existing) throw ApiError.notFound('Labour Welfare Fund contribution')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     if (existing.status === 'PAID') {
       throw ApiError.businessRule('A contribution already marked paid cannot be deleted')
     }

@@ -34,6 +34,15 @@ const canViewEmployees = requireAnyPermission(
   PERMISSIONS.EMPLOYEE_VIEW_SELF,
 )
 
+/** Team permissions are narrowed to the caller's team in the service. */
+const canCreateEmployees = requireAnyPermission(PERMISSIONS.EMPLOYEE_CREATE, PERMISSIONS.EMPLOYEE_CREATE_TEAM)
+const canUpdateEmployees = requireAnyPermission(PERMISSIONS.EMPLOYEE_UPDATE, PERMISSIONS.EMPLOYEE_UPDATE_TEAM)
+const canEditDetails = requireAnyPermission(
+  PERMISSIONS.EMPLOYEE_UPDATE,
+  PERMISSIONS.EMPLOYEE_UPDATE_TEAM,
+  PERMISSIONS.EMPLOYEE_UPDATE_SELF,
+)
+
 employeeRouter.get('/', canViewEmployees, validate({ query: employeeListQuerySchema }), controller.listEmployees)
 
 /**
@@ -43,7 +52,7 @@ employeeRouter.get('/', canViewEmployees, validate({ query: employeeListQuerySch
  * one pass. The commit refuses unless the file is clean, so an import is all
  * or nothing.
  */
-employeeRouter.get('/next-code', requirePermissions(PERMISSIONS.EMPLOYEE_CREATE), controller.suggestEmployeeCode)
+employeeRouter.get('/next-code', canCreateEmployees, controller.suggestEmployeeCode)
 employeeRouter.post(
   '/import/preview',
   requirePermissions(PERMISSIONS.EMPLOYEE_CREATE),
@@ -61,7 +70,7 @@ employeeRouter.get('/managers', requirePermissions(PERMISSIONS.EMPLOYEE_VIEW_ALL
 
 employeeRouter.post(
   '/',
-  requirePermissions(PERMISSIONS.EMPLOYEE_CREATE),
+  canCreateEmployees,
   validate({ body: createEmployeeSchema }),
   controller.createEmployee,
 )
@@ -91,13 +100,13 @@ employeeRouter.get(
 )
 employeeRouter.post(
   '/:id/job-history',
-  requirePermissions(PERMISSIONS.EMPLOYEE_UPDATE),
+  canUpdateEmployees,
   validate({ params: employeeIdParam, body: jobHistorySchema }),
   controller.addJobHistory,
 )
 employeeRouter.patch(
   '/:id',
-  requirePermissions(PERMISSIONS.EMPLOYEE_UPDATE),
+  canUpdateEmployees,
   validate({ params: employeeIdParam, body: updateEmployeeSchema }),
   controller.updateEmployee,
 )
@@ -116,13 +125,13 @@ employeeRouter.delete(
 
 employeeRouter.put(
   '/:id/address',
-  requireAnyPermission(PERMISSIONS.EMPLOYEE_UPDATE, PERMISSIONS.EMPLOYEE_UPDATE_SELF),
+  canEditDetails,
   validate({ params: employeeIdParam, body: addressUpsertSchema }),
   controller.upsertAddress,
 )
 employeeRouter.put(
   '/:id/emergency-contact',
-  requireAnyPermission(PERMISSIONS.EMPLOYEE_UPDATE, PERMISSIONS.EMPLOYEE_UPDATE_SELF),
+  canEditDetails,
   validate({ params: employeeIdParam, body: emergencyContactUpsertSchema }),
   controller.upsertEmergencyContact,
 )
@@ -130,14 +139,14 @@ employeeRouter.put(
 employeeRouter.get('/:id/photo', canViewEmployees, validate({ params: employeeIdParam }), controller.getEmployeePhoto)
 employeeRouter.post(
   '/:id/photo',
-  requireAnyPermission(PERMISSIONS.EMPLOYEE_UPDATE, PERMISSIONS.EMPLOYEE_UPDATE_SELF),
+  canEditDetails,
   validate({ params: employeeIdParam }),
   uploadSingleImage,
   controller.uploadEmployeePhoto,
 )
 employeeRouter.delete(
   '/:id/photo',
-  requireAnyPermission(PERMISSIONS.EMPLOYEE_UPDATE, PERMISSIONS.EMPLOYEE_UPDATE_SELF),
+  canEditDetails,
   validate({ params: employeeIdParam }),
   controller.removeEmployeePhoto,
 )

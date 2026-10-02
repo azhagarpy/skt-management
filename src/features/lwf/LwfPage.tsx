@@ -22,7 +22,7 @@ export default function LwfPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { can } = useAuth()
-  const canManage = can('lwf.manage')
+  const canManage = can('lwf.manage') || can('lwf.manage.team')
 
   const now = new Date()
   const [contributionYear, setContributionYear] = useState(now.getFullYear())

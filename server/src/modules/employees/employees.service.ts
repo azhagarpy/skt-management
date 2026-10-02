@@ -13,7 +13,13 @@ import { storage } from '../documents/storage.service.js'
 import { logger } from '../../utils/logger.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './employees.repository.js'
-import { assertEmployeeInScope, resolveScope, scopeClause, type EmployeeScope } from './employee-access.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from './employee-access.js'
 import type {
   AddressInput,
   CreateEmployeeInput,
@@ -448,8 +454,40 @@ async function assertReferencesExist(
   }
 }
 
+/**
+ * Confirms a team-scoped caller is placing an employee under a supervisor on
+ * their own team: themselves, or - for a manager - one of their supervisors.
+ */
+async function assertSupervisorOnTeam(auth: AuthContext, supervisorId: string, db: Queryable): Promise<void> {
+  if (supervisorId === auth.employeeId) return
+  const supervisor = await queryOne<{ manager_id: string | null }>(
+    db,
+    'SELECT manager_id FROM employees WHERE id = $1 AND organization_id = $2',
+    [supervisorId, auth.organizationId],
+  )
+  if (!supervisor || !auth.employeeId || supervisor.manager_id !== auth.employeeId) {
+    throw ApiError.forbidden('You can only place employees under yourself or a supervisor assigned to you')
+  }
+}
+
 export async function createEmployee(auth: AuthContext, input: CreateEmployeeInput, context: AuditContext) {
+  const scope = resolveScope(auth, { all: PERMISSIONS.EMPLOYEE_CREATE, team: PERMISSIONS.EMPLOYEE_CREATE_TEAM })
+  if (scope === 'TEAM') {
+    if (!auth.employeeId) throw ApiError.forbidden('Your account is not linked to an employee record')
+    // A supervisor's new hire joins their own team as an ordinary employee;
+    // promotions and logins with more access stay with an administrator.
+    input = {
+      ...input,
+      supervisorId: input.supervisorId ?? auth.employeeId,
+      managerId: null,
+      isSupervisor: false,
+      isManager: false,
+      userRole: 'EMPLOYEE',
+    }
+  }
+
   return withTransaction(async (tx) => {
+    if (scope === 'TEAM') await assertSupervisorOnTeam(auth, input.supervisorId as string, tx)
     await assertReferencesExist(auth.organizationId, input, tx)
 
     const duplicate = await repository.findEmployeeByCode(input.employeeCode, auth.organizationId, tx)
@@ -609,9 +647,29 @@ export async function updateEmployee(
   input: UpdateEmployeeInput,
   context: AuditContext,
 ) {
+  const scope = resolveScope(auth, { all: PERMISSIONS.EMPLOYEE_UPDATE, team: PERMISSIONS.EMPLOYEE_UPDATE_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
+
   return withTransaction(async (tx) => {
     const existing = await repository.findEmployeeById(employeeId, auth.organizationId, tx)
     if (!existing) throw ApiError.notFound('Employee')
+
+    if (scope === 'TEAM') {
+      // Who someone reports to, and whether they lead others, is decided by an
+      // administrator. A manager may still move people between their supervisors.
+      const changes = (next: unknown, current: unknown): boolean => next !== undefined && next !== current
+      if (
+        changes(input.managerId, existing.manager_id) ||
+        changes(input.isSupervisor, existing.is_supervisor) ||
+        changes(input.isManager, existing.is_manager)
+      ) {
+        throw ApiError.forbidden('Only an administrator can change who is a supervisor or manager')
+      }
+      if (changes(input.supervisorId, existing.supervisor_id)) {
+        if (!input.supervisorId) throw ApiError.forbidden('You cannot remove an employee from your team')
+        await assertSupervisorOnTeam(auth, input.supervisorId, tx)
+      }
+    }
 
     if (input.supervisorId && input.supervisorId === employeeId) {
       throw ApiError.businessRule('An employee cannot be their own supervisor')
@@ -911,7 +969,8 @@ export async function addJobHistory(
   input: JobHistoryInput,
   context: AuditContext,
 ) {
-  await assertEmployeeInScope(auth, employeeId, 'ALL')
+  const scope = resolveScope(auth, { all: PERMISSIONS.EMPLOYEE_UPDATE, team: PERMISSIONS.EMPLOYEE_UPDATE_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
   await repository.insertJobHistory({
     organization_id: auth.organizationId,
     employee_id: employeeId,

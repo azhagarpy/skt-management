@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger.js'
 import { env } from '../../config/env.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
+import { assertEmployeeInScope, resolveScope, scopeClause } from '../employees/employee-access.js'
 import { storage } from '../documents/storage.service.js'
 import { notifyUserForEmployee } from '../notifications/notifications.service.js'
 import { deliverDocument } from '../messaging/messaging.service.js'
@@ -200,11 +200,7 @@ export async function generateForRun(
 
 /** Lists the payslips an employee can see. */
 export async function listPayslips(auth: AuthContext, employeeId: string) {
-  const scope = resolveScope(auth, {
-    all: PERMISSIONS.PAYSLIP_VIEW_ALL,
-    self: PERMISSIONS.PAYSLIP_VIEW_SELF,
-  })
-  await assertEmployeeInScope(auth, employeeId, scope)
+  await assertEmployeeInScope(auth, employeeId, payslipScope(auth))
 
   const rows = await queryRows<{
     id: string
@@ -254,11 +250,7 @@ export async function readPayslipFile(auth: AuthContext, payslipId: string, cont
   )
   if (!row) throw ApiError.notFound('Payslip')
 
-  const scope = resolveScope(auth, {
-    all: PERMISSIONS.PAYSLIP_VIEW_ALL,
-    self: PERMISSIONS.PAYSLIP_VIEW_SELF,
-  })
-  await assertEmployeeInScope(auth, row.employee_id, scope)
+  await assertEmployeeInScope(auth, row.employee_id, payslipScope(auth))
 
   const buffer = await storage.get(row.storage_key)
 
@@ -282,7 +274,22 @@ export async function readPayslipFile(auth: AuthContext, payslipId: string, cont
 // ---------------------------------------------------------------------------
 
 const payslipScope = (auth: AuthContext) =>
-  resolveScope(auth, { all: PERMISSIONS.PAYSLIP_VIEW_ALL, self: PERMISSIONS.PAYSLIP_VIEW_SELF })
+  resolveScope(auth, {
+    all: PERMISSIONS.PAYSLIP_VIEW_ALL,
+    team: PERMISSIONS.PAYSLIP_VIEW_TEAM,
+    self: PERMISSIONS.PAYSLIP_VIEW_SELF,
+  })
+
+/**
+ * For a run-wide action (bulk download, WhatsApp), the SQL that keeps the
+ * items to the caller's team; empty for an administrator.
+ */
+function teamItemFilter(auth: AuthContext, params: unknown[]): string {
+  if (auth.has(PERMISSIONS.PAYSLIP_VIEW_ALL)) return ''
+  const clause = scopeClause(auth, 'TEAM', 'se', params.length + 1)
+  params.push(...clause.params)
+  return `AND i.employee_id IN (SELECT se.id FROM employees se WHERE ${clause.sql})`
+}
 
 /** Payslips can only go out for a run that has been approved. */
 const RELEASED_RUN_SQL = "r.status IN ('APPROVED', 'LOCKED')"
@@ -400,8 +407,9 @@ const MAX_BULK_EMPLOYEES = 300
 /**
  * One PDF holding several employees' payslips for the same payroll run, a page
  * per employee, for admins downloading a batch to print or file at once.
- * Unlike `renderPayslipRange` this is never self-service: it always requires
- * PAYSLIP_VIEW_ALL (see payslips.routes.ts), so it does not check employee scope.
+ * Unlike `renderPayslipRange` this is never self-service: it requires
+ * PAYSLIP_VIEW_ALL or PAYSLIP_VIEW_TEAM (see payslips.routes.ts), and a
+ * supervisor's batch is narrowed to their team.
  */
 export async function renderPayslipsForRun(
   auth: AuthContext,
@@ -430,6 +438,7 @@ export async function renderPayslipsForRun(
     params.push(employeeIds)
     employeeFilter = `AND i.employee_id = ANY($${params.length}::uuid[])`
   }
+  employeeFilter += ` ${teamItemFilter(auth, params)}`
 
   const items = await queryRows<ItemWithPeriod>(
     db,
@@ -520,6 +529,7 @@ export async function sendPayslipsViaWhatsApp(
     params.push(employeeIds)
     employeeFilter = `AND i.employee_id = ANY($${params.length}::uuid[])`
   }
+  employeeFilter += ` ${teamItemFilter(auth, params)}`
 
   const items = await queryRows<ItemWithPeriod & { mobile_number: string | null }>(
     db,

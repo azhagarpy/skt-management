@@ -38,7 +38,7 @@ export default function PlWagesPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { can } = useAuth()
-  const canManage = can('plwages.manage')
+  const canManage = can('plwages.manage') || can('plwages.manage.team')
 
   const now = new Date()
   const [creditYear, setCreditYear] = useState(now.getFullYear() - 1)

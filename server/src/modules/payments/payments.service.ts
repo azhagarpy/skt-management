@@ -6,7 +6,14 @@ import { toMinor, toNumericString, type Minor } from '../../utils/money.js'
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  manageableTeamIds,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
 import { notifyUserForEmployee } from '../notifications/notifications.service.js'
 import { storage } from '../documents/storage.service.js'
 import { sanitiseFilename, sniffContentType, extensionForType } from '../../utils/files.js'
@@ -160,12 +167,21 @@ async function recomputePaymentState(
 // Service
 // ---------------------------------------------------------------------------
 
-async function assertCanViewItem(auth: AuthContext, item: payrollRepository.PayrollItemRow): Promise<void> {
-  const scope = resolveScope(auth, {
+function viewScope(auth: AuthContext): EmployeeScope {
+  return resolveScope(auth, {
     all: PERMISSIONS.PAYMENT_VIEW_ALL,
+    team: PERMISSIONS.PAYMENT_VIEW_TEAM,
     self: PERMISSIONS.PAYMENT_VIEW_SELF,
   })
-  await assertEmployeeInScope(auth, item.employee_id, scope)
+}
+
+/** Recording, reversing and documenting payments: everyone, or the caller's team but not themselves. */
+function manageScope(auth: AuthContext): EmployeeScope {
+  return resolveScope(auth, { all: PERMISSIONS.PAYMENT_MANAGE, team: PERMISSIONS.PAYMENT_MANAGE_TEAM })
+}
+
+async function assertCanViewItem(auth: AuthContext, item: payrollRepository.PayrollItemRow): Promise<void> {
+  await assertEmployeeInScope(auth, item.employee_id, viewScope(auth))
 }
 
 export async function listPayments(auth: AuthContext, payrollItemId: string) {
@@ -199,9 +215,11 @@ export async function recordPayment(
   input: PaymentCreateInput,
   context: AuditContext,
 ) {
+  const scope = manageScope(auth)
   return withTransaction(async (tx) => {
     const item = await payrollRepository.findItemForUpdate(payrollItemId, auth.organizationId, tx)
     if (!item) throw ApiError.notFound('Payroll item')
+    await assertCanManageEmployee(auth, item.employee_id, scope, tx)
 
     const run = await payrollRepository.findRun(item.payroll_run_id, auth.organizationId, tx)
     if (!run) throw ApiError.notFound('Payroll run')
@@ -311,6 +329,7 @@ export async function reversePayment(
   input: PaymentReverseInput,
   context: AuditContext,
 ) {
+  const scope = manageScope(auth)
   return withTransaction(async (tx) => {
     const payment = await queryOne<PaymentRow & { organization_id: string }>(
       tx,
@@ -318,6 +337,9 @@ export async function reversePayment(
       [paymentId, auth.organizationId],
     )
     if (!payment) throw ApiError.notFound('Payment')
+    const owner = await payrollRepository.findItem(payment.payroll_item_id, auth.organizationId, tx)
+    if (!owner) throw ApiError.notFound('Payroll item')
+    await assertCanManageEmployee(auth, owner.employee_id, scope, tx)
     if (payment.reversed_at) throw ApiError.payment('This payment has already been reversed')
 
     await tx.query(
@@ -399,6 +421,9 @@ export async function recordBulkPaymentWithin(
     throw ApiError.payment('Payments can only be recorded against an approved or locked payroll run')
   }
 
+  // A supervisor pays only their own team; anyone else in the batch is skipped.
+  const allowed = manageScope(auth) === 'TEAM' ? new Set(await manageableTeamIds(auth, tx)) : null
+
   let paidCount = 0
   let totalMinor = 0
   const paymentIds: string[] = []
@@ -408,6 +433,10 @@ export async function recordBulkPaymentWithin(
     const item = await payrollRepository.findItemForUpdate(payrollItemId, auth.organizationId, tx)
     if (!item || item.payroll_run_id !== input.payrollRunId) {
       skipped.push({ payrollItemId, reason: 'Not part of this payroll run' })
+      continue
+    }
+    if (allowed && !allowed.has(item.employee_id)) {
+      skipped.push({ payrollItemId, reason: 'Not on your team' })
       continue
     }
 
@@ -479,17 +508,21 @@ export async function getRunPaymentSummary(auth: AuthContext, runId: string) {
   const run = await payrollRepository.findRun(runId, auth.organizationId)
   if (!run) throw ApiError.notFound('Payroll run')
 
+  // A supervisor's summary covers their team only, totals included.
+  const scope = viewScope(auth)
+  const clause = scopeClause(auth, scope, 'e', 2)
   const rows = await queryRows<{ payment_status: string; count: string; net: string; paid: string; pending: string }>(
     pool,
-    `SELECT payment_status::text AS payment_status,
+    `SELECT i.payment_status::text AS payment_status,
             count(*)::text AS count,
-            coalesce(sum(net_salary), 0)::text AS net,
-            coalesce(sum(paid_amount), 0)::text AS paid,
-            coalesce(sum(pending_amount), 0)::text AS pending
-       FROM payroll_items
-      WHERE payroll_run_id = $1 AND organization_id = $2
-      GROUP BY payment_status`,
-    [runId, auth.organizationId],
+            coalesce(sum(i.net_salary), 0)::text AS net,
+            coalesce(sum(i.paid_amount), 0)::text AS paid,
+            coalesce(sum(i.pending_amount), 0)::text AS pending
+       FROM payroll_items i
+       JOIN employees e ON e.id = i.employee_id
+      WHERE i.payroll_run_id = $1 AND ${clause.sql}
+      GROUP BY i.payment_status`,
+    [runId, ...clause.params],
   )
 
   const empty = { count: 0, net: 0, paid: 0, pending: 0 }
@@ -508,13 +541,16 @@ export async function getRunPaymentSummary(auth: AuthContext, runId: string) {
     }
   }
 
+  const total = (key: 'net' | 'paid' | 'pending'): number =>
+    Object.values(summary).reduce((sum, status) => sum + status[key], 0)
+
   return {
     runId,
     year: run.year,
     month: run.month,
-    totalNet: Number(run.total_net),
-    totalPaid: Number(run.total_paid),
-    totalPending: Number(run.total_pending),
+    totalNet: scope === 'ALL' ? Number(run.total_net) : total('net'),
+    totalPaid: scope === 'ALL' ? Number(run.total_paid) : total('paid'),
+    totalPending: scope === 'ALL' ? Number(run.total_pending) : total('pending'),
     byStatus: summary,
   }
 }
@@ -544,12 +580,24 @@ async function deleteProofFileIfUnused(key: string): Promise<void> {
   if (!stillUsed) await storage.delete(key).catch(() => undefined)
 }
 
-async function findPayment(paymentId: string, organizationId: string): Promise<PaymentRow | null> {
-  return queryOne<PaymentRow>(
+/** A payment, with the employee it was paid to, checked against the caller's scope. */
+async function findPayment(
+  auth: AuthContext,
+  paymentId: string,
+  access: 'view' | 'manage',
+): Promise<PaymentRow | null> {
+  const row = await queryOne<PaymentRow & { employee_id: string }>(
     pool,
-    'SELECT * FROM payroll_payment_transactions WHERE id = $1 AND organization_id = $2',
-    [paymentId, organizationId],
+    `SELECT t.*, i.employee_id
+       FROM payroll_payment_transactions t
+       JOIN payroll_items i ON i.id = t.payroll_item_id
+      WHERE t.id = $1 AND t.organization_id = $2`,
+    [paymentId, auth.organizationId],
   )
+  if (!row) return null
+  if (access === 'manage') await assertCanManageEmployee(auth, row.employee_id, manageScope(auth))
+  else await assertEmployeeInScope(auth, row.employee_id, viewScope(auth))
+  return row
 }
 
 export async function attachPaymentProof(
@@ -558,7 +606,7 @@ export async function attachPaymentProof(
   file: { buffer: Buffer; originalname: string },
   context: AuditContext,
 ) {
-  const existing = await findPayment(paymentId, auth.organizationId)
+  const existing = await findPayment(auth, paymentId, 'manage')
   if (!existing) throw ApiError.notFound('Payment')
   if (existing.reversed_at) throw ApiError.businessRule('A reversed payment cannot take new proof')
 
@@ -600,7 +648,7 @@ export async function readPaymentProof(
   auth: AuthContext,
   paymentId: string,
 ): Promise<{ buffer: Buffer; mimeType: string; filename: string }> {
-  const existing = await findPayment(paymentId, auth.organizationId)
+  const existing = await findPayment(auth, paymentId, 'view')
   if (!existing) throw ApiError.notFound('Payment')
   if (!existing.proof_path) throw ApiError.notFound('Payment proof')
 
@@ -612,7 +660,7 @@ export async function readPaymentProof(
 }
 
 export async function removePaymentProof(auth: AuthContext, paymentId: string, context: AuditContext) {
-  const existing = await findPayment(paymentId, auth.organizationId)
+  const existing = await findPayment(auth, paymentId, 'manage')
   if (!existing) throw ApiError.notFound('Payment')
   if (!existing.proof_path) throw ApiError.notFound('Payment proof')
 

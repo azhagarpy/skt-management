@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
 import { withTransaction } from '../../database/tx.js'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendCreated, sendNoContent, sendSuccess } from '../../utils/http.js'
@@ -12,6 +12,14 @@ import { roundHalfUp } from '../../utils/money.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { idListFromForm, mountPayoutRoutes, presentPayout } from '../payments/payout.js'
+import {
+  assertCanManageEmployee,
+  manageableTeamIds,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
+import type { AuthContext } from '../../types/express.js'
 
 /**
  * PL Wages: an annual credit for earned-leave wages.
@@ -197,16 +205,29 @@ export function assessEmployees(lines: YearLine[]): Assessment[] {
 export const plWagesRouter = Router()
 plWagesRouter.use(authenticate)
 
+// A supervisor's credits are their team's, never their own to approve or pay.
+const canView = requireAnyPermission(PERMISSIONS.PL_WAGES_VIEW, PERMISSIONS.PL_WAGES_VIEW_TEAM)
+const canManage = requireAnyPermission(PERMISSIONS.PL_WAGES_MANAGE, PERMISSIONS.PL_WAGES_MANAGE_TEAM)
+const manageScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.PL_WAGES_MANAGE, team: PERMISSIONS.PL_WAGES_MANAGE_TEAM })
+
+/** The ids a team-scoped caller may change, or null for an administrator (everyone). */
+async function manageableIds(auth: AuthContext): Promise<string[] | null> {
+  return manageScope(auth) === 'TEAM' ? manageableTeamIds(auth) : null
+}
+
 plWagesRouter.get(
   '/',
-  requirePermissions(PERMISSIONS.PL_WAGES_VIEW),
+  canView,
   validate({ query: listQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const filters = req.query as unknown as ListQuery
 
-    const conditions = ['c.organization_id = $1']
-    const params: unknown[] = [auth.organizationId]
+    const scope = resolveScope(auth, { all: PERMISSIONS.PL_WAGES_VIEW, team: PERMISSIONS.PL_WAGES_VIEW_TEAM })
+    const clause = scopeClause(auth, scope, 'e', 1)
+    const conditions = [`(${clause.sql})`]
+    const params: unknown[] = [...clause.params]
     const push = (value: unknown): number => {
       params.push(value)
       return params.length
@@ -236,14 +257,20 @@ plWagesRouter.get(
 /** Generates (or refreshes any still-PENDING/NOT_ELIGIBLE row) for every employee with payroll that year. */
 plWagesRouter.post(
   '/generate',
-  requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
+  canManage,
   validate({ body: generateSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const input = req.body as GenerateInput
+    const allowed = await manageableIds(auth)
 
     const { created, assessments } = await withTransaction(async (tx) => {
-      const lines = await loadYearLines(auth.organizationId, input.creditYear, tx)
+      let lines = await loadYearLines(auth.organizationId, input.creditYear, tx)
+      // A supervisor assesses only their own team.
+      if (allowed) {
+        const team = new Set(allowed)
+        lines = lines.filter((line) => team.has(line.employee_id))
+      }
       if (lines.length === 0) {
         throw ApiError.businessRule(`There is no approved payroll for ${input.creditYear} to assess yet`)
       }
@@ -309,7 +336,7 @@ plWagesRouter.post(
 /** Approves an eligible credit, ready to be paid. */
 plWagesRouter.patch(
   '/:id/approve',
-  requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
+  canManage,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -317,6 +344,7 @@ plWagesRouter.patch(
 
     const existing = await findCredit(id, auth.organizationId)
     if (!existing) throw ApiError.notFound('PL Wages credit')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     if (existing.status !== 'PENDING') {
       throw ApiError.businessRule('Only a pending, eligible credit can be approved')
     }
@@ -342,18 +370,21 @@ plWagesRouter.patch(
 /** Approves every pending credit among the chosen ones; anything else is skipped. */
 plWagesRouter.post(
   '/approve',
-  requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
+  canManage,
   validate({ body: bulkApproveSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const ids = [...new Set((req.body as BulkApproveInput).ids)]
+    const allowed = await manageableIds(auth)
 
+    // A supervisor's batch approves only their team's credits; the rest are skipped.
     const rows = await queryRows<{ id: string }>(
       pool,
       `UPDATE pl_wages_credits SET status = 'APPROVED'
         WHERE id = ANY($1::uuid[]) AND organization_id = $2 AND status = 'PENDING'
+          AND ($3::uuid[] IS NULL OR employee_id = ANY($3::uuid[]))
         RETURNING id`,
-      [ids, auth.organizationId],
+      [ids, auth.organizationId, allowed],
     )
     if (rows.length === 0) throw ApiError.businessRule('None of the chosen credits is pending approval')
 
@@ -376,12 +407,13 @@ plWagesRouter.post(
 
 plWagesRouter.delete(
   '/:id',
-  requirePermissions(PERMISSIONS.PL_WAGES_MANAGE),
+  canManage,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const existing = await findCredit(req.params.id as string, auth.organizationId)
     if (!existing) throw ApiError.notFound('PL Wages credit')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     if (existing.status === 'APPROVED' || existing.status === 'PAID') {
       throw ApiError.businessRule('An approved or paid credit cannot be deleted')
     }
@@ -405,6 +437,8 @@ mountPayoutRoutes(plWagesRouter, {
   folder: 'pl-wages-proof',
   view: PERMISSIONS.PL_WAGES_VIEW,
   manage: PERMISSIONS.PL_WAGES_MANAGE,
+  viewTeam: PERMISSIONS.PL_WAGES_VIEW_TEAM,
+  manageTeam: PERMISSIONS.PL_WAGES_MANAGE_TEAM,
   entityType: 'pl_wages_credit',
   paidAction: 'PL_WAGES_MARKED_PAID',
   unpaidAction: 'PL_WAGES_MARKED_UNPAID',

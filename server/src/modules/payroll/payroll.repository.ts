@@ -284,6 +284,47 @@ export async function refreshRunTotals(runId: string, db: Queryable = pool): Pro
   )
 }
 
+export type RunTotals = Pick<
+  PayrollRunRow,
+  | 'total_employees'
+  | 'total_gross'
+  | 'total_deductions'
+  | 'total_overtime'
+  | 'total_credits'
+  | 'total_net'
+  | 'total_paid'
+  | 'total_pending'
+>
+
+/**
+ * The totals of each run over only the employees in `scope`, for a caller who
+ * may not see the whole run. Same sums as `refreshRunTotals`.
+ */
+export async function scopedRunTotals(
+  scope: ScopeClause,
+  runIds: string[],
+  db: Queryable = pool,
+): Promise<Map<string, RunTotals>> {
+  const rows = await queryRows<RunTotals & { payroll_run_id: string }>(
+    db,
+    `SELECT i.payroll_run_id,
+            count(*)::int                             AS total_employees,
+            coalesce(sum(i.gross_earnings), 0)::text   AS total_gross,
+            coalesce(sum(i.total_deductions), 0)::text AS total_deductions,
+            coalesce(sum(i.total_overtime), 0)::text   AS total_overtime,
+            coalesce(sum(i.total_credits), 0)::text    AS total_credits,
+            coalesce(sum(i.net_salary), 0)::text       AS total_net,
+            coalesce(sum(i.paid_amount), 0)::text      AS total_paid,
+            coalesce(sum(i.pending_amount), 0)::text   AS total_pending
+       FROM payroll_items i
+       JOIN employees e ON e.id = i.employee_id
+      WHERE (${scope.sql}) AND i.payroll_run_id = ANY($${scope.params.length + 1}::uuid[])
+      GROUP BY i.payroll_run_id`,
+    [...scope.params, runIds],
+  )
+  return new Map(rows.map(({ payroll_run_id, ...totals }) => [payroll_run_id, totals]))
+}
+
 export async function deleteRunItems(runId: string, db: Queryable): Promise<void> {
   await db.query('DELETE FROM payroll_items WHERE payroll_run_id = $1', [runId])
 }
@@ -408,10 +449,15 @@ export async function insertItemComponents(
   }
 }
 
+/**
+ * `scope`, when given, narrows the items to the employees it admits; it is
+ * built on the employees alias `e` from the placeholder number it is handed.
+ */
 export async function listItems(
   runId: string,
   organizationId: string,
   filters: { search?: string; departmentId?: string[]; paymentStatus?: string; page: number; pageSize: number },
+  scope?: (startIndex: number) => ScopeClause,
   db: Queryable = pool,
 ): Promise<{ rows: PayrollItemRow[]; total: number }> {
   const conditions = ['i.payroll_run_id = $1', 'i.organization_id = $2']
@@ -419,6 +465,12 @@ export async function listItems(
   const push = (value: unknown): number => {
     params.push(value)
     return params.length
+  }
+
+  if (scope) {
+    const clause = scope(params.length + 1)
+    conditions.push(`(${clause.sql})`)
+    params.push(...clause.params)
   }
 
   if (filters.search) {
@@ -533,21 +585,6 @@ export async function listItemsForEmployee(
   )
 }
 
-export async function listItemsForScope(
-  scope: ScopeClause,
-  runId: string,
-  db: Queryable = pool,
-): Promise<PayrollItemRow[]> {
-  return queryRows<PayrollItemRow>(
-    db,
-    `SELECT i.* FROM payroll_items i
-       JOIN employees e ON e.id = i.employee_id
-      WHERE (${scope.sql}) AND i.payroll_run_id = $${scope.params.length + 1}
-      ORDER BY i.employee_code`,
-    [...scope.params, runId],
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Adjustments
 // ---------------------------------------------------------------------------
@@ -629,13 +666,14 @@ const ADJUSTMENT_SELECT = `
     LEFT JOIN payroll_runs r
       ON r.organization_id = a.organization_id AND r.year = a.apply_year AND r.month = a.apply_month`
 
+/** `scope` is built with the employees alias `e` and `$1` as its first placeholder. */
 export async function listAdjustments(
-  organizationId: string,
+  scope: ScopeClause,
   filters: { employeeId?: string; year?: number; month?: number; appliedOnly?: boolean; componentCodePrefix?: string },
   db: Queryable = pool,
 ): Promise<PayrollAdjustmentRow[]> {
-  const conditions = ['a.organization_id = $1']
-  const params: unknown[] = [organizationId]
+  const conditions = [`(${scope.sql})`]
+  const params: unknown[] = [...scope.params]
   const push = (value: unknown): number => {
     params.push(value)
     return params.length

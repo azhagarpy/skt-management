@@ -36,7 +36,7 @@ export default function SalaryPage() {
   const tabs = [
     { key: 'structures', label: 'Structures' },
     { key: 'components', label: 'Components' },
-    ...(can('salary.manage') ? [{ key: 'assign', label: 'Assign salary' }] : []),
+    ...(can('salary.manage') || can('salary.manage.team') ? [{ key: 'assign', label: 'Assign salary' }] : []),
     ...(canManageStructures ? [{ key: 'pf-esi', label: 'PF, ESI & policy' }] : []),
   ]
 

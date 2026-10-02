@@ -114,8 +114,11 @@ export default function TaxPage() {
       />
 
       {tab === 'slabs' ? <SlabsTab canManage={can('tax.manage')} /> : null}
-      {tab === 'deductions' ? <DeductionsTab canManage={can('tax.manage')} /> : null}
-      {tab === 'report' ? <ReportTab canManage={can('tax.manage')} onDeducted={() => setTab('deductions')} /> : null}
+      {/* The slabs are the company's; deductions can also be set for a supervisor's own team. */}
+      {tab === 'deductions' ? <DeductionsTab canManage={can('tax.manage') || can('tax.manage.team')} /> : null}
+      {tab === 'report' ? (
+        <ReportTab canManage={can('tax.manage') || can('tax.manage.team')} onDeducted={() => setTab('deductions')} />
+      ) : null}
     </div>
   )
 }

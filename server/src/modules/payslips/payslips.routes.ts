@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requireAnyPermission, requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendSuccess } from '../../utils/http.js'
@@ -13,7 +13,13 @@ import * as service from './payslips.service.js'
 export const payslipRouter = Router()
 payslipRouter.use(authenticate)
 
-const canView = requireAnyPermission(PERMISSIONS.PAYSLIP_VIEW_ALL, PERMISSIONS.PAYSLIP_VIEW_SELF)
+const canView = requireAnyPermission(
+  PERMISSIONS.PAYSLIP_VIEW_ALL,
+  PERMISSIONS.PAYSLIP_VIEW_TEAM,
+  PERMISSIONS.PAYSLIP_VIEW_SELF,
+)
+/** Run-wide actions; a supervisor's are narrowed to their team in the service. */
+const canViewOthers = requireAnyPermission(PERMISSIONS.PAYSLIP_VIEW_ALL, PERMISSIONS.PAYSLIP_VIEW_TEAM)
 
 payslipRouter.get(
   '/',
@@ -69,7 +75,7 @@ payslipRouter.get(
 /** One PDF of several employees' payslips for the same run, an admin/supervisor-only action. */
 payslipRouter.post(
   '/bulk-download',
-  requirePermissions(PERMISSIONS.PAYSLIP_VIEW_ALL),
+  canViewOthers,
   validate({ body: z.object({ payrollRunId: z.string().uuid(), employeeIds: z.array(z.string().uuid()).max(300).optional() }) }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -87,7 +93,7 @@ payslipRouter.post(
 /** Sends the payslip PDF to each employee's WhatsApp - an admin/supervisor action. */
 payslipRouter.post(
   '/send-whatsapp',
-  requirePermissions(PERMISSIONS.PAYSLIP_VIEW_ALL),
+  canViewOthers,
   validate({ body: z.object({ payrollRunId: z.string().uuid(), employeeIds: z.array(z.string().uuid()).max(100).optional() }) }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)

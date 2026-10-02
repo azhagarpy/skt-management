@@ -32,7 +32,7 @@ export default function PayrollItemPage() {
   const { id } = useParams<{ id: string }>()
   const toast = useToast()
   const queryClient = useQueryClient()
-  const { can } = useAuth()
+  const { can, user } = useAuth()
 
   const [paying, setPaying] = useState(false)
   const [reverseTarget, setReverseTarget] = useState<PaymentTransaction | null>(null)
@@ -51,7 +51,7 @@ export default function PayrollItemPage() {
   })
 
   const [proofFile, setProofFile] = useState<File | null>(null)
-  const canSeePayments = can('payment.view.all') || can('payment.view.self')
+  const canSeePayments = can('payment.view.all') || can('payment.view.team') || can('payment.view.self')
 
   const paymentsQuery = useQuery({
     queryKey: ['payroll', 'item', id, 'payments'],
@@ -117,6 +117,9 @@ export default function PayrollItemPage() {
 
   const ledger = paymentsQuery.data
   const remaining = item.pendingAmount
+  // A supervisor records payments for their team, never for their own salary.
+  const canManagePayments =
+    can('payment.manage') || (can('payment.manage.team') && item.employeeId !== user?.employeeId)
 
   return (
     <div className="page">
@@ -129,7 +132,7 @@ export default function PayrollItemPage() {
         title={item.employeeName}
         description={`${item.employeeCode}${item.departmentName ? ` · ${item.departmentName}` : ''} · ${humanise(item.salaryBasis)} paid`}
         actions={
-          can('payment.manage') && remaining > 0 ? (
+          canManagePayments && remaining > 0 ? (
             <Button icon={<Plus size={15} />} onClick={() => setPaying(true)}>
               Record payment
             </Button>
@@ -306,7 +309,7 @@ export default function PayrollItemPage() {
                   <th>Transaction ID</th>
                   <th>Proof</th>
                   <th>Recorded by</th>
-                  {can('payment.manage') ? <th className="align-right">Actions</th> : null}
+                  {canManagePayments ? <th className="align-right">Actions</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -335,7 +338,7 @@ export default function PayrollItemPage() {
                       )}
                     </td>
                     <td data-label="Recorded by">{transaction.createdByName ?? '—'}</td>
-                    {can('payment.manage') ? (
+                    {canManagePayments ? (
                       <td data-label="Actions" className="align-right">
                         {transaction.isReversed ? (
                           <span className="subtle">{transaction.reversalReason}</span>

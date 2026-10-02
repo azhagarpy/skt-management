@@ -7,7 +7,7 @@ import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as service from './employees.service.js'
 import * as importService from './employee-import.service.js'
-import { assertEmployeeInScope, requireOwnEmployeeId, resolveScope } from './employee-access.js'
+import { assertCanManageEmployee, assertEmployeeInScope, requireOwnEmployeeId, resolveScope } from './employee-access.js'
 import type {
   AddressInput,
   CreateEmployeeInput,
@@ -24,6 +24,20 @@ import type { AuthContext } from '../../types/express.js'
 function targetEmployeeId(auth: AuthContext, param: string | undefined): string {
   if (!param || param === 'me') return requireOwnEmployeeId(auth)
   return param
+}
+
+/**
+ * Who may change an employee's address, emergency contact and photo: an
+ * administrator for anyone, a supervisor for their team, and everyone for
+ * themselves.
+ */
+async function assertCanEditDetails(auth: AuthContext, employeeId: string): Promise<void> {
+  if (auth.has(PERMISSIONS.EMPLOYEE_UPDATE)) return assertEmployeeInScope(auth, employeeId, 'ALL')
+  if (employeeId !== auth.employeeId && auth.has(PERMISSIONS.EMPLOYEE_UPDATE_TEAM)) {
+    return assertCanManageEmployee(auth, employeeId, 'TEAM')
+  }
+  if (!auth.has(PERMISSIONS.EMPLOYEE_UPDATE_SELF)) throw ApiError.forbidden('You do not have permission to perform this action')
+  return assertEmployeeInScope(auth, employeeId, 'SELF')
 }
 
 export const listEmployees = asyncHandler(async (req: Request, res: Response) => {
@@ -87,7 +101,6 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 export const updateEmployee = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   const employeeId = targetEmployeeId(auth, req.params.id)
-  await assertEmployeeInScope(auth, employeeId, 'ALL')
   const data = await service.updateEmployee(auth, employeeId, req.body as UpdateEmployeeInput, auditContextFrom(req))
   return sendSuccess(res, data, 'Employee updated successfully')
 })
@@ -111,8 +124,7 @@ export const deleteEmployee = asyncHandler(async (req: Request, res: Response) =
 export const upsertAddress = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   const employeeId = targetEmployeeId(auth, req.params.id)
-  const scope = auth.has(PERMISSIONS.EMPLOYEE_UPDATE) ? 'ALL' : 'SELF'
-  await assertEmployeeInScope(auth, employeeId, scope)
+  await assertCanEditDetails(auth, employeeId)
   const data = await service.upsertAddress(auth, employeeId, req.body as AddressInput, auditContextFrom(req))
   return sendSuccess(res, data, 'Address saved successfully')
 })
@@ -120,8 +132,7 @@ export const upsertAddress = asyncHandler(async (req: Request, res: Response) =>
 export const upsertEmergencyContact = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   const employeeId = targetEmployeeId(auth, req.params.id)
-  const scope = auth.has(PERMISSIONS.EMPLOYEE_UPDATE) ? 'ALL' : 'SELF'
-  await assertEmployeeInScope(auth, employeeId, scope)
+  await assertCanEditDetails(auth, employeeId)
   const data = await service.upsertEmergencyContact(
     auth,
     employeeId,
@@ -152,8 +163,7 @@ export const getEmployeePhoto = asyncHandler(async (req: Request, res: Response)
 export const uploadEmployeePhoto = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   const employeeId = targetEmployeeId(auth, req.params.id)
-  const scope = auth.has(PERMISSIONS.EMPLOYEE_UPDATE) ? 'ALL' : 'SELF'
-  await assertEmployeeInScope(auth, employeeId, scope)
+  await assertCanEditDetails(auth, employeeId)
   if (!req.file) throw ApiError.badRequest('Attach a PNG or JPEG photo under the "file" field')
 
   const data = await service.uploadEmployeePhoto(auth, employeeId, req.file, auditContextFrom(req))
@@ -163,8 +173,7 @@ export const uploadEmployeePhoto = asyncHandler(async (req: Request, res: Respon
 export const removeEmployeePhoto = asyncHandler(async (req: Request, res: Response) => {
   const auth = requireAuth(req)
   const employeeId = targetEmployeeId(auth, req.params.id)
-  const scope = auth.has(PERMISSIONS.EMPLOYEE_UPDATE) ? 'ALL' : 'SELF'
-  await assertEmployeeInScope(auth, employeeId, scope)
+  await assertCanEditDetails(auth, employeeId)
   await service.removeEmployeePhoto(auth, employeeId, auditContextFrom(req))
   return sendNoContent(res, 'Photo removed successfully')
 })

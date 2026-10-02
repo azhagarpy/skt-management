@@ -41,6 +41,9 @@ const canView = requireAnyPermission(
   PERMISSIONS.PAYROLL_VIEW_TEAM,
   PERMISSIONS.PAYROLL_VIEW_SELF,
 )
+// Team permissions are narrowed to the caller's team in the payments service.
+const canViewPayments = requireAnyPermission(PERMISSIONS.PAYMENT_VIEW_ALL, PERMISSIONS.PAYMENT_VIEW_TEAM)
+const canManagePayments = requireAnyPermission(PERMISSIONS.PAYMENT_MANAGE, PERMISSIONS.PAYMENT_MANAGE_TEAM)
 
 // ---------------------------------------------------------------------------
 // Runs
@@ -182,7 +185,7 @@ payrollRouter.get(
 
 payrollRouter.get(
   '/runs/:id/payment-summary',
-  requirePermissions(PERMISSIONS.PAYMENT_VIEW_ALL),
+  canViewPayments,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -235,7 +238,7 @@ payrollRouter.get(
 
 payrollRouter.get(
   '/:payrollItemId/payments',
-  requireAnyPermission(PERMISSIONS.PAYMENT_VIEW_ALL, PERMISSIONS.PAYMENT_VIEW_SELF),
+  requireAnyPermission(PERMISSIONS.PAYMENT_VIEW_ALL, PERMISSIONS.PAYMENT_VIEW_TEAM, PERMISSIONS.PAYMENT_VIEW_SELF),
   validate({ params: itemIdParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -245,7 +248,7 @@ payrollRouter.get(
 
 payrollRouter.post(
   '/:payrollItemId/payments',
-  requirePermissions(PERMISSIONS.PAYMENT_MANAGE),
+  canManagePayments,
   validate({ params: itemIdParam, body: paymentsService.paymentCreateSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -263,9 +266,11 @@ payrollRouter.post(
 // Adjustments
 // ---------------------------------------------------------------------------
 
+const canAdjust = requireAnyPermission(PERMISSIONS.PAYROLL_ADJUST, PERMISSIONS.PAYROLL_ADJUST_TEAM)
+
 payrollRouter.get(
   '/adjustments',
-  requireAnyPermission(PERMISSIONS.PAYROLL_ADJUST, PERMISSIONS.PAYROLL_VIEW_ALL),
+  requireAnyPermission(PERMISSIONS.PAYROLL_ADJUST, PERMISSIONS.PAYROLL_ADJUST_TEAM, PERMISSIONS.PAYROLL_VIEW_ALL),
   validate({ query: adjustmentListQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -275,7 +280,7 @@ payrollRouter.get(
 
 payrollRouter.post(
   '/adjustments',
-  requirePermissions(PERMISSIONS.PAYROLL_ADJUST),
+  canAdjust,
   validate({ body: adjustmentCreateSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -286,7 +291,7 @@ payrollRouter.post(
 
 payrollRouter.delete(
   '/adjustments/:id',
-  requirePermissions(PERMISSIONS.PAYROLL_ADJUST),
+  canAdjust,
   validate({ params: z.object({ id: z.string().uuid() }) }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -311,7 +316,7 @@ paymentRouter.use(authenticate)
 
 paymentRouter.post(
   '/bulk',
-  requirePermissions(PERMISSIONS.PAYMENT_MANAGE),
+  canManagePayments,
   // multer runs first so a multipart body (the form with a reference document) is parsed;
   // a plain JSON request passes straight through it.
   uploadPaymentProof,
@@ -331,7 +336,7 @@ paymentRouter.post(
 // Proof of payment: upload, fetch, remove.
 paymentRouter.post(
   '/:id/proof',
-  requirePermissions(PERMISSIONS.PAYMENT_MANAGE),
+  canManagePayments,
   uploadSingleDocument,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
@@ -349,7 +354,7 @@ paymentRouter.post(
 
 paymentRouter.get(
   '/:id/proof',
-  requirePermissions(PERMISSIONS.PAYMENT_VIEW_ALL),
+  canViewPayments,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -365,7 +370,7 @@ paymentRouter.get(
 
 paymentRouter.delete(
   '/:id/proof',
-  requirePermissions(PERMISSIONS.PAYMENT_MANAGE),
+  canManagePayments,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -376,7 +381,7 @@ paymentRouter.delete(
 
 paymentRouter.post(
   '/:id/reverse',
-  requirePermissions(PERMISSIONS.PAYMENT_MANAGE),
+  canManagePayments,
   validate({ params: idParam, body: paymentsService.paymentReverseSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)

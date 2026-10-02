@@ -204,13 +204,18 @@ export interface TaxReport {
 
 const round2 = (value: number): number => Math.round(value * 100) / 100
 
-export async function buildTaxReport(organizationId: string, query: TaxReportQuery): Promise<TaxReport> {
+/** `employeeIds`, when given, limits the report to those employees (a supervisor's team). */
+export async function buildTaxReport(
+  organizationId: string,
+  query: TaxReportQuery,
+  employeeIds?: string[],
+): Promise<TaxReport> {
   const slabs = await loadSlabs(organizationId)
 
   // The wage matrix is the one the bonus statement is built on; the bonus
   // percentage and minimum days it also takes are irrelevant here.
   const statement = await buildStatement(
-    { organizationId },
+    { organizationId, employeeIds },
     { ...query, percentage: 1, minManDays: 0 },
   )
   return assembleTaxReport(statement.months, statement.rows, slabs, query)

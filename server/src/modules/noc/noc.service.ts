@@ -3,6 +3,8 @@ import { pool, queryOne } from '../../database/pool.js'
 import { todayIso } from '../../utils/dates.js'
 import { loadLetterhead } from '../../utils/pdf.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
+import { PERMISSIONS } from '../auth/permissions.js'
+import { assertCanManageEmployee, resolveScope } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import { renderNocPdf } from './noc-pdf.js'
 
@@ -39,6 +41,11 @@ export async function generateNoc(
   purpose: string | undefined,
   context: AuditContext,
 ) {
+  // A letter issued in the company's name: a supervisor may issue one for their
+  // team, but not for themselves.
+  const scope = resolveScope(auth, { all: PERMISSIONS.PAYSLIP_VIEW_ALL, team: PERMISSIONS.PAYSLIP_VIEW_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
+
   const employee = await queryOne<EmployeeForNoc>(
     pool,
     `SELECT e.id, e.employee_code, e.first_name, e.middle_name, e.last_name,

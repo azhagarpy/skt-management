@@ -35,6 +35,8 @@ export default function PaymentsPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { can } = useAuth()
+  // A supervisor pays their own team; the server skips anyone else in a batch.
+  const canManage = can('payment.manage') || can('payment.manage.team')
 
   const [runId, setRunId] = useState(searchParams.get('runId') ?? '')
   const [page, setPage] = useState(1)
@@ -122,7 +124,7 @@ export default function PaymentsPage() {
     .reduce((sum, item) => sum + item.pendingAmount, 0)
 
   const columns: Column<PayrollItem>[] = [
-    ...(can('payment.manage')
+    ...(canManage
       ? [
           {
             key: 'select',
@@ -189,7 +191,7 @@ export default function PaymentsPage() {
                 Export
               </Button>
             ) : null}
-            {can('payment.manage') ? (
+            {canManage ? (
               <Button icon={<Wallet size={15} />} disabled={selected.size === 0} onClick={() => setBulkOpen(true)}>
                 Pay selected ({selected.size})
               </Button>
@@ -250,7 +252,7 @@ export default function PaymentsPage() {
                 </Select>
               </Field>
 
-              {can('payment.manage') && outstandingItems.length > 0 ? (
+              {canManage && outstandingItems.length > 0 ? (
                 <div className="filter-bar-actions">
                   <Button
                     variant="secondary"

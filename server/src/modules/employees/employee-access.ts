@@ -116,6 +116,58 @@ export async function assertEmployeeInScope(
 }
 
 /**
+ * As `assertEmployeeInScope`, for an action that changes the employee's records.
+ * A supervisor or manager acting through their team scope may not change their
+ * own - their salary, bonuses or pay are someone else's to decide, just as their
+ * own leave is someone else's to approve.
+ */
+export async function assertCanManageEmployee(
+  auth: AuthContext,
+  employeeId: string,
+  scope: EmployeeScope,
+  db: Queryable = pool,
+): Promise<void> {
+  await assertEmployeeInScope(auth, employeeId, scope, db)
+  if (scope === 'TEAM' && employeeId === auth.employeeId) {
+    throw ApiError.forbidden('You cannot change your own records')
+  }
+}
+
+/** The bulk form of `assertCanManageEmployee`, in one query. */
+export async function assertCanManageEmployees(
+  auth: AuthContext,
+  employeeIds: string[],
+  scope: EmployeeScope,
+  db: Queryable = pool,
+): Promise<void> {
+  const ids = [...new Set(employeeIds)]
+  if (ids.length === 0) return
+
+  const clause = scopeClause(auth, scope, 'e', 2)
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT e.id FROM employees e WHERE e.id = ANY($1::uuid[]) AND ${clause.sql}`,
+    [ids, ...clause.params],
+  )
+  if (rows.length !== ids.length) {
+    throw scope === 'TEAM' ? ApiError.forbidden('Some of these employees are not assigned to you') : ApiError.notFound('Employee')
+  }
+  if (scope === 'TEAM' && auth.employeeId && ids.includes(auth.employeeId)) {
+    throw ApiError.forbidden('You cannot change your own records')
+  }
+}
+
+/**
+ * The employees a team-scoped caller may change: their team without
+ * themselves. Used to narrow "everyone" actions, such as generating a year's
+ * contributions, to the caller's team.
+ */
+export async function manageableTeamIds(auth: AuthContext, db: Queryable = pool): Promise<string[]> {
+  const clause = scopeClause(auth, 'TEAM', 'e', 1)
+  const { rows } = await db.query<{ id: string }>(`SELECT e.id FROM employees e WHERE ${clause.sql}`, clause.params)
+  return rows.map((row) => row.id).filter((id) => id !== auth.employeeId)
+}
+
+/**
  * The in-memory twin of the TEAM predicate in `scopeClause`: the employee is
  * the caller, reports to them, is a supervisor assigned to them as manager, or
  * reports to such a supervisor.

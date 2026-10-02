@@ -198,7 +198,8 @@ export default function PayrollRunPage() {
   const run = runQuery.data
   if (!run) return null
 
-  const canBulkDownload = can('payslip.view.all') && (run.status === 'APPROVED' || run.status === 'LOCKED')
+  const canBulkDownload =
+    (can('payslip.view.all') || can('payslip.view.team')) && (run.status === 'APPROVED' || run.status === 'LOCKED')
 
   const toggleSelected = (employeeId: string, checked: boolean): void => {
     setSelected((current) => {
@@ -352,7 +353,7 @@ export default function PayrollRunPage() {
               </Button>
             ) : null}
 
-            {can('payment.view.all') && (run.status === 'APPROVED' || run.status === 'LOCKED') ? (
+            {(can('payment.view.all') || can('payment.view.team')) && (run.status === 'APPROVED' || run.status === 'LOCKED') ? (
               <Button variant="secondary" icon={<Wallet size={15} />} onClick={() => navigate(`/payments?runId=${run.id}`)}>
                 Payments
               </Button>

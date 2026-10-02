@@ -32,7 +32,12 @@ const canRead = requireAnyPermission(
   PERMISSIONS.DOCUMENT_VIEW_TEAM,
   PERMISSIONS.DOCUMENT_VIEW_SELF,
 )
-const canWrite = requireAnyPermission(PERMISSIONS.DOCUMENT_UPLOAD_ANY, PERMISSIONS.DOCUMENT_UPLOAD_SELF)
+const canWrite = requireAnyPermission(
+  PERMISSIONS.DOCUMENT_UPLOAD_ANY,
+  PERMISSIONS.DOCUMENT_UPLOAD_TEAM,
+  PERMISSIONS.DOCUMENT_UPLOAD_SELF,
+)
+const canVerify = requireAnyPermission(PERMISSIONS.DOCUMENT_VERIFY, PERMISSIONS.DOCUMENT_VERIFY_TEAM)
 
 const documentIdParam = employeeIdParam.extend({ documentId: z.string().uuid() })
 
@@ -61,7 +66,7 @@ documentRouter.get(
 
 documentRouter.post(
   '/documents/:documentId/verify',
-  requirePermissions(PERMISSIONS.DOCUMENT_VERIFY),
+  canVerify,
   validate({ params: documentIdParam, body: verifyDocumentSchema }),
   controller.verifyDocument,
 )
@@ -97,7 +102,7 @@ documentRouter.put('/esi', canWrite, validate({ params: employeeIdParam, body: e
 
 documentRouter.post(
   '/verify-section',
-  requirePermissions(PERMISSIONS.DOCUMENT_VERIFY),
+  canVerify,
   validate({ params: employeeIdParam, body: verifySectionSchema }),
   controller.verifySection,
 )

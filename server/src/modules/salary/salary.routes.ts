@@ -151,7 +151,7 @@ employeeSalaryRouter.get(
 
 employeeSalaryRouter.post(
   '/salary',
-  requirePermissions(PERMISSIONS.SALARY_MANAGE),
+  requireAnyPermission(PERMISSIONS.SALARY_MANAGE, PERMISSIONS.SALARY_MANAGE_TEAM),
   validate({ params: employeeIdParam, body: assignSalarySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)

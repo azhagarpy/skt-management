@@ -95,7 +95,7 @@ export default function BonusesPage() {
   const [paying, setPaying] = useState<{ ids: string[]; row: Bonus | null } | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  const canManage = can('bonus.manage')
+  const canManage = can('bonus.manage') || can('bonus.manage.team')
 
   const filters = {
     payrollYear: year,

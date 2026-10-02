@@ -150,7 +150,7 @@ export function AppRouter() {
           <Route
             path="/employees/new"
             element={
-              <Protected anyOf={['employee.create']}>
+              <Protected anyOf={['employee.create', 'employee.create.team']}>
                 <EmployeeFormPage />
               </Protected>
             }
@@ -166,7 +166,7 @@ export function AppRouter() {
           <Route
             path="/employees/:id/edit"
             element={
-              <Protected anyOf={['employee.update']}>
+              <Protected anyOf={['employee.update', 'employee.update.team']}>
                 <EmployeeFormPage />
               </Protected>
             }
@@ -256,7 +256,7 @@ export function AppRouter() {
           <Route
             path="/payslips-noc"
             element={
-              <Protected anyOf={['payslip.view.all']}>
+              <Protected anyOf={['payslip.view.all', 'payslip.view.team']}>
                 <PayslipDocumentsPage />
               </Protected>
             }
@@ -272,7 +272,7 @@ export function AppRouter() {
           <Route
             path="/payments"
             element={
-              <Protected anyOf={['payment.view.all']}>
+              <Protected anyOf={['payment.view.all', 'payment.view.team']}>
                 <PaymentsPage />
               </Protected>
             }
@@ -280,7 +280,7 @@ export function AppRouter() {
           <Route
             path="/bonuses"
             element={
-              <Protected anyOf={['bonus.view']}>
+              <Protected anyOf={['bonus.view', 'bonus.view.team']}>
                 <BonusesPage />
               </Protected>
             }
@@ -288,7 +288,7 @@ export function AppRouter() {
           <Route
             path="/other-deductions"
             element={
-              <Protected anyOf={['payroll.adjust', 'payroll.view.all']}>
+              <Protected anyOf={['payroll.adjust', 'payroll.adjust.team', 'payroll.view.all']}>
                 <OtherDeductionsPage />
               </Protected>
             }
@@ -296,7 +296,7 @@ export function AppRouter() {
           <Route
             path="/other-credits"
             element={
-              <Protected anyOf={['payroll.adjust', 'payroll.view.all']}>
+              <Protected anyOf={['payroll.adjust', 'payroll.adjust.team', 'payroll.view.all']}>
                 <OtherCreditsPage />
               </Protected>
             }
@@ -304,7 +304,7 @@ export function AppRouter() {
           <Route
             path="/tax"
             element={
-              <Protected anyOf={['tax.view']}>
+              <Protected anyOf={['tax.view', 'tax.view.team']}>
                 <TaxPage />
               </Protected>
             }
@@ -312,7 +312,7 @@ export function AppRouter() {
           <Route
             path="/lwf"
             element={
-              <Protected anyOf={['lwf.view']}>
+              <Protected anyOf={['lwf.view', 'lwf.view.team']}>
                 <LwfPage />
               </Protected>
             }
@@ -320,7 +320,7 @@ export function AppRouter() {
           <Route
             path="/pl-wages"
             element={
-              <Protected anyOf={['plwages.view']}>
+              <Protected anyOf={['plwages.view', 'plwages.view.team']}>
                 <PlWagesPage />
               </Protected>
             }

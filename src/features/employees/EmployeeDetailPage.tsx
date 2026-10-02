@@ -128,9 +128,11 @@ export default function EmployeeDetailPage() {
   if (!data) return null
 
   const isSelf = data.id === user?.employeeId
-  const canEdit = can('employee.update')
+  // Team permissions reach only the people this page can show, and never the viewer themselves.
+  const canEdit = can('employee.update') || (!isSelf && can('employee.update.team'))
   const canEditPhoto = canEdit || (isSelf && can('employee.update.self'))
-  const canEditDocuments = can('document.upload.any') || (isSelf && can('document.upload.self'))
+  const canEditDocuments =
+    can('document.upload.any') || can('document.upload.team') || (isSelf && can('document.upload.self'))
 
   const tabs = [
     { key: 'overview', label: 'Overview' },

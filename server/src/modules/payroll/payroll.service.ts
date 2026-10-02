@@ -12,7 +12,13 @@ import {
 import { toMajor, toMinor, toNumericString } from '../../utils/money.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertEmployeeInScope, resolveScope, scopeClause } from '../employees/employee-access.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
 import { buildCalendarContext, type CalendarContext } from '../calendar/calendar.service.js'
 import * as attendanceRepository from '../attendance/attendance.repository.js'
 import * as leaveRepository from '../leave/leave.repository.js'
@@ -285,15 +291,45 @@ export function toComponentInputs(structure: salaryRepository.SalaryStructureWit
 // Runs
 // ---------------------------------------------------------------------------
 
+/**
+ * A run's totals cover the whole company. A caller who sees only their team
+ * gets them recomputed over that team, so the header matches the items they
+ * can open and reveals nothing about anyone else's pay.
+ */
+async function withVisibleTotals(
+  auth: AuthContext,
+  rows: repository.PayrollRunRow[],
+): Promise<repository.PayrollRunRow[]> {
+  if (auth.has(PERMISSIONS.PAYROLL_VIEW_ALL) || rows.length === 0) return rows
+  const clause = scopeClause(auth, 'TEAM', 'e', 1)
+  const totals = await repository.scopedRunTotals(
+    clause,
+    rows.map((row) => row.id),
+  )
+  const none: repository.RunTotals = {
+    total_employees: 0,
+    total_gross: '0',
+    total_deductions: '0',
+    total_overtime: '0',
+    total_credits: '0',
+    total_net: '0',
+    total_paid: '0',
+    total_pending: '0',
+  }
+  return rows.map((row) => ({ ...row, ...(totals.get(row.id) ?? none) }))
+}
+
 export async function listRuns(auth: AuthContext, filters: RunListQuery) {
   const { rows, total } = await repository.listRuns(auth.organizationId, filters)
-  return buildPaginated(rows.map(presentRun), total, filters.page, filters.pageSize)
+  const visible = await withVisibleTotals(auth, rows)
+  return buildPaginated(visible.map(presentRun), total, filters.page, filters.pageSize)
 }
 
 export async function getRun(auth: AuthContext, id: string) {
   const row = await repository.findRun(id, auth.organizationId)
   if (!row) throw ApiError.notFound('Payroll run')
-  return presentRun(row)
+  const [visible] = await withVisibleTotals(auth, [row])
+  return presentRun(visible as repository.PayrollRunRow)
 }
 
 export async function createRun(auth: AuthContext, input: CreateRunInput, context: AuditContext) {
@@ -930,18 +966,17 @@ export async function listItems(
   if (!run) throw ApiError.notFound('Payroll run')
 
   // A supervisor with team payroll access sees only their team's items.
-  if (!auth.has(PERMISSIONS.PAYROLL_VIEW_ALL)) {
-    const scope = resolveScope(auth, {
-      all: PERMISSIONS.PAYROLL_VIEW_ALL,
-      team: PERMISSIONS.PAYROLL_VIEW_TEAM,
-      self: PERMISSIONS.PAYROLL_VIEW_SELF,
-    })
-    const clause = scopeClause(auth, scope, 'e', 1)
-    const rows = await repository.listItemsForScope(clause, runId)
-    return buildPaginated(rows.map(presentItem), rows.length, 1, Math.max(rows.length, 1))
-  }
-
-  const { rows, total } = await repository.listItems(runId, auth.organizationId, filters)
+  const scope = resolveScope(auth, {
+    all: PERMISSIONS.PAYROLL_VIEW_ALL,
+    team: PERMISSIONS.PAYROLL_VIEW_TEAM,
+    self: PERMISSIONS.PAYROLL_VIEW_SELF,
+  })
+  const { rows, total } = await repository.listItems(
+    runId,
+    auth.organizationId,
+    filters,
+    scope === 'ALL' ? undefined : (startIndex) => scopeClause(auth, scope, 'e', startIndex),
+  )
   return buildPaginated(rows.map(presentItem), total, filters.page, filters.pageSize)
 }
 
@@ -994,8 +1029,13 @@ export async function listMyPayroll(auth: AuthContext, employeeId: string, year:
 // Adjustments
 // ---------------------------------------------------------------------------
 
+/** Other deductions and credits: an administrator reaches everyone, a supervisor their team. */
+function adjustmentScope(auth: AuthContext): EmployeeScope {
+  return resolveScope(auth, { all: PERMISSIONS.PAYROLL_ADJUST, team: PERMISSIONS.PAYROLL_ADJUST_TEAM })
+}
+
 export async function createAdjustment(auth: AuthContext, input: AdjustmentCreateInput, context: AuditContext) {
-  await assertEmployeeInScope(auth, input.employeeId, 'ALL')
+  await assertCanManageEmployee(auth, input.employeeId, adjustmentScope(auth))
 
   // The target month must not already be closed.
   const targetRun = await repository.findRunByPeriod(auth.organizationId, input.applyYear, input.applyMonth)
@@ -1080,7 +1120,8 @@ export async function listAdjustments(
   auth: AuthContext,
   filters: { employeeId?: string; year?: number; month?: number; appliedOnly?: boolean; componentCodePrefix?: string },
 ) {
-  const rows = await repository.listAdjustments(auth.organizationId, filters)
+  const scope = auth.has(PERMISSIONS.PAYROLL_VIEW_ALL) ? 'ALL' : adjustmentScope(auth)
+  const rows = await repository.listAdjustments(scopeClause(auth, scope, 'e', 1), filters)
   return rows.map(presentAdjustment)
 }
 
@@ -1098,9 +1139,11 @@ export async function deleteAdjustment(
   id: string,
   context: AuditContext,
 ): Promise<{ runReturnedToDraft: { id: string; year: number; month: number } | null }> {
+  const scope = adjustmentScope(auth)
   return withTransaction(async (tx) => {
     const existing = await repository.findAdjustment(id, auth.organizationId, tx)
     if (!existing) throw ApiError.notFound('Payroll adjustment')
+    await assertCanManageEmployee(auth, existing.employee_id, scope, tx)
 
     const month = monthLabel(existing.apply_year, existing.apply_month)
     const found = await repository.findRunByPeriod(auth.organizationId, existing.apply_year, existing.apply_month, tx)

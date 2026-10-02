@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
 import { withTransaction } from '../../database/tx.js'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission, requirePermissions } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { sendNoContent, sendSuccess } from '../../utils/http.js'
@@ -24,6 +24,15 @@ import {
   type TaxReportQuery,
 } from './tax-report.js'
 import { buildExitTaxPreview, withdrawExitTax } from './tax-on-exit.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  manageableTeamIds,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
+import type { AuthContext } from '../../types/express.js'
 
 /**
  * Tax: the tax amount for each band of wages, and the report that applies the
@@ -116,9 +125,23 @@ async function presentSlabs(organizationId: string) {
 export const taxRouter = Router()
 taxRouter.use(authenticate)
 
+// The slabs are the company's; a supervisor reads them and works out, sets and
+// removes the tax of their own team, never their own.
+const canView = requireAnyPermission(PERMISSIONS.TAX_VIEW, PERMISSIONS.TAX_VIEW_TEAM)
+const canManage = requireAnyPermission(PERMISSIONS.TAX_MANAGE, PERMISSIONS.TAX_MANAGE_TEAM)
+const viewScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.TAX_VIEW, team: PERMISSIONS.TAX_VIEW_TEAM })
+const manageScope = (auth: AuthContext): EmployeeScope =>
+  resolveScope(auth, { all: PERMISSIONS.TAX_MANAGE, team: PERMISSIONS.TAX_MANAGE_TEAM })
+
+/** The employees a report covers: everyone, or those on the caller's team they may change. */
+async function reportEmployees(auth: AuthContext, scope: EmployeeScope): Promise<string[] | undefined> {
+  return scope === 'ALL' ? undefined : manageableTeamIds(auth)
+}
+
 taxRouter.get(
   '/slabs',
-  requirePermissions(PERMISSIONS.TAX_VIEW),
+  canView,
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     return sendSuccess(res, await presentSlabs(auth.organizationId))
@@ -161,22 +184,24 @@ taxRouter.put(
 
 taxRouter.get(
   '/report',
-  requirePermissions(PERMISSIONS.TAX_VIEW),
+  canView,
   validate({ query: taxReportQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
-    return sendSuccess(res, await buildTaxReport(auth.organizationId, req.query as unknown as TaxReportQuery))
+    const employees = await reportEmployees(auth, viewScope(auth))
+    return sendSuccess(res, await buildTaxReport(auth.organizationId, req.query as unknown as TaxReportQuery, employees))
   }),
 )
 
 taxRouter.get(
   '/report/export',
-  requirePermissions(PERMISSIONS.TAX_VIEW, PERMISSIONS.REPORT_EXPORT),
+  canView,
+  requirePermissions(PERMISSIONS.REPORT_EXPORT),
   validate({ query: taxReportQuerySchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const query = req.query as unknown as TaxReportQuery
-    const report = await buildTaxReport(auth.organizationId, query)
+    const report = await buildTaxReport(auth.organizationId, query, await reportEmployees(auth, viewScope(auth)))
 
     const organization = await queryOne<{ name: string }>(pool, 'SELECT name FROM organizations WHERE id = $1', [
       auth.organizationId,
@@ -207,16 +232,17 @@ taxRouter.get(
 
 taxRouter.get(
   '/deductions',
-  requirePermissions(PERMISSIONS.TAX_VIEW),
+  canView,
   validate({ query: deductionListSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const query = req.query as unknown as z.infer<typeof deductionListSchema>
-    const params: unknown[] = [auth.organizationId, query.payrollYear]
-    let month = ''
+    const clause = scopeClause(auth, viewScope(auth), 'e', 3)
+    const params: unknown[] = [auth.organizationId, query.payrollYear, ...clause.params]
+    let filters = `AND ${clause.sql}`
     if (query.payrollMonth) {
       params.push(query.payrollMonth)
-      month = `AND t.payroll_month = $${params.length}`
+      filters += ` AND t.payroll_month = $${params.length}`
     }
     const rows = await queryRows<TaxDeductionRow>(
       pool,
@@ -226,7 +252,7 @@ taxRouter.get(
          FROM tax_deductions t
          JOIN employees e ON e.id = t.employee_id
          LEFT JOIN departments d ON d.id = e.department_id
-        WHERE t.organization_id = $1 AND t.payroll_year = $2 ${month}
+        WHERE t.organization_id = $1 AND t.payroll_year = $2 ${filters}
         ORDER BY t.payroll_month DESC, e.employee_code`,
       params,
     )
@@ -246,14 +272,15 @@ taxRouter.get(
  */
 taxRouter.post(
   '/deductions',
-  requirePermissions(PERMISSIONS.TAX_MANAGE),
+  canManage,
   validate({ body: taxDeductSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const input = req.body as TaxDeductInput
     await assertPayrollOpen(auth.organizationId, input.payrollYear, input.payrollMonth)
 
-    const report = await buildTaxReport(auth.organizationId, input)
+    // A supervisor's report holds only their team, so only their rows are set or cleared.
+    const report = await buildTaxReport(auth.organizationId, input, await reportEmployees(auth, manageScope(auth)))
     const rows = report.groups.flatMap((group) => group.rows)
     if (rows.length === 0) {
       throw ApiError.businessRule('There is no payroll in that period, so there is no tax to deduct.')
@@ -347,10 +374,11 @@ taxRouter.post(
 /** The tax on exit an employee would have, for the administrator to confirm when marking them as left. */
 taxRouter.get(
   '/exit-deductions/:employeeId',
-  requirePermissions(PERMISSIONS.TAX_VIEW),
+  canView,
   validate({ params: employeeIdParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
+    await assertEmployeeInScope(auth, req.params.employeeId as string, viewScope(auth))
     return sendSuccess(res, await buildExitTaxPreview(auth.organizationId, req.params.employeeId as string))
   }),
 )
@@ -363,10 +391,11 @@ taxRouter.get(
  */
 taxRouter.post(
   '/exit-deductions/:employeeId',
-  requirePermissions(PERMISSIONS.TAX_MANAGE),
+  canManage,
   validate({ params: employeeIdParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
+    await assertCanManageEmployee(auth, req.params.employeeId as string, manageScope(auth))
     const preview = await buildExitTaxPreview(auth.organizationId, req.params.employeeId as string)
     if (preview.employmentStatus === 'INACTIVE') {
       throw ApiError.businessRule('An inactive employee is left out of payroll, so there is no final salary to deduct P.Tax from.')
@@ -434,7 +463,7 @@ taxRouter.post(
 
 taxRouter.delete(
   '/deductions/:id',
-  requirePermissions(PERMISSIONS.TAX_MANAGE),
+  canManage,
   validate({ params: idParam }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
@@ -444,6 +473,7 @@ taxRouter.delete(
       [req.params.id as string, auth.organizationId],
     )
     if (!existing) throw ApiError.notFound('Tax deduction')
+    await assertCanManageEmployee(auth, existing.employee_id, manageScope(auth))
     await assertPayrollOpen(auth.organizationId, existing.payroll_year, existing.payroll_month)
 
     await pool.query('DELETE FROM tax_deductions WHERE id = $1', [existing.id])

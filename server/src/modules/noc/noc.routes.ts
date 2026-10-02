@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { authenticate, requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission } from '../../middleware/authorize.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
 import { auditContextFrom } from '../audit/audit.service.js'
@@ -14,7 +14,8 @@ nocRouter.use(authenticate)
 /** A No Objection Certificate as a PDF, streamed and never linked to directly. */
 nocRouter.get(
   '/',
-  requirePermissions(PERMISSIONS.PAYSLIP_VIEW_ALL),
+  // A supervisor's letters are limited to their team in the service.
+  requireAnyPermission(PERMISSIONS.PAYSLIP_VIEW_ALL, PERMISSIONS.PAYSLIP_VIEW_TEAM),
   validate({
     query: z.object({
       employeeId: z.string().uuid(),

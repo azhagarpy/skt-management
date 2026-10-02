@@ -45,7 +45,7 @@ export default function OtherCreditsPage() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { can } = useAuth()
-  const canManage = can('payroll.adjust')
+  const canManage = can('payroll.adjust') || can('payroll.adjust.team')
 
   const now = new Date()
   const [year, setYear] = useState(now.getFullYear())

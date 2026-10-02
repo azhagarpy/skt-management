@@ -5,7 +5,7 @@ import { maskAadhaar, maskAccountNumber, maskPan } from '../../utils/mask.js'
 import { buildStorageKey, sanitiseFilename, sha256, sniffContentType } from '../../utils/files.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
+import { assertCanManageEmployee, assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
 import { notifyUserForEmployee } from '../notifications/notifications.service.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './documents.repository.js'
@@ -38,8 +38,15 @@ function readScope(auth: AuthContext) {
 function writeScope(auth: AuthContext) {
   return resolveScope(auth, {
     all: PERMISSIONS.DOCUMENT_UPLOAD_ANY,
+    team: PERMISSIONS.DOCUMENT_UPLOAD_TEAM,
     self: PERMISSIONS.DOCUMENT_UPLOAD_SELF,
   })
+}
+
+/** Verifying is a check on someone else's submission, so never on your own. */
+async function assertCanVerify(auth: AuthContext, employeeId: string): Promise<void> {
+  const scope = resolveScope(auth, { all: PERMISSIONS.DOCUMENT_VERIFY, team: PERMISSIONS.DOCUMENT_VERIFY_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
 }
 
 export async function assertCanRead(auth: AuthContext, employeeId: string, db: Queryable = pool): Promise<void> {
@@ -262,6 +269,7 @@ export async function verifyDocument(
   input: VerifyDocumentInput,
   context: AuditContext,
 ) {
+  await assertCanVerify(auth, employeeId)
   const existing = await repository.findDocument(documentId, auth.organizationId)
   if (!existing || existing.employee_id !== employeeId) throw ApiError.notFound('Document')
 
@@ -490,7 +498,7 @@ export async function verifySection(
   input: VerifySectionInput,
   context: AuditContext,
 ) {
-  await assertEmployeeInScope(auth, employeeId, 'ALL')
+  await assertCanVerify(auth, employeeId)
 
   const updated = await repository.setSectionVerification(
     input.section,

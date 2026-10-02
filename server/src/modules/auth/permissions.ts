@@ -40,7 +40,9 @@ export const PERMISSIONS = {
   EMPLOYEE_VIEW_TEAM: 'employee.view.team',
   EMPLOYEE_VIEW_SELF: 'employee.view.self',
   EMPLOYEE_CREATE: 'employee.create',
+  EMPLOYEE_CREATE_TEAM: 'employee.create.team',
   EMPLOYEE_UPDATE: 'employee.update',
+  EMPLOYEE_UPDATE_TEAM: 'employee.update.team',
   EMPLOYEE_UPDATE_SELF: 'employee.update.self',
   EMPLOYEE_DELETE: 'employee.delete',
   SUPERVISOR_MANAGE: 'supervisor.manage',
@@ -52,7 +54,9 @@ export const PERMISSIONS = {
   DOCUMENT_VIEW_SELF: 'document.view.self',
   DOCUMENT_UPLOAD_SELF: 'document.upload.self',
   DOCUMENT_UPLOAD_ANY: 'document.upload.any',
+  DOCUMENT_UPLOAD_TEAM: 'document.upload.team',
   DOCUMENT_VERIFY: 'document.verify',
+  DOCUMENT_VERIFY_TEAM: 'document.verify.team',
   DOCUMENT_DELETE: 'document.delete',
   /** Reveals unmasked Aadhaar / PAN / bank account numbers. */
   SENSITIVE_DATA_VIEW: 'sensitive.view',
@@ -97,16 +101,25 @@ export const PERMISSIONS = {
   SALARY_VIEW_TEAM: 'salary.view.team',
   SALARY_VIEW_SELF: 'salary.view.self',
   SALARY_MANAGE: 'salary.manage',
+  SALARY_MANAGE_TEAM: 'salary.manage.team',
 
   // Bonuses and tax
   BONUS_VIEW: 'bonus.view',
+  BONUS_VIEW_TEAM: 'bonus.view.team',
   BONUS_MANAGE: 'bonus.manage',
+  BONUS_MANAGE_TEAM: 'bonus.manage.team',
   TAX_VIEW: 'tax.view',
+  TAX_VIEW_TEAM: 'tax.view.team',
   TAX_MANAGE: 'tax.manage',
+  TAX_MANAGE_TEAM: 'tax.manage.team',
   LWF_VIEW: 'lwf.view',
+  LWF_VIEW_TEAM: 'lwf.view.team',
   LWF_MANAGE: 'lwf.manage',
+  LWF_MANAGE_TEAM: 'lwf.manage.team',
   PL_WAGES_VIEW: 'plwages.view',
+  PL_WAGES_VIEW_TEAM: 'plwages.view.team',
   PL_WAGES_MANAGE: 'plwages.manage',
+  PL_WAGES_MANAGE_TEAM: 'plwages.manage.team',
 
   // Payroll
   PAYROLL_VIEW_ALL: 'payroll.view.all',
@@ -116,15 +129,19 @@ export const PERMISSIONS = {
   PAYROLL_APPROVE: 'payroll.approve',
   PAYROLL_LOCK: 'payroll.lock',
   PAYROLL_ADJUST: 'payroll.adjust',
+  PAYROLL_ADJUST_TEAM: 'payroll.adjust.team',
   PAYROLL_DELETE: 'payroll.delete',
 
   // Payments
   PAYMENT_VIEW_ALL: 'payment.view.all',
+  PAYMENT_VIEW_TEAM: 'payment.view.team',
   PAYMENT_VIEW_SELF: 'payment.view.self',
   PAYMENT_MANAGE: 'payment.manage',
+  PAYMENT_MANAGE_TEAM: 'payment.manage.team',
 
   // Payslips
   PAYSLIP_VIEW_ALL: 'payslip.view.all',
+  PAYSLIP_VIEW_TEAM: 'payslip.view.team',
   PAYSLIP_VIEW_SELF: 'payslip.view.self',
   PAYSLIP_GENERATE: 'payslip.generate',
 
@@ -182,7 +199,9 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.EMPLOYEE_VIEW_TEAM, 'employees', 'View assigned employees only'),
   define(PERMISSIONS.EMPLOYEE_VIEW_SELF, 'employees', 'View own employee profile'),
   define(PERMISSIONS.EMPLOYEE_CREATE, 'employees', 'Create employees'),
+  define(PERMISSIONS.EMPLOYEE_CREATE_TEAM, 'employees', 'Add employees to their own team'),
   define(PERMISSIONS.EMPLOYEE_UPDATE, 'employees', 'Update any employee'),
+  define(PERMISSIONS.EMPLOYEE_UPDATE_TEAM, 'employees', 'Update assigned employees'),
   define(PERMISSIONS.EMPLOYEE_UPDATE_SELF, 'employees', 'Update own allowed personal information'),
   define(PERMISSIONS.EMPLOYEE_DELETE, 'employees', 'Delete employees'),
   define(PERMISSIONS.SUPERVISOR_MANAGE, 'employees', 'Manage supervisors, managers and their assignments'),
@@ -193,7 +212,9 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.DOCUMENT_VIEW_SELF, 'documents', 'View own documents'),
   define(PERMISSIONS.DOCUMENT_UPLOAD_SELF, 'documents', 'Upload own documents'),
   define(PERMISSIONS.DOCUMENT_UPLOAD_ANY, 'documents', 'Upload documents on behalf of any employee'),
+  define(PERMISSIONS.DOCUMENT_UPLOAD_TEAM, 'documents', 'Upload documents on behalf of assigned employees'),
   define(PERMISSIONS.DOCUMENT_VERIFY, 'documents', 'Verify or reject submitted documents'),
+  define(PERMISSIONS.DOCUMENT_VERIFY_TEAM, 'documents', 'Verify or reject documents of assigned employees'),
   define(PERMISSIONS.DOCUMENT_DELETE, 'documents', 'Delete employee documents'),
   define(PERMISSIONS.SENSITIVE_DATA_VIEW, 'documents', 'View unmasked Aadhaar, PAN and bank account numbers'),
 
@@ -232,15 +253,24 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.SALARY_VIEW_TEAM, 'salary', 'View salary of assigned employees'),
   define(PERMISSIONS.SALARY_VIEW_SELF, 'salary', 'View own salary'),
   define(PERMISSIONS.SALARY_MANAGE, 'salary', 'Assign and revise employee salaries'),
+  define(PERMISSIONS.SALARY_MANAGE_TEAM, 'salary', 'Assign and revise salaries of assigned employees'),
 
   define(PERMISSIONS.BONUS_VIEW, 'bonus', 'View bonuses'),
+  define(PERMISSIONS.BONUS_VIEW_TEAM, 'bonus', 'View bonuses of assigned employees'),
   define(PERMISSIONS.BONUS_MANAGE, 'bonus', 'Add and update bonuses'),
+  define(PERMISSIONS.BONUS_MANAGE_TEAM, 'bonus', 'Add, update and pay bonuses of assigned employees'),
   define(PERMISSIONS.TAX_VIEW, 'tax', 'View tax slabs and the tax report'),
+  define(PERMISSIONS.TAX_VIEW_TEAM, 'tax', 'View the tax report and deductions of assigned employees'),
   define(PERMISSIONS.TAX_MANAGE, 'tax', 'Change the tax slabs'),
+  define(PERMISSIONS.TAX_MANAGE_TEAM, 'tax', 'Set and remove tax deductions of assigned employees'),
   define(PERMISSIONS.LWF_VIEW, 'lwf', 'View Labour Welfare Fund contributions'),
+  define(PERMISSIONS.LWF_VIEW_TEAM, 'lwf', 'View Labour Welfare Fund contributions of assigned employees'),
   define(PERMISSIONS.LWF_MANAGE, 'lwf', 'Generate and mark Labour Welfare Fund contributions as paid'),
+  define(PERMISSIONS.LWF_MANAGE_TEAM, 'lwf', 'Generate and mark Labour Welfare Fund contributions of assigned employees'),
   define(PERMISSIONS.PL_WAGES_VIEW, 'pl-wages', 'View PL Wages credits'),
+  define(PERMISSIONS.PL_WAGES_VIEW_TEAM, 'pl-wages', 'View PL Wages credits of assigned employees'),
   define(PERMISSIONS.PL_WAGES_MANAGE, 'pl-wages', 'Generate, release and mark PL Wages credits as paid'),
+  define(PERMISSIONS.PL_WAGES_MANAGE_TEAM, 'pl-wages', 'Generate, release and pay PL Wages credits of assigned employees'),
 
   define(PERMISSIONS.PAYROLL_VIEW_ALL, 'payroll', 'View every payroll run and item'),
   define(PERMISSIONS.PAYROLL_VIEW_TEAM, 'payroll', 'View payroll for assigned employees'),
@@ -249,13 +279,17 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   define(PERMISSIONS.PAYROLL_APPROVE, 'payroll', 'Approve payroll runs'),
   define(PERMISSIONS.PAYROLL_LOCK, 'payroll', 'Lock payroll runs'),
   define(PERMISSIONS.PAYROLL_ADJUST, 'payroll', 'Raise adjustments against locked payroll'),
+  define(PERMISSIONS.PAYROLL_ADJUST_TEAM, 'payroll', 'Raise other deductions and credits for assigned employees'),
   define(PERMISSIONS.PAYROLL_DELETE, 'payroll', 'Delete a draft payroll run that has not been processed'),
 
   define(PERMISSIONS.PAYMENT_VIEW_ALL, 'payments', 'View every payment transaction'),
+  define(PERMISSIONS.PAYMENT_VIEW_TEAM, 'payments', 'View salary payments of assigned employees'),
   define(PERMISSIONS.PAYMENT_VIEW_SELF, 'payments', 'View own payment status'),
   define(PERMISSIONS.PAYMENT_MANAGE, 'payments', 'Record and reverse salary payments'),
+  define(PERMISSIONS.PAYMENT_MANAGE_TEAM, 'payments', 'Record and reverse salary payments of assigned employees'),
 
   define(PERMISSIONS.PAYSLIP_VIEW_ALL, 'payslips', 'View every payslip'),
+  define(PERMISSIONS.PAYSLIP_VIEW_TEAM, 'payslips', 'View payslips and letters of assigned employees'),
   define(PERMISSIONS.PAYSLIP_VIEW_SELF, 'payslips', 'View and download own payslips'),
   define(PERMISSIONS.PAYSLIP_GENERATE, 'payslips', 'Generate payslips'),
 
@@ -276,9 +310,11 @@ export type RoleKey = 'SUPER_ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'EMPLOYEE'
 const SUPER_ADMIN_PERMISSIONS: PermissionCode[] = PERMISSION_DEFINITIONS.map((definition) => definition.code)
 
 /**
- * Supervisors manage their own team only. Team salary, team payroll and team
- * reports are *not* included by default - they must be granted per user, exactly
- * as the plan specifies ("only if explicitly permitted").
+ * Supervisors manage every module, but only for their own team (the TEAM scope
+ * in employee-access.ts), and never their own records. What is company-wide by
+ * nature - running and approving payroll, salary structures, tax slabs,
+ * holidays, leave policy, users and settings - stays with the Super Admin.
+ * Each team permission can still be revoked per user.
  */
 const SUPERVISOR_PERMISSIONS: PermissionCode[] = [
   PERMISSIONS.ORG_VIEW,
@@ -289,11 +325,15 @@ const SUPERVISOR_PERMISSIONS: PermissionCode[] = [
 
   PERMISSIONS.EMPLOYEE_VIEW_TEAM,
   PERMISSIONS.EMPLOYEE_VIEW_SELF,
+  PERMISSIONS.EMPLOYEE_CREATE_TEAM,
+  PERMISSIONS.EMPLOYEE_UPDATE_TEAM,
   PERMISSIONS.EMPLOYEE_UPDATE_SELF,
 
   PERMISSIONS.DOCUMENT_VIEW_TEAM,
   PERMISSIONS.DOCUMENT_VIEW_SELF,
+  PERMISSIONS.DOCUMENT_UPLOAD_TEAM,
   PERMISSIONS.DOCUMENT_UPLOAD_SELF,
+  PERMISSIONS.DOCUMENT_VERIFY_TEAM,
 
   PERMISSIONS.ATTENDANCE_VIEW_TEAM,
   PERMISSIONS.ATTENDANCE_VIEW_SELF,
@@ -312,12 +352,32 @@ const SUPERVISOR_PERMISSIONS: PermissionCode[] = [
   PERMISSIONS.WEEKLY_OFF_VIEW,
   PERMISSIONS.WEEKLY_OFF_ASSIGN_TEAM,
 
+  // A structure is picked when revising a salary, so its detail must be readable.
+  PERMISSIONS.SALARY_STRUCTURE_VIEW,
+  PERMISSIONS.SALARY_VIEW_TEAM,
   PERMISSIONS.SALARY_VIEW_SELF,
+  PERMISSIONS.SALARY_MANAGE_TEAM,
+
+  PERMISSIONS.BONUS_VIEW_TEAM,
+  PERMISSIONS.BONUS_MANAGE_TEAM,
+  PERMISSIONS.TAX_VIEW_TEAM,
+  PERMISSIONS.TAX_MANAGE_TEAM,
+  PERMISSIONS.LWF_VIEW_TEAM,
+  PERMISSIONS.LWF_MANAGE_TEAM,
+  PERMISSIONS.PL_WAGES_VIEW_TEAM,
+  PERMISSIONS.PL_WAGES_MANAGE_TEAM,
+
+  PERMISSIONS.PAYROLL_VIEW_TEAM,
   PERMISSIONS.PAYROLL_VIEW_SELF,
+  PERMISSIONS.PAYROLL_ADJUST_TEAM,
+  PERMISSIONS.PAYMENT_VIEW_TEAM,
   PERMISSIONS.PAYMENT_VIEW_SELF,
+  PERMISSIONS.PAYMENT_MANAGE_TEAM,
+  PERMISSIONS.PAYSLIP_VIEW_TEAM,
   PERMISSIONS.PAYSLIP_VIEW_SELF,
 
   PERMISSIONS.REPORT_VIEW_TEAM,
+  PERMISSIONS.REPORT_EXPORT,
 
   PERMISSIONS.APP_LOCK_MANAGE,
 ]

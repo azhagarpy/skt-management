@@ -3,7 +3,7 @@ import type { Router } from 'express'
 import { z } from 'zod'
 import { pool, queryOne, queryRows } from '../../database/pool.js'
 import { requireAuth } from '../../middleware/authenticate.js'
-import { requirePermissions } from '../../middleware/authorize.js'
+import { requireAnyPermission } from '../../middleware/authorize.js'
 import { uploadPaymentProof } from '../../middleware/upload.js'
 import { validate } from '../../middleware/validate.js'
 import { asyncHandler } from '../../utils/async-handler.js'
@@ -14,6 +14,13 @@ import { storage } from '../documents/storage.service.js'
 import { isoDateSchema } from '../employees/employees.validation.js'
 import { auditContextFrom, recordAudit, type AuditAction } from '../audit/audit.service.js'
 import type { PermissionCode } from '../auth/permissions.js'
+import type { AuthContext } from '../../types/express.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  manageableTeamIds,
+  resolveScope,
+} from '../employees/employee-access.js'
 
 /**
  * Payments made outside salary.
@@ -178,6 +185,9 @@ export interface PayoutRouteOptions {
   folder: string
   view: PermissionCode
   manage: PermissionCode
+  /** The same, limited to the caller's team (and never themselves, for manage). */
+  viewTeam: PermissionCode
+  manageTeam: PermissionCode
   entityType: string
   paidAction: AuditAction
   unpaidAction: AuditAction
@@ -198,28 +208,51 @@ export function mountPayoutRoutes(router: Router, options: PayoutRouteOptions): 
   const idParam = z.object({ id: z.string().uuid() })
   const title = noun.charAt(0).toUpperCase() + noun.slice(1)
 
-  const findStatus = (id: string, organizationId: string) =>
-    queryOne<{ status: string }>(pool, `SELECT status::text AS status FROM ${table} WHERE id = $1 AND organization_id = $2`, [
-      id,
-      organizationId,
-    ])
+  const canView = requireAnyPermission(options.view, options.viewTeam)
+  const canManage = requireAnyPermission(options.manage, options.manageTeam)
+  const manageScope = (auth: AuthContext) => resolveScope(auth, { all: options.manage, team: options.manageTeam })
+
+  /** A row's status, once the caller is known to be allowed to change it. */
+  const findStatus = async (auth: AuthContext, id: string) => {
+    const row = await queryOne<{ status: string; employee_id: string }>(
+      pool,
+      `SELECT status::text AS status, employee_id FROM ${table} WHERE id = $1 AND organization_id = $2`,
+      [id, auth.organizationId],
+    )
+    if (row) await assertCanManageEmployee(auth, row.employee_id, manageScope(auth))
+    return row
+  }
 
   router.post(
     '/mark-paid',
-    requirePermissions(options.manage),
+    canManage,
     // multer runs first so the multipart body is parsed before validation.
     uploadPaymentProof,
     validate({ body: bulkPayoutSchema }),
     asyncHandler(async (req, res) => {
       const auth = requireAuth(req)
       const input = req.body as BulkPayoutInput
-      const ids = [...new Set(input.ids)]
+      let ids = [...new Set(input.ids)]
+      // A supervisor pays only their own team; the rest count as skipped.
+      if (manageScope(auth) === 'TEAM') {
+        const team = await manageableTeamIds(auth)
+        const rows = await queryRows<{ id: string }>(
+          pool,
+          `SELECT id FROM ${table} WHERE id = ANY($1::uuid[]) AND organization_id = $2 AND employee_id = ANY($3::uuid[])`,
+          [ids, auth.organizationId, team],
+        )
+        const allowed = new Set(rows.map((row) => row.id))
+        ids = ids.filter((id) => allowed.has(id))
+      }
+      if (ids.length === 0) {
+        throw ApiError.businessRule(`None of the chosen ${plural} is approved and waiting to be paid`)
+      }
 
       const result = await recordPayout(table, options.folder, auth.organizationId, auth.userId, ids, ['APPROVED'], input, req.file)
       if (result.paid === 0) {
         throw ApiError.businessRule(`None of the chosen ${plural} is approved and waiting to be paid`)
       }
-      const skipped = ids.length - result.paid
+      const skipped = new Set(input.ids).size - result.paid
 
       await recordAudit({
         ...auditContextFrom(req),
@@ -249,7 +282,7 @@ export function mountPayoutRoutes(router: Router, options: PayoutRouteOptions): 
 
   router.patch(
     '/:id/mark-paid',
-    requirePermissions(options.manage),
+    canManage,
     uploadPaymentProof,
     validate({ params: idParam, body: payoutSchema }),
     asyncHandler(async (req, res) => {
@@ -257,7 +290,7 @@ export function mountPayoutRoutes(router: Router, options: PayoutRouteOptions): 
       const id = req.params.id as string
       const input = req.body as PayoutInput
 
-      const existing = await findStatus(id, auth.organizationId)
+      const existing = await findStatus(auth, id)
       if (!existing) throw ApiError.notFound(title)
       if (existing.status !== 'APPROVED' && existing.status !== 'PAID') {
         throw ApiError.businessRule(`Only an approved ${noun} can be marked paid`)
@@ -285,13 +318,13 @@ export function mountPayoutRoutes(router: Router, options: PayoutRouteOptions): 
 
   router.patch(
     '/:id/mark-unpaid',
-    requirePermissions(options.manage),
+    canManage,
     validate({ params: idParam }),
     asyncHandler(async (req, res) => {
       const auth = requireAuth(req)
       const id = req.params.id as string
 
-      const existing = await findStatus(id, auth.organizationId)
+      const existing = await findStatus(auth, id)
       if (!existing) throw ApiError.notFound(title)
       if (existing.status !== 'PAID') throw ApiError.businessRule(`Only a paid ${noun} can be marked not paid`)
 
@@ -326,16 +359,22 @@ export function mountPayoutRoutes(router: Router, options: PayoutRouteOptions): 
 
   router.get(
     '/:id/proof',
-    requirePermissions(options.view),
+    canView,
     validate({ params: idParam }),
     asyncHandler(async (req, res) => {
       const auth = requireAuth(req)
-      const row = await queryOne<{ proof_path: string | null; proof_mime_type: string | null; proof_filename: string | null }>(
+      const row = await queryOne<{
+        employee_id: string
+        proof_path: string | null
+        proof_mime_type: string | null
+        proof_filename: string | null
+      }>(
         pool,
-        `SELECT proof_path, proof_mime_type, proof_filename FROM ${table} WHERE id = $1 AND organization_id = $2`,
+        `SELECT employee_id, proof_path, proof_mime_type, proof_filename FROM ${table} WHERE id = $1 AND organization_id = $2`,
         [req.params.id, auth.organizationId],
       )
       if (!row) throw ApiError.notFound(title)
+      await assertEmployeeInScope(auth, row.employee_id, resolveScope(auth, { all: options.view, team: options.viewTeam }))
       if (!row.proof_path) throw ApiError.notFound('Supporting document')
 
       const buffer = await storage.get(row.proof_path)

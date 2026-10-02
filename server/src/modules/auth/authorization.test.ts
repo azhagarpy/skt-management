@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { PERMISSIONS, ROLE_PERMISSIONS, PERMISSION_DEFINITIONS, type PermissionCode } from './permissions.js'
 import { checkPasswordStrength } from './password.service.js'
 import { durationToMs, hashToken } from './token.service.js'
-import { isTeamMember, resolveScope, scopeClause } from '../employees/employee-access.js'
+import {
+  assertCanManageEmployee,
+  assertCanManageEmployees,
+  isTeamMember,
+  resolveScope,
+  scopeClause,
+} from '../employees/employee-access.js'
+import type { Queryable } from '../../database/pool.js'
 import type { AuthContext } from '../../types/express.js'
 
 /**
@@ -52,10 +59,46 @@ describe('role permission sets', () => {
     expect(supervisor).not.toContain(PERMISSIONS.SENSITIVE_DATA_VIEW)
   })
 
-  it('withholds team salary from a supervisor until it is granted explicitly', () => {
-    // Plan section 3: "View team salary/pay information only if explicitly permitted".
-    expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.SALARY_VIEW_TEAM)
-    expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.PAYROLL_VIEW_TEAM)
+  it('lets a supervisor manage every module for their team', () => {
+    const supervisor = ROLE_PERMISSIONS.SUPERVISOR
+    const teamCodes = PERMISSION_DEFINITIONS.map((definition) => definition.code).filter(
+      (code) => code.endsWith('.team') && code !== PERMISSIONS.SUPERVISOR_VIEW_TEAM,
+    )
+    for (const code of teamCodes) expect(supervisor).toContain(code)
+  })
+
+  it('keeps what is company-wide by nature with the Super Admin', () => {
+    const supervisor = ROLE_PERMISSIONS.SUPERVISOR
+    for (const code of [
+      PERMISSIONS.EMPLOYEE_CREATE,
+      PERMISSIONS.EMPLOYEE_UPDATE,
+      PERMISSIONS.EMPLOYEE_DELETE,
+      PERMISSIONS.SUPERVISOR_MANAGE,
+      PERMISSIONS.SALARY_STRUCTURE_MANAGE,
+      PERMISSIONS.SALARY_VIEW_ALL,
+      PERMISSIONS.SALARY_MANAGE,
+      PERMISSIONS.PAYROLL_VIEW_ALL,
+      PERMISSIONS.PAYROLL_APPROVE,
+      PERMISSIONS.PAYROLL_LOCK,
+      PERMISSIONS.PAYROLL_DELETE,
+      PERMISSIONS.PAYROLL_ADJUST,
+      PERMISSIONS.PAYSLIP_GENERATE,
+      PERMISSIONS.PAYSLIP_VIEW_ALL,
+      PERMISSIONS.PAYMENT_VIEW_ALL,
+      PERMISSIONS.PAYMENT_MANAGE,
+      PERMISSIONS.BONUS_VIEW,
+      PERMISSIONS.BONUS_MANAGE,
+      PERMISSIONS.TAX_VIEW,
+      PERMISSIONS.TAX_MANAGE,
+      PERMISSIONS.LWF_MANAGE,
+      PERMISSIONS.PL_WAGES_MANAGE,
+      PERMISSIONS.HOLIDAY_MANAGE,
+      PERMISSIONS.LEAVE_POLICY_MANAGE,
+      PERMISSIONS.SETTINGS_MANAGE,
+      PERMISSIONS.DOCUMENT_DELETE,
+    ]) {
+      expect(supervisor).not.toContain(code)
+    }
   })
 
   it('gives a manager everything a supervisor has, plus a view of their supervisors, and nothing organization-wide', () => {
@@ -64,7 +107,7 @@ describe('role permission sets', () => {
     expect(manager).toContain(PERMISSIONS.SUPERVISOR_VIEW_TEAM)
     expect(manager).not.toContain(PERMISSIONS.EMPLOYEE_VIEW_ALL)
     expect(manager).not.toContain(PERMISSIONS.SUPERVISOR_MANAGE)
-    expect(manager).not.toContain(PERMISSIONS.SALARY_VIEW_TEAM)
+    expect(manager).not.toContain(PERMISSIONS.SALARY_VIEW_ALL)
     expect(ROLE_PERMISSIONS.SUPERVISOR).not.toContain(PERMISSIONS.SUPERVISOR_VIEW_TEAM)
   })
 
@@ -77,6 +120,7 @@ describe('role permission sets', () => {
     expect(employee).not.toContain(PERMISSIONS.ATTENDANCE_MANAGE_TEAM)
     expect(employee).not.toContain(PERMISSIONS.LEAVE_APPROVE_TEAM)
     expect(employee).not.toContain(PERMISSIONS.REPORT_VIEW_ALL)
+    expect(employee.filter((code) => code.endsWith('.team'))).toEqual([])
   })
 
   it('has no duplicate permission codes', () => {
@@ -148,6 +192,65 @@ describe('scope predicate', () => {
     const clause = scopeClause(contextFor('SUPERVISOR', 'emp-sup'), 'TEAM', 'x', 5)
     expect(clause.sql).toContain('x.organization_id = $5')
     expect(clause.sql).toContain('x.supervisor_id = $6')
+  })
+})
+
+describe('changing a team member', () => {
+  /** A database stub that answers every query with `rows`. */
+  const answering = (rows: unknown[]): Queryable =>
+    ({ query: async () => ({ rows }) }) as unknown as Queryable
+  const supervisor = contextFor('SUPERVISOR', 'emp-sup')
+  const member = { id: 'emp-1', supervisor_id: 'emp-sup', manager_id: null, supervisor_manager_id: null }
+
+  it('lets a supervisor change someone on their team', async () => {
+    await expect(assertCanManageEmployee(supervisor, 'emp-1', 'TEAM', answering([member]))).resolves.toBeUndefined()
+  })
+
+  it('refuses someone outside their team', async () => {
+    const outsider = { ...member, supervisor_id: 'emp-other' }
+    await expect(assertCanManageEmployee(supervisor, 'emp-1', 'TEAM', answering([outsider]))).rejects.toThrow(
+      /not assigned to you/,
+    )
+  })
+
+  it('refuses their own records, though they are part of their own team', async () => {
+    const self = { id: 'emp-sup', supervisor_id: null, manager_id: null, supervisor_manager_id: null }
+    await expect(assertCanManageEmployee(supervisor, 'emp-sup', 'TEAM', answering([self]))).rejects.toThrow(
+      /your own records/,
+    )
+  })
+
+  it('lets an administrator change anyone, themselves included', async () => {
+    const admin = contextFor('SUPER_ADMIN', 'emp-admin')
+    const self = { id: 'emp-admin', supervisor_id: null, manager_id: null, supervisor_manager_id: null }
+    await expect(assertCanManageEmployee(admin, 'emp-admin', 'ALL', answering([self]))).resolves.toBeUndefined()
+  })
+
+  it('refuses a batch when any one is outside the team, or is the caller', async () => {
+    // The stub plays the scoped query: only emp-1 is found on the team.
+    await expect(assertCanManageEmployees(supervisor, ['emp-1', 'emp-2'], 'TEAM', answering([{ id: 'emp-1' }]))).rejects.toThrow(
+      /not assigned to you/,
+    )
+    await expect(
+      assertCanManageEmployees(supervisor, ['emp-1', 'emp-sup'], 'TEAM', answering([{ id: 'emp-1' }, { id: 'emp-sup' }])),
+    ).rejects.toThrow(/your own records/)
+    await expect(assertCanManageEmployees(supervisor, ['emp-1'], 'TEAM', answering([{ id: 'emp-1' }]))).resolves.toBeUndefined()
+  })
+
+  it('never resolves a supervisor to the whole company for the money modules', () => {
+    for (const [all, team] of [
+      [PERMISSIONS.SALARY_MANAGE, PERMISSIONS.SALARY_MANAGE_TEAM],
+      [PERMISSIONS.BONUS_MANAGE, PERMISSIONS.BONUS_MANAGE_TEAM],
+      [PERMISSIONS.PAYMENT_MANAGE, PERMISSIONS.PAYMENT_MANAGE_TEAM],
+      [PERMISSIONS.PAYROLL_ADJUST, PERMISSIONS.PAYROLL_ADJUST_TEAM],
+      [PERMISSIONS.TAX_MANAGE, PERMISSIONS.TAX_MANAGE_TEAM],
+      [PERMISSIONS.LWF_MANAGE, PERMISSIONS.LWF_MANAGE_TEAM],
+      [PERMISSIONS.PL_WAGES_MANAGE, PERMISSIONS.PL_WAGES_MANAGE_TEAM],
+      [PERMISSIONS.PAYSLIP_VIEW_ALL, PERMISSIONS.PAYSLIP_VIEW_TEAM],
+    ] as const) {
+      expect(resolveScope(supervisor, { all, team })).toBe('TEAM')
+      expect(resolveScope(contextFor('MANAGER', 'emp-mgr'), { all, team })).toBe('TEAM')
+    }
   })
 })
 

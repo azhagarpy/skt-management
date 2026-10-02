@@ -4,7 +4,7 @@ import { addDays, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
+import { assertCanManageEmployee, assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './salary.repository.js'
 import type { AssignSalaryInput, SalaryComponentInput, SalaryStructureInput } from './salary.validation.js'
@@ -396,7 +396,8 @@ export async function assignSalary(
   input: AssignSalaryInput,
   context: AuditContext,
 ) {
-  await assertEmployeeInScope(auth, employeeId, 'ALL')
+  const scope = resolveScope(auth, { all: PERMISSIONS.SALARY_MANAGE, team: PERMISSIONS.SALARY_MANAGE_TEAM })
+  await assertCanManageEmployee(auth, employeeId, scope)
 
   const result = await withTransaction(async (tx) => {
     const structure = await repository.findStructure(input.salaryStructureId, auth.organizationId, tx)
