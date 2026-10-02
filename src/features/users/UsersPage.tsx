@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, ShieldCheck, UserPlus } from 'lucide-react'
+import { KeyRound, ShieldCheck, UserCog, UserPlus } from 'lucide-react'
 import { get, patch, post, put } from '../../lib/api'
 import { formatDateTime, humanise } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
@@ -65,6 +65,8 @@ export default function UsersPage() {
   const [permissionsFor, setPermissionsFor] = useState<UserRow | null>(null)
   const [resetFor, setResetFor] = useState<UserRow | null>(null)
   const [newPassword, setNewPassword] = useState('')
+  const [roleFor, setRoleFor] = useState<UserRow | null>(null)
+  const [nextRole, setNextRole] = useState<RoleKey>('EMPLOYEE')
   const [form, setForm] = useState({ email: '', fullName: '', role: 'EMPLOYEE' as RoleKey, password: '' })
 
   const { data, isFetching, error, refetch } = useQuery({
@@ -114,6 +116,16 @@ export default function UsersPage() {
       setNewPassword('')
     },
     onError: (mutationError: Error) => toast.error('Could not reset the password', mutationError.message),
+  })
+
+  const roleMutation = useMutation({
+    mutationFn: () => patch(`/users/${roleFor?.id}`, { role: nextRole }),
+    onSuccess: async () => {
+      toast.success('Role changed', 'It applies the next time they open or refresh the site.')
+      setRoleFor(null)
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+    onError: (mutationError: Error) => toast.error('Could not change the role', mutationError.message),
   })
 
   const permissionMutation = useMutation({
@@ -180,15 +192,28 @@ export default function UsersPage() {
                 Reset
               </Button>
               {row.id !== currentUser?.id ? (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    statusMutation.mutate({ id: row.id, status: row.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
-                  }
-                >
-                  {row.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<UserCog size={13} />}
+                    onClick={() => {
+                      setRoleFor(row)
+                      setNextRole(row.role)
+                    }}
+                  >
+                    Role
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      statusMutation.mutate({ id: row.id, status: row.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
+                    }
+                  >
+                    {row.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                  </Button>
+                </>
               ) : null}
             </>
           ) : null}
@@ -341,6 +366,45 @@ export default function UsersPage() {
       >
         <Field label="New temporary password" htmlFor="reset-password" required>
           <Input id="reset-password" type="text" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+        </Field>
+      </Modal>
+
+      <Modal
+        open={roleFor !== null}
+        title={`Change role for ${roleFor?.fullName ?? ''}`}
+        description="The role decides what this user can see and do. Per-user permission overrides are kept."
+        onClose={() => setRoleFor(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRoleFor(null)}>
+              Cancel
+            </Button>
+            <Button
+              loading={roleMutation.isPending}
+              disabled={nextRole === roleFor?.role}
+              onClick={() => roleMutation.mutate()}
+            >
+              Change role
+            </Button>
+          </>
+        }
+      >
+        <Field
+          label="Role"
+          htmlFor="change-role"
+          required
+          hint={
+            (nextRole === 'SUPERVISOR' || nextRole === 'MANAGER') && !roleFor?.employeeId
+              ? 'This login is not linked to an employee, so it will not see any team until it is.'
+              : undefined
+          }
+        >
+          <Select id="change-role" value={nextRole} onChange={(event) => setNextRole(event.target.value as RoleKey)}>
+            <option value="EMPLOYEE">Employee</option>
+            <option value="MANAGER">Manager</option>
+            <option value="SUPERVISOR">Supervisor</option>
+            <option value="SUPER_ADMIN">Super Admin</option>
+          </Select>
         </Field>
       </Modal>
 
