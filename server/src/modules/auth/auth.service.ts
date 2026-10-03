@@ -98,7 +98,8 @@ function accessTokenFor(user: repository.UserWithEmployee, pinLocked: boolean): 
  * "Opening the site" is told apart from a routine refresh by the access token
  * the page sends along: it lives only in the page's memory, so a page that was
  * just opened has none, while an open page presents its current (possibly
- * expired) one. A page that already unlocked stays unlocked; anything else -
+ * expired) one - as does a reloaded page, which the page before it handed its
+ * token on to (AuthProvider.tsx). A page that already unlocked stays unlocked; anything else -
  * no token, a locked one, someone else's, or one from before a password
  * change - has to enter the PIN.
  */

@@ -9,6 +9,7 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react'
+import { Link } from 'react-router-dom'
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Search, X } from 'lucide-react'
 
 /**
@@ -106,9 +107,10 @@ export function PageHeader({
             <span key={`${crumb.label}-${index}`}>
               {index > 0 ? <span className="breadcrumb-separator">/</span> : null}
               {crumb.to ? (
-                <a href={crumb.to} className="breadcrumb-link">
+                // A router link, not a plain one: a full page load would make the app lock ask for the PIN again.
+                <Link to={crumb.to} className="breadcrumb-link">
                   {crumb.label}
-                </a>
+                </Link>
               ) : (
                 <span>{crumb.label}</span>
               )}

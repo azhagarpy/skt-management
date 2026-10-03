@@ -14,8 +14,10 @@ const onlyDigits = (value: string): string => value.replace(/\D/g, '').slice(0, 
  * App lock PIN.
  *
  * With a PIN set, every time the site is opened on a device where the user is
- * still signed in - a new tab, a reload, the browser reopened - it asks for the
- * PIN before showing anything. Signing in with the password never asks for it.
+ * still signed in - a new tab or window, the browser reopened - and after five
+ * minutes without any interaction, it asks for the PIN before showing anything.
+ * Reloading the page or moving around the site does not. Signing in with the
+ * password never asks for it.
  * The account password is required to set, change or remove the PIN.
  */
 export function AppLockCard() {
@@ -41,7 +43,7 @@ export function AppLockCard() {
   const save = useMutation({
     mutationFn: () => put('/auth/pin', { pin, currentPassword: password }),
     onSuccess: async () => {
-      toast.success(enabled ? 'PIN changed' : 'App lock turned on', 'The PIN will be asked for each time the site is opened.')
+      toast.success(enabled ? 'PIN changed' : 'App lock turned on', 'The PIN will be asked each time the site is opened, and after 5 minutes without use.')
       reset()
       await refreshUser()
     },
@@ -64,7 +66,7 @@ export function AppLockCard() {
   return (
     <Card
       title="App lock PIN"
-      description="Ask for a 4-digit PIN every time this site is opened while you are still signed in, so nobody else can use it on an unattended computer."
+      description="Ask for a 4-digit PIN every time this site is opened while you are still signed in, and after 5 minutes without use, so nobody else can use it on an unattended computer."
     >
       <div className="stack">
         <div className="breakdown-row">
