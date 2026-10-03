@@ -25,6 +25,34 @@ export const COLOR = {
   tint: '#eef3fa',
 } as const
 
+/** pdfkit's opened image: drawn any number of times, it is embedded in the file once. */
+type OpenedImage = { width: number; height: number }
+
+const openedImages = new WeakMap<Pdf, Map<Buffer, OpenedImage>>()
+
+/**
+ * Draws an image, opening each file once per document.
+ *
+ * Handed raw bytes, pdfkit decodes and embeds a fresh copy on every call, so
+ * the logo on each page of a bulk payslip PDF was stored once per employee:
+ * 161 copies, a 58 MB file and over a gigabyte of memory for one month. An
+ * opened image is embedded once and referenced from every page.
+ */
+export function drawImage(doc: Pdf, file: Buffer, x: number, y: number, options: PDFKit.Mixins.ImageOption): void {
+  let images = openedImages.get(doc)
+  if (!images) {
+    images = new Map()
+    openedImages.set(doc, images)
+  }
+  let image = images.get(file)
+  if (!image) {
+    image = (doc as Pdf & { openImage(src: Buffer): OpenedImage }).openImage(file)
+    images.set(file, image)
+  }
+  // pdfkit takes an opened image wherever it takes a file; its types list only files.
+  doc.image(image as unknown as Buffer, x, y, options)
+}
+
 /** Runs `build` against a fresh A4 document and resolves with the finished PDF. */
 export function buildPdf(title: string, build: (doc: Pdf) => void): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -190,7 +218,7 @@ export function drawLetterhead(doc: Pdf, letterhead: Letterhead): number {
 
   if (letterhead.logo) {
     try {
-      doc.image(letterhead.logo, PAGE.left, top, { fit: [logoSize, logoSize] })
+      drawImage(doc, letterhead.logo, PAGE.left, top, { fit: [logoSize, logoSize] })
       textX = PAGE.left + logoSize + 14
       logoDrawn = true
     } catch (error) {

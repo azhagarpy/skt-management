@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { amountInWords, longDate, money, shortDate, type Letterhead } from '../../utils/pdf.js'
+import { amountInWords, buildPdf, drawLetterhead, longDate, money, shortDate, type Letterhead } from '../../utils/pdf.js'
 import { renderPayslipPdf, type PayslipPdfData } from '../payslips/payslip-pdf.js'
 import { cleanPurpose } from './noc.service.js'
 import { renderNocPdf, type NocData } from './noc-pdf.js'
@@ -15,6 +15,31 @@ const letterhead: Letterhead = {
   city: 'Ariyalur',
   logo: null,
 }
+
+describe('drawLetterhead', () => {
+  /** Image objects in the file; a PNG with transparency is two, the picture and its mask. */
+  const imageCount = (pdf: Buffer): number => (pdf.toString('latin1').match(/\/Subtype \/Image\b/g) ?? []).length
+  // A 1x1 PNG with an alpha channel.
+  const logo = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  const withLetterheads = (pages: number): Promise<Buffer> =>
+    buildPdf('test', (doc) => {
+      for (let page = 0; page < pages; page += 1) {
+        if (page > 0) doc.addPage()
+        drawLetterhead(doc, { ...letterhead, logo })
+      }
+    })
+
+  it('embeds the logo once however many pages show it', async () => {
+    const one = await withLetterheads(1)
+    const many = await withLetterheads(5)
+    expect(pageCount(many)).toBe(5)
+    expect(imageCount(one)).toBeGreaterThan(0)
+    expect(imageCount(many)).toBe(imageCount(one))
+  })
+})
 
 describe('amountInWords', () => {
   it('writes rupees in the Indian system', () => {
