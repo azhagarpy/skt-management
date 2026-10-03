@@ -17,6 +17,7 @@ import { idListParam } from '../../utils/query-params.js'
 import { payCycleFor, PAYROLL_CYCLE_CUTOFF_DAY } from '../../utils/dates.js'
 import { addHolidayAmounts, addOvertimeAmounts, addRegisterHolidayFigures, type ReportRow } from './report-amounts.js'
 import { addAttendanceDays, addAttendanceTotals } from './report-attendance.js'
+import { addYearlySalary } from './report-yearly-salary.js'
 
 /**
  * The generic report runner.
@@ -138,6 +139,7 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   'department-salary': { year: 'r.year', month: 'r.month' },
   'payroll-summary': { year: 'r.year', month: 'r.month' },
   'payroll-month-summary': { year: 'r.year', month: 'r.month' },
+  'yearly-salary': { year: 'r.year', month: 'r.month' },
   // As the Monthly Attendance report: everyone employed at some point in the period.
   'attendance-summary': { from: "coalesce(e.exit_date, 'infinity'::date)", to: 'e.joining_date' },
 }
@@ -163,6 +165,7 @@ const ENRICH_BY_REPORT: Record<
   'salary-register': addRegisterHolidayFigures,
   'monthly-attendance-summary': addAttendanceDays,
   'attendance-summary': addAttendanceTotals,
+  'yearly-salary': addYearlySalary,
 }
 
 /**
@@ -222,9 +225,19 @@ const MONTH_COLUMN: ReportColumn = { key: 'report_month', label: 'Month', format
  * says which month each row is.
  */
 function resolveDefinition(definition: ReportDefinition, filters: ReportFilters): ReportDefinition {
-  let columns = definition.columnsFor ? definition.columnsFor({ from: filters.from, to: filters.to }) : definition.columns
+  let columns = definition.columnsFor
+    ? definition.columnsFor({ from: filters.from, to: filters.to, fromMonth: filters.fromMonth, toMonth: filters.toMonth })
+    : definition.columns
   if (definition.monthColumn && filters.fromMonth && filters.toMonth) columns = [MONTH_COLUMN, ...columns]
   return columns === definition.columns ? definition : { ...definition, columns }
+}
+
+/** Leaves out the columns marked dropWhenEmpty that no row has a value for. */
+function dropEmptyColumns(definition: ReportDefinition, rows: ReportRow[]): ReportDefinition {
+  const columns = definition.columns.filter(
+    (column) => !column.dropWhenEmpty || rows.some((row) => row[column.key] !== null && row[column.key] !== undefined),
+  )
+  return columns.length === definition.columns.length ? definition : { ...definition, columns }
 }
 
 /** A report carrying sensitive data needs its extra permission as well. */
@@ -421,7 +434,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
   assertRequiredFilters(found, filters)
   assertMonthRange(filters)
   const queryFilters = await resolvePayrollMonth(found, auth, filters)
-  const definition = resolveDefinition(found, queryFilters)
+  let definition = resolveDefinition(found, queryFilters)
 
   let rows: ReportRow[]
   let total: number
@@ -430,6 +443,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
   const enrich = ENRICH_BY_REPORT[definition.key]
   if (enrich) {
     const all = await enrich(auth.organizationId, await loadAllRows(definition, auth, scope, queryFilters), queryFilters)
+    definition = dropEmptyColumns(definition, all)
     const offset = (filters.page - 1) * filters.pageSize
     rows = all.slice(offset, offset + filters.pageSize)
     total = all.length
@@ -511,6 +525,6 @@ export async function runReportForExport(
   const enrich = ENRICH_BY_REPORT[resolved.key]
   const rows = enrich ? await enrich(auth.organizationId, loaded, queryFilters) : loaded
 
-  const definition = chooseColumns(resolved, filters.columns)
+  const definition = chooseColumns(enrich ? dropEmptyColumns(resolved, rows) : resolved, filters.columns)
   return { definition, rows, totals: computeTotals(definition, rows) }
 }

@@ -25,6 +25,11 @@ export interface ReportColumn {
   format: ColumnFormat
   /** Column totals are shown for currency and day columns when true. */
   total?: boolean
+  /**
+   * Left out when no row has a value for it - a month with no payroll, say.
+   * Honoured for reports filled in by an enricher, whose rows are all loaded.
+   */
+  dropWhenEmpty?: boolean
 }
 
 export type FilterKey =
@@ -45,6 +50,15 @@ export type FilterKey =
   | 'paymentStatus'
   | 'payrollRunId'
 
+/** The period a report runs over, as its filters give it. */
+export interface ReportPeriod {
+  from?: IsoDate
+  to?: IsoDate
+  /** "YYYY-MM" */
+  fromMonth?: string
+  toMonth?: string
+}
+
 export interface ReportDefinition {
   key: string
   name: string
@@ -62,7 +76,7 @@ export interface ReportDefinition {
    * say: the full column list for the period, in place of `columns`, which is
    * then what the catalogue shows before a period is chosen.
    */
-  columnsFor?: (period: { from?: IsoDate; to?: IsoDate }) => ReportColumn[]
+  columnsFor?: (period: ReportPeriod) => ReportColumn[]
   filters: FilterKey[]
   /** Filters without which the report is meaningless. */
   requiredFilters?: FilterKey[]
@@ -200,7 +214,7 @@ const ATTENDANCE_TOTAL_COLUMNS: ReportColumn[] = [
 ]
 
 /** One column per day of the period, then the totals. */
-function attendanceColumns(period: { from?: IsoDate; to?: IsoDate }): ReportColumn[] {
+function attendanceColumns(period: ReportPeriod): ReportColumn[] {
   const { from, to } = period
   if (!from || !to) return [...EMPLOYEE_COLUMNS, ...ATTENDANCE_TOTAL_COLUMNS]
   if (to < from) throw ApiError.badRequest('The end date cannot be before the start date')
@@ -215,6 +229,78 @@ function attendanceColumns(period: { from?: IsoDate; to?: IsoDate }): ReportColu
       (date): ReportColumn => ({ key: attendanceDayKey(date), label: dayHeading(date), format: 'text' }),
     ),
     ...ATTENDANCE_TOTAL_COLUMNS,
+  ]
+}
+
+const MONTH_ABBREVIATIONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Every payroll month from one to another, as "YYYY-MM". */
+export function monthsBetween(fromMonth: string, toMonth: string): string[] {
+  const months: string[] = []
+  let year = Number(fromMonth.slice(0, 4))
+  let month = Number(fromMonth.slice(5, 7))
+  const last = Number(toMonth.slice(0, 4)) * 100 + Number(toMonth.slice(5, 7))
+  while (year * 100 + month <= last) {
+    months.push(`${year}-${String(month).padStart(2, '0')}`)
+    month += 1
+    if (month > 12) {
+      month = 1
+      year += 1
+    }
+  }
+  return months
+}
+
+/** The start of the Yearly Salary report's column keys for one payroll month: "2026-03" -> "m2026_03". */
+export const yearlyMonthKey = (month: string): string => `m${month.replace('-', '_')}`
+
+/**
+ * What the Yearly Salary report shows for each month, in order, and the field
+ * of a month's payroll row each comes from (report-yearly-salary.ts).
+ */
+export const YEARLY_MONTH_FIELDS: { suffix: string; label: string; format: ColumnFormat; source: string }[] = [
+  { suffix: 'holidays', label: 'Holidays', format: 'days', source: 'eligible_holidays' },
+  { suffix: 'holiday_wages', label: 'Holiday Wages', format: 'currency', source: 'holiday_wages' },
+  { suffix: 'gross', label: 'Gross', format: 'currency', source: 'gross_earnings' },
+  { suffix: 'overtime', label: 'Overtime', format: 'currency', source: 'overtime_amount' },
+  { suffix: 'total_wages', label: 'Total Wages', format: 'currency', source: 'total_wages' },
+  { suffix: 'deductions', label: 'Deductions', format: 'currency', source: 'total_deductions' },
+  { suffix: 'credits', label: 'Other Credits', format: 'currency', source: 'total_credits' },
+  { suffix: 'net', label: 'Net', format: 'currency', source: 'net_salary' },
+]
+
+/** The Yearly Salary report's totals over the whole range, split by category. */
+const YEARLY_TOTAL_COLUMNS: ReportColumn[] = [
+  { key: 'months', label: 'Months Paid', format: 'number', total: true },
+  { key: 'eligible_holidays', label: 'Total Holidays', format: 'days', total: true },
+  { key: 'holiday_wages', label: 'Total Holiday Wages', format: 'currency', total: true },
+  ...PAY_CATEGORY_COLUMNS.flatMap((column): ReportColumn[] => {
+    const total = { ...column, label: column.label.startsWith('Total') ? column.label : `Total ${column.label}` }
+    // Total wages - every wage earned, overtime included - follows the overtime.
+    return column.key === 'overtime_amount'
+      ? [total, { key: 'total_wages', label: 'Total Wages', format: 'currency', total: true }]
+      : [total]
+  }),
+]
+
+/** For each month of the range, its figures side by side; then the totals. */
+function yearlySalaryColumns(period: ReportPeriod): ReportColumn[] {
+  const months = period.fromMonth && period.toMonth ? monthsBetween(period.fromMonth, period.toMonth) : []
+  return [
+    ...EMPLOYEE_COLUMNS,
+    ...months.flatMap((month) => {
+      const label = `${MONTH_ABBREVIATIONS[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`
+      return YEARLY_MONTH_FIELDS.map(
+        (field): ReportColumn => ({
+          key: `${yearlyMonthKey(month)}_${field.suffix}`,
+          label: `${label} ${field.label}`,
+          format: field.format,
+          total: true,
+          dropWhenEmpty: true,
+        }),
+      )
+    }),
+    ...YEARLY_TOTAL_COLUMNS,
   ]
 }
 
@@ -1154,6 +1240,47 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
        GROUP BY e.id, e.employee_code, e.first_name, e.last_name, d.name, g.name
     `,
     orderBy: 'e.employee_code',
+  },
+  {
+    key: 'yearly-salary',
+    name: 'Yearly Salary Report',
+    description: `Each employee's salary for every month of a range of payroll months - a year, say - side by side, then the totals over the range split by category. For each month: the holidays that earned holiday pay, their Holiday Wages without the components left out of holiday pay (Special Allowance), gross earnings, overtime, total wages (gross earnings plus overtime), total deductions, other credits and net salary. ${PAY_CATEGORIES_NOTE} Months with no payroll are left out.`,
+    category: 'PAYROLL',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['fromMonth', 'toMonth', 'departmentId', 'supervisorId', 'employeeId'],
+    requiredFilters: ['fromMonth', 'toMonth'],
+    // One row per employee and month here; report-yearly-salary.ts works out
+    // each month's holiday figures as the Salary Register does, then turns
+    // the months into columns.
+    columns: yearlySalaryColumns({}),
+    columnsFor: yearlySalaryColumns,
+    sql: `
+      SELECT e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             -- Not shown as columns: the month, and what its figures are worked out from.
+             e.id AS employee_id,
+             r.year AS run_year,
+             r.month AS run_month,${PAY_CATEGORY_SELECT},
+             pc.holiday_work AS holiday_extra_pay,
+             i.present_days,
+             i.half_day_leave_days,
+             i.holiday_days,
+             i.salary_structure_id,
+             i.payable_days_basis,
+             i.calculation_snapshot->'days' AS snapshot_days,
+             asg.override_amount
+        FROM payroll_items i
+        JOIN payroll_runs r ON r.id = i.payroll_run_id
+        JOIN employees e ON e.id = i.employee_id
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id
+        LEFT JOIN employee_salary_assignments asg ON asg.id = i.salary_assignment_id${PAY_CATEGORIES_JOIN}
+       WHERE {{scope}} {{filters}}
+    `,
+    orderBy: 'e.employee_code, r.year, r.month',
   },
   {
     key: 'payroll-month-summary',
