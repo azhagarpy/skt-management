@@ -59,7 +59,7 @@ function saveColumnChoice(choice: Record<string, string[]>): void {
 }
 
 const isNumeric = (format: ReportColumn['format']): boolean =>
-  format === 'currency' || format === 'days' || format === 'number'
+  format === 'currency' || format === 'amount' || format === 'days' || format === 'number'
 
 /**
  * Reports (plan sections 41 and 57).
@@ -220,6 +220,9 @@ export default function ReportsPage() {
     switch (format) {
       case 'currency':
         return formatCurrency(Number(value))
+      case 'amount':
+        // A column mixing kinds of figure: two decimals and no currency sign.
+        return formatNumber(Number(value), 2)
       case 'days':
         return formatDays(Number(value))
       case 'number':

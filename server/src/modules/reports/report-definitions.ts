@@ -17,7 +17,8 @@ import { countDaysBetween, datesBetween, type IsoDate } from '../../utils/dates.
 
 export type ReportCategory = 'EMPLOYEE' | 'ATTENDANCE' | 'LEAVE' | 'PAYROLL' | 'PAYMENT' | 'STATUTORY'
 
-export type ColumnFormat = 'text' | 'number' | 'currency' | 'date' | 'days' | 'percent'
+/** `amount`: a plain figure to two decimals, for a column whose rows hold different kinds of figure. */
+export type ColumnFormat = 'text' | 'number' | 'currency' | 'amount' | 'date' | 'days' | 'percent'
 
 export interface ReportColumn {
   key: string
@@ -251,56 +252,51 @@ export function monthsBetween(fromMonth: string, toMonth: string): string[] {
   return months
 }
 
-/** The start of the Yearly Salary report's column keys for one payroll month: "2026-03" -> "m2026_03". */
+/** The Yearly Salary report's column for one payroll month: "2026-03" -> "m2026_03". */
 export const yearlyMonthKey = (month: string): string => `m${month.replace('-', '_')}`
 
 /**
- * What the Yearly Salary report shows for each month, in order, and the field
- * of a month's payroll row each comes from (report-yearly-salary.ts).
+ * The Yearly Salary report's rows for each employee, in order: what each one
+ * is called and the field of a month's payroll row it comes from
+ * (report-yearly-salary.ts). Total wages is every wage earned, overtime
+ * included.
  */
-export const YEARLY_MONTH_FIELDS: { suffix: string; label: string; format: ColumnFormat; source: string }[] = [
-  { suffix: 'holidays', label: 'Holidays', format: 'days', source: 'eligible_holidays' },
-  { suffix: 'holiday_wages', label: 'Holiday Wages', format: 'currency', source: 'holiday_wages' },
-  { suffix: 'gross', label: 'Gross', format: 'currency', source: 'gross_earnings' },
-  { suffix: 'overtime', label: 'Overtime', format: 'currency', source: 'overtime_amount' },
-  { suffix: 'total_wages', label: 'Total Wages', format: 'currency', source: 'total_wages' },
-  { suffix: 'deductions', label: 'Deductions', format: 'currency', source: 'total_deductions' },
-  { suffix: 'credits', label: 'Other Credits', format: 'currency', source: 'total_credits' },
-  { suffix: 'net', label: 'Net', format: 'currency', source: 'net_salary' },
+export const YEARLY_PARTICULARS: { label: string; source: string }[] = [
+  { label: 'Holidays', source: 'eligible_holidays' },
+  { label: 'Holiday Wages (without SA)', source: 'holiday_wages' },
+  { label: 'Gross Earnings', source: 'gross_earnings' },
+  { label: 'Overtime', source: 'overtime_amount' },
+  { label: 'Total Wages', source: 'total_wages' },
+  { label: 'PF (Employee)', source: 'pf_employee' },
+  { label: 'ESI (Employee)', source: 'esi_employee' },
+  { label: 'P.Tax', source: 'ptax' },
+  { label: 'LWF', source: 'lwf' },
+  { label: 'Other Deductions', source: 'other_deductions' },
+  { label: 'Total Deductions', source: 'total_deductions' },
+  { label: 'Other Credits', source: 'total_credits' },
+  { label: 'Net Salary', source: 'net_salary' },
 ]
 
-/** The Yearly Salary report's totals over the whole range, split by category. */
-const YEARLY_TOTAL_COLUMNS: ReportColumn[] = [
-  { key: 'months', label: 'Months Paid', format: 'number', total: true },
-  { key: 'eligible_holidays', label: 'Total Holidays', format: 'days', total: true },
-  { key: 'holiday_wages', label: 'Total Holiday Wages', format: 'currency', total: true },
-  ...PAY_CATEGORY_COLUMNS.flatMap((column): ReportColumn[] => {
-    const total = { ...column, label: column.label.startsWith('Total') ? column.label : `Total ${column.label}` }
-    // Total wages - every wage earned, overtime included - follows the overtime.
-    return column.key === 'overtime_amount'
-      ? [total, { key: 'total_wages', label: 'Total Wages', format: 'currency', total: true }]
-      : [total]
-  }),
-]
-
-/** For each month of the range, its figures side by side; then the totals. */
+/**
+ * The months of the range as columns, then their total. A column holds
+ * different kinds of figure - a count of holidays above amounts - so it adds
+ * no column total; each employee's figure has its own Total, and the report
+ * ends with every employee's added up.
+ */
 function yearlySalaryColumns(period: ReportPeriod): ReportColumn[] {
   const months = period.fromMonth && period.toMonth ? monthsBetween(period.fromMonth, period.toMonth) : []
   return [
     ...EMPLOYEE_COLUMNS,
-    ...months.flatMap((month) => {
-      const label = `${MONTH_ABBREVIATIONS[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`
-      return YEARLY_MONTH_FIELDS.map(
-        (field): ReportColumn => ({
-          key: `${yearlyMonthKey(month)}_${field.suffix}`,
-          label: `${label} ${field.label}`,
-          format: field.format,
-          total: true,
-          dropWhenEmpty: true,
-        }),
-      )
-    }),
-    ...YEARLY_TOTAL_COLUMNS,
+    { key: 'particulars', label: 'Particulars', format: 'text' },
+    ...months.map(
+      (month): ReportColumn => ({
+        key: yearlyMonthKey(month),
+        label: `${MONTH_ABBREVIATIONS[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`,
+        format: 'amount',
+        dropWhenEmpty: true,
+      }),
+    ),
+    { key: 'range_total', label: 'Total', format: 'amount' },
   ]
 }
 
@@ -1244,7 +1240,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   {
     key: 'yearly-salary',
     name: 'Yearly Salary Report',
-    description: `Each employee's salary for every month of a range of payroll months - a year, say - side by side, then the totals over the range split by category. For each month: the holidays that earned holiday pay, their Holiday Wages without the components left out of holiday pay (Special Allowance), gross earnings, overtime, total wages (gross earnings plus overtime), total deductions, other credits and net salary. ${PAY_CATEGORIES_NOTE} Months with no payroll are left out.`,
+    description: `Each employee's salary for every month of a range of payroll months - a year, say - with the months as columns and a Total. Each employee has a row for each figure: the holidays that earned holiday pay, their Holiday Wages without the components left out of holiday pay (Special Allowance), gross earnings, overtime, total wages (gross earnings plus overtime), PF, ESI, P.Tax, LWF, other deductions, total deductions, other credits and net salary. ${PAY_CATEGORIES_NOTE} The last rows add up every employee. Months with no payroll are left out.`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
@@ -1252,7 +1248,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     requiredFilters: ['fromMonth', 'toMonth'],
     // One row per employee and month here; report-yearly-salary.ts works out
     // each month's holiday figures as the Salary Register does, then turns
-    // the months into columns.
+    // them into a row per figure with the months as columns.
     columns: yearlySalaryColumns({}),
     columnsFor: yearlySalaryColumns,
     sql: `

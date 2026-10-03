@@ -1052,7 +1052,7 @@ export interface AuditLogEntry {
 export interface ReportColumn {
   key: string
   label: string
-  format: 'text' | 'number' | 'currency' | 'date' | 'days' | 'percent'
+  format: 'text' | 'number' | 'currency' | 'amount' | 'date' | 'days' | 'percent'
   total?: boolean
 }
 

@@ -24,6 +24,7 @@ function formatValue(value: unknown, format: ReportColumn['format']): string {
     case 'date':
       return normaliseDate(value as string | Date) ?? ''
     case 'currency':
+    case 'amount':
     case 'number':
     case 'days':
     case 'percent': {
@@ -103,7 +104,7 @@ export async function toExcel(payload: ExportPayload): Promise<Buffer> {
     const values = definition.columns.map((column) => {
       const value = row[column.key]
       if (value === null || value === undefined) return ''
-      if (column.format === 'currency' || column.format === 'days' || column.format === 'percent') {
+      if (column.format === 'currency' || column.format === 'amount' || column.format === 'days' || column.format === 'percent') {
         const numeric = Number(value)
         return Number.isFinite(numeric) ? numeric : value
       }
@@ -131,7 +132,7 @@ export async function toExcel(payload: ExportPayload): Promise<Buffer> {
   definition.columns.forEach((column, index) => {
     const sheetColumn = sheet.getColumn(index + 1)
     sheetColumn.width = Math.max(column.label.length + 4, 14)
-    if (column.format === 'currency') sheetColumn.numFmt = '#,##0.00'
+    if (column.format === 'currency' || column.format === 'amount') sheetColumn.numFmt = '#,##0.00'
     if (column.format === 'days') sheetColumn.numFmt = '0.00'
   })
 
@@ -147,7 +148,7 @@ const CELL_PAD_Y = 3
 const PDF_FONT_SIZES = [7.5, 7, 6.5, 6]
 
 function isNumericFormat(format: ReportColumn['format']): boolean {
-  return format === 'currency' || format === 'number' || format === 'days' || format === 'percent'
+  return format === 'currency' || format === 'amount' || format === 'number' || format === 'days' || format === 'percent'
 }
 
 type PdfDoc = InstanceType<typeof PDFDocument>
