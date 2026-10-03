@@ -183,6 +183,20 @@ payrollRouter.get(
   }),
 )
 
+/** The outstanding items matching the list's filters, on every page, for selecting them all to pay. */
+payrollRouter.get(
+  '/runs/:id/items/outstanding',
+  canManagePayments,
+  validate({ params: idParam, query: itemListQuerySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(
+      res,
+      await service.listOutstandingItems(auth, req.params.id as string, req.query as unknown as ItemListQuery),
+    )
+  }),
+)
+
 payrollRouter.get(
   '/runs/:id/payment-summary',
   canViewPayments,

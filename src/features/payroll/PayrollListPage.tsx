@@ -6,7 +6,7 @@ import { del, getWithMeta, post } from '../../lib/api'
 import { MONTH_NAMES, formatCurrency, formatDate } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
-import { Button, Card, ConfirmDialog, Field, Input, Modal, PageHeader, Pagination, Select, StatusBadge, Textarea } from '../../components/ui'
+import { Badge, Button, Card, ConfirmDialog, Field, Input, Modal, PageHeader, Pagination, Select, StatusBadge, Textarea } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import type { PayrollRun } from '../../types/api'
 
@@ -117,6 +117,21 @@ export default function PayrollListPage() {
           <span className="subtle"> / {formatCurrency(row.totalPending)}</span>
         </span>
       ),
+    },
+    // Whether each run's PF and ESI challans have been paid (set on the run's page).
+    {
+      key: 'statutory',
+      header: 'PF / ESI',
+      hideOnMobile: true,
+      render: (row) =>
+        row.pfPaymentStatus || row.esiPaymentStatus ? (
+          <div className="row" style={{ gap: '0.3rem', flexWrap: 'wrap' }}>
+            {row.pfPaymentStatus ? <Badge tone={row.pfPaymentStatus === 'PAID' ? 'success' : 'warning'}>PF {row.pfPaymentStatus === 'PAID' ? 'paid' : 'pending'}</Badge> : null}
+            {row.esiPaymentStatus ? <Badge tone={row.esiPaymentStatus === 'PAID' ? 'success' : 'warning'}>ESI {row.esiPaymentStatus === 'PAID' ? 'paid' : 'pending'}</Badge> : null}
+          </div>
+        ) : (
+          <span className="muted">—</span>
+        ),
     },
     ...(can('payroll.delete')
       ? [

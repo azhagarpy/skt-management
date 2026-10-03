@@ -18,6 +18,7 @@ import {
   resolveScope,
   scopeClause,
   type EmployeeScope,
+  type ScopeClause,
 } from '../employees/employee-access.js'
 import { buildCalendarContext, type CalendarContext } from '../calendar/calendar.service.js'
 import * as attendanceRepository from '../attendance/attendance.repository.js'
@@ -177,6 +178,9 @@ export function presentRun(row: repository.PayrollRunRow) {
     lockedAt: row.locked_at,
     isEditable: row.status === 'DRAFT' || row.status === 'CALCULATED' || row.status === 'UNDER_REVIEW',
     isLocked: row.status === 'LOCKED',
+    // Null when the run has nothing due for the scheme.
+    pfPaymentStatus: row.pf_payment_status ?? null,
+    esiPaymentStatus: row.esi_payment_status ?? null,
   }
 }
 
@@ -960,6 +964,16 @@ export async function lockRun(auth: AuthContext, runId: string, context: AuditCo
 // Items
 // ---------------------------------------------------------------------------
 
+/** A supervisor with team payroll access sees only their team's items. */
+function itemScope(auth: AuthContext): ((startIndex: number) => ScopeClause) | undefined {
+  const scope = resolveScope(auth, {
+    all: PERMISSIONS.PAYROLL_VIEW_ALL,
+    team: PERMISSIONS.PAYROLL_VIEW_TEAM,
+    self: PERMISSIONS.PAYROLL_VIEW_SELF,
+  })
+  return scope === 'ALL' ? undefined : (startIndex) => scopeClause(auth, scope, 'e', startIndex)
+}
+
 export async function listItems(
   auth: AuthContext,
   runId: string,
@@ -968,19 +982,20 @@ export async function listItems(
   const run = await repository.findRun(runId, auth.organizationId)
   if (!run) throw ApiError.notFound('Payroll run')
 
-  // A supervisor with team payroll access sees only their team's items.
-  const scope = resolveScope(auth, {
-    all: PERMISSIONS.PAYROLL_VIEW_ALL,
-    team: PERMISSIONS.PAYROLL_VIEW_TEAM,
-    self: PERMISSIONS.PAYROLL_VIEW_SELF,
-  })
-  const { rows, total } = await repository.listItems(
-    runId,
-    auth.organizationId,
-    filters,
-    scope === 'ALL' ? undefined : (startIndex) => scopeClause(auth, scope, 'e', startIndex),
-  )
+  const { rows, total } = await repository.listItems(runId, auth.organizationId, filters, itemScope(auth))
   return buildPaginated(rows.map(presentItem), total, filters.page, filters.pageSize)
+}
+
+/**
+ * Every item matching the list's filters that still has something to pay, on
+ * every page - what "select all" picks on the payments screen.
+ */
+export async function listOutstandingItems(auth: AuthContext, runId: string, filters: ItemListQuery) {
+  const run = await repository.findRun(runId, auth.organizationId)
+  if (!run) throw ApiError.notFound('Payroll run')
+
+  const rows = await repository.listOutstandingItems(runId, auth.organizationId, filters, itemScope(auth))
+  return rows.map((row) => ({ id: row.id, pendingAmount: Number(row.pending_amount) }))
 }
 
 export async function getItem(auth: AuthContext, itemId: string) {

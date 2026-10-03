@@ -31,6 +31,8 @@ export interface PayrollRunRow {
   locked_at: Date | null
   created_by_name?: string | null
   approved_by_name?: string | null
+  pf_payment_status?: 'PAID' | 'PENDING' | null
+  esi_payment_status?: 'PAID' | 'PENDING' | null
 }
 
 export interface PayrollItemRow {
@@ -132,8 +134,25 @@ export interface PayrollAdjustmentRow {
 // Runs
 // ---------------------------------------------------------------------------
 
+/**
+ * A run's PF or ESI remittance (statutory-payments.module.ts): PAID once its
+ * challan is recorded, PENDING while the run has something due for the scheme,
+ * else null. `codes` is a fixed list of component codes, never user input.
+ */
+const statutoryStatus = (scheme: 'PF' | 'ESI', codes: string): string => `
+  CASE
+    WHEN EXISTS (SELECT 1 FROM payroll_statutory_payments sp WHERE sp.payroll_run_id = r.id AND sp.scheme = '${scheme}')
+      THEN 'PAID'
+    WHEN EXISTS (SELECT 1 FROM payroll_items si
+                   JOIN payroll_item_components sc ON sc.payroll_item_id = si.id
+                  WHERE si.payroll_run_id = r.id AND sc.component_code IN (${codes}) AND sc.amount > 0)
+      THEN 'PENDING'
+  END`
+
 const RUN_SELECT = `
-  SELECT r.*, cu.full_name AS created_by_name, au.full_name AS approved_by_name
+  SELECT r.*, cu.full_name AS created_by_name, au.full_name AS approved_by_name,
+         ${statutoryStatus('PF', `'PF_EMPLOYEE', 'PF_EMPLOYER_EPF', 'PF_EMPLOYER_EPS'`)} AS pf_payment_status,
+         ${statutoryStatus('ESI', `'ESI_EMPLOYEE', 'ESI_EMPLOYER'`)} AS esi_payment_status
     FROM payroll_runs r
     LEFT JOIN users cu ON cu.id = r.created_by
     LEFT JOIN users au ON au.id = r.approved_by
@@ -451,17 +470,23 @@ export async function insertItemComponents(
   }
 }
 
+export interface ItemFilters {
+  search?: string
+  departmentId?: string[]
+  paymentStatus?: string
+}
+
 /**
+ * The WHERE clause for a run's items, over `payroll_items i JOIN employees e`.
  * `scope`, when given, narrows the items to the employees it admits; it is
  * built on the employees alias `e` from the placeholder number it is handed.
  */
-export async function listItems(
+function itemConditions(
   runId: string,
   organizationId: string,
-  filters: { search?: string; departmentId?: string[]; paymentStatus?: string; page: number; pageSize: number },
+  filters: ItemFilters,
   scope?: (startIndex: number) => ScopeClause,
-  db: Queryable = pool,
-): Promise<{ rows: PayrollItemRow[]; total: number }> {
+): { clause: string; params: unknown[] } {
   const conditions = ['i.payroll_run_id = $1', 'i.organization_id = $2']
   const params: unknown[] = [runId, organizationId]
   const push = (value: unknown): number => {
@@ -484,7 +509,17 @@ export async function listItems(
   }
   if (filters.paymentStatus) conditions.push(`i.payment_status = $${push(filters.paymentStatus)}`)
 
-  const clause = conditions.join(' AND ')
+  return { clause: conditions.join(' AND '), params }
+}
+
+export async function listItems(
+  runId: string,
+  organizationId: string,
+  filters: ItemFilters & { page: number; pageSize: number },
+  scope?: (startIndex: number) => ScopeClause,
+  db: Queryable = pool,
+): Promise<{ rows: PayrollItemRow[]; total: number }> {
+  const { clause, params } = itemConditions(runId, organizationId, filters, scope)
 
   const countRow = await queryOne<{ count: string }>(
     db,
@@ -518,6 +553,26 @@ export async function listItems(
   )
 
   return { rows, total: Number(countRow?.count ?? 0) }
+}
+
+/** Every item matching the filters that still has something to pay, across all pages. */
+export async function listOutstandingItems(
+  runId: string,
+  organizationId: string,
+  filters: ItemFilters,
+  scope?: (startIndex: number) => ScopeClause,
+  db: Queryable = pool,
+): Promise<{ id: string; pending_amount: string }[]> {
+  const { clause, params } = itemConditions(runId, organizationId, filters, scope)
+  return queryRows<{ id: string; pending_amount: string }>(
+    db,
+    `SELECT i.id, i.pending_amount
+       FROM payroll_items i
+       JOIN employees e ON e.id = i.employee_id
+      WHERE ${clause} AND i.pending_amount > 0
+      ORDER BY i.employee_code`,
+    params,
+  )
 }
 
 export async function findItem(

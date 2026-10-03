@@ -56,7 +56,8 @@ export const bulkPaymentSchema = z.object({
    * Pay the full outstanding amount for these items. A bulk payment may arrive
    * as JSON, or as multipart form data when it carries a reference document.
    */
-  payrollItemIds: z.preprocess(idListFromForm, z.array(z.string().uuid()).min(1).max(1000)),
+  // Up to a whole run: "select all" picks every outstanding item, not one page.
+  payrollItemIds: z.preprocess(idListFromForm, z.array(z.string().uuid()).min(1).max(5000)),
   referencePrefix: z.string().trim().max(40).nullish(),
   notes: z.string().trim().max(300).nullish(),
 })

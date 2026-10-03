@@ -24,6 +24,7 @@ import { auditRouter } from './modules/audit/audit.routes.js'
 import { messagingRouter } from './modules/messaging/messaging.routes.js'
 import { orgDocumentRouter } from './modules/org-documents/org-documents.module.js'
 import { backupRouter } from './modules/backup/backup.module.js'
+import { statutoryPaymentRouter } from './modules/statutory-payments/statutory-payments.module.js'
 
 /**
  * Versioned API surface (plan section 48). Every router below the auth one
@@ -59,6 +60,7 @@ apiRouter.use('/lwf', lwfRouter)
 apiRouter.use('/pl-wages', plWagesRouter)
 apiRouter.use('/payroll', payrollRouter)
 apiRouter.use('/payments', paymentRouter)
+apiRouter.use('/statutory-payments', statutoryPaymentRouter)
 apiRouter.use('/payslips', payslipRouter)
 apiRouter.use('/noc', nocRouter)
 apiRouter.use('/appointment-letter', appointmentRouter)

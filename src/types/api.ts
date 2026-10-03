@@ -760,6 +760,37 @@ export interface PayrollRun {
   lockedAt: string | null
   isEditable: boolean
   isLocked: boolean
+  /** Whether the run's PF / ESI challan has been paid; null when nothing is due. */
+  pfPaymentStatus: 'PAID' | 'PENDING' | null
+  esiPaymentStatus: 'PAID' | 'PENDING' | null
+}
+
+/** A run's PF and ESI: what is due and whether the challan has been paid. */
+export interface StatutoryPayments {
+  runId: string
+  monthLabel: string
+  /** Only an approved or locked run can be marked paid. */
+  isPayable: boolean
+  schemes: StatutoryScheme[]
+}
+
+export interface StatutoryScheme {
+  scheme: 'PF' | 'ESI'
+  label: string
+  employees: number
+  employeeShare: number
+  employerShare: number
+  totalDue: number
+  status: 'PAID' | 'PENDING' | 'NOT_DUE'
+  payment: {
+    amount: number
+    paidOn: string
+    referenceNumber: string | null
+    notes: string | null
+    proofFilename: string
+    paidByName: string | null
+    updatedAt: string
+  } | null
 }
 
 export interface PayrollAttendance {

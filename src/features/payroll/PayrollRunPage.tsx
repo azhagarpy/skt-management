@@ -26,6 +26,7 @@ import {
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { DepartmentMultiSelector, idsParam } from '../../components/forms/selectors'
 import type { PayrollItem, PayrollRun } from '../../types/api'
+import { StatutoryPaymentsCard } from './StatutoryPaymentsCard'
 
 interface CalculationResult {
   run: PayrollRun
@@ -449,6 +450,8 @@ export default function PayrollRunPage() {
           </div>
         </Card>
       ) : null}
+
+      {can('payment.view.all') && run.totalEmployees > 0 ? <StatutoryPaymentsCard runId={run.id} /> : null}
 
       {run.isLocked ? (
         <div className="alert alert-info">

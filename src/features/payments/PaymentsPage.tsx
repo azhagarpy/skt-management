@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileUp, Paperclip, Wallet, X } from 'lucide-react'
-import { download, getWithMeta, upload } from '../../lib/api'
+import { download, get, getWithMeta, upload } from '../../lib/api'
 import { formatCurrency, todayIso } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
@@ -43,7 +43,9 @@ export default function PaymentsPage() {
   const [search, setSearch] = useState('')
   const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [paymentStatus, setPaymentStatus] = useState('')
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Selected items and what each still owes, so the total covers items on every page.
+  const [selected, setSelected] = useState<Map<string, number>>(new Map())
+  const [selectingAll, setSelectingAll] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
   const [bulk, setBulk] = useState({ paymentDate: todayIso(), paymentMethod: 'BANK_TRANSFER', referencePrefix: '' })
   // An optional receipt / bank advice, attached to every payment this batch records.
@@ -59,13 +61,12 @@ export default function PaymentsPage() {
   const activeRunId = runId || payableRuns[0]?.id || ''
   const activeRun = payableRuns.find((run) => run.id === activeRunId)
 
-  const filters = {
-    page,
-    pageSize: 25,
+  const listFilters = {
     search: search || undefined,
     departmentId: idsParam(departmentIds),
     paymentStatus: paymentStatus || undefined,
   }
+  const filters = { page, pageSize: 25, ...listFilters }
 
   const itemsQuery = useQuery({
     queryKey: ['payroll', 'run', activeRunId, 'items', filters],
@@ -82,7 +83,7 @@ export default function PaymentsPage() {
       form.append('payrollRunId', activeRunId)
       form.append('paymentDate', bulk.paymentDate)
       form.append('paymentMethod', bulk.paymentMethod)
-      form.append('payrollItemIds', JSON.stringify([...selected]))
+      form.append('payrollItemIds', JSON.stringify([...selected.keys()]))
       if (bulk.referencePrefix) form.append('referencePrefix', bulk.referencePrefix)
       if (referenceFile) form.append('file', referenceFile)
       return upload<{ itemsPaid: number; totalAmount: number; skipped: { payrollItemId: string; reason: string }[] }>(
@@ -97,7 +98,7 @@ export default function PaymentsPage() {
         `${formatCurrency(totalAmount)} recorded${skipped.length > 0 ? `; ${skipped.length} skipped` : ''}`,
       )
       setBulkOpen(false)
-      setSelected(new Set())
+      setSelected(new Map())
       setReferenceFile(null)
       await queryClient.invalidateQueries({ queryKey: ['payroll'] })
     },
@@ -107,21 +108,35 @@ export default function PaymentsPage() {
   const items = itemsQuery.data?.data ?? []
   const meta = itemsQuery.data?.meta
 
-  const toggle = (itemId: string): void => {
+  const toggle = (item: PayrollItem): void => {
     setSelected((current) => {
-      const next = new Set(current)
-      if (next.has(itemId)) next.delete(itemId)
-      else next.add(itemId)
+      const next = new Map(current)
+      if (next.has(item.id)) next.delete(item.id)
+      else next.set(item.id, item.pendingAmount)
       return next
     })
   }
 
-  const outstandingItems = items.filter((item) => item.pendingAmount > 0)
-  const allOutstandingSelected = outstandingItems.length > 0 && outstandingItems.every((item) => selected.has(item.id))
+  /** Selects every outstanding item matching the filters, on every page - not just the one shown. */
+  const selectAllOutstanding = async (): Promise<void> => {
+    setSelectingAll(true)
+    try {
+      const outstanding = await get<{ id: string; pendingAmount: number }[]>(
+        `/payroll/runs/${activeRunId}/items/outstanding`,
+        listFilters,
+      )
+      setSelected(new Map(outstanding.map((item) => [item.id, item.pendingAmount])))
+      if (outstanding.length === 0) toast.info('Nothing outstanding', 'Everyone matching these filters is paid in full.')
+    } catch (error) {
+      toast.error('Could not select the outstanding payments', error instanceof Error ? error.message : undefined)
+    } finally {
+      setSelectingAll(false)
+    }
+  }
 
-  const selectedTotal = items
-    .filter((item) => selected.has(item.id))
-    .reduce((sum, item) => sum + item.pendingAmount, 0)
+  const hasOutstanding = items.some((item) => item.pendingAmount > 0) || (meta?.totalPages ?? 1) > 1
+
+  const selectedTotal = [...selected.values()].reduce((sum, pending) => sum + pending, 0)
 
   const columns: Column<PayrollItem>[] = [
     ...(canManage
@@ -137,7 +152,7 @@ export default function PaymentsPage() {
                 disabled={row.pendingAmount <= 0}
                 aria-label={`Select ${row.employeeName}`}
                 onClick={(event) => event.stopPropagation()}
-                onChange={() => toggle(row.id)}
+                onChange={() => toggle(row)}
               />
             ),
           },
@@ -225,7 +240,7 @@ export default function PaymentsPage() {
                   value={activeRunId}
                   onChange={(event) => {
                     setRunId(event.target.value)
-                    setSelected(new Set())
+                    setSelected(new Map())
                     setPage(1)
                   }}
                 >
@@ -252,17 +267,18 @@ export default function PaymentsPage() {
                 </Select>
               </Field>
 
-              {canManage && outstandingItems.length > 0 ? (
+              {canManage && (hasOutstanding || selected.size > 0) ? (
                 <div className="filter-bar-actions">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      setSelected(allOutstandingSelected ? new Set() : new Set(outstandingItems.map((item) => item.id)))
-                    }
-                  >
-                    {allOutstandingSelected ? 'Clear selection' : 'Select all outstanding'}
-                  </Button>
+                  {hasOutstanding ? (
+                    <Button variant="secondary" size="sm" loading={selectingAll} onClick={() => void selectAllOutstanding()}>
+                      Select all outstanding
+                    </Button>
+                  ) : null}
+                  {selected.size > 0 ? (
+                    <Button variant="ghost" size="sm" onClick={() => setSelected(new Map())}>
+                      Clear selection
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
