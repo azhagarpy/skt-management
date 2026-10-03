@@ -11,7 +11,7 @@ import {
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { assertEmployeeInScope, resolveScope, scopeClause, type EmployeeScope } from '../employees/employee-access.js'
-import { buildCalendarContext } from '../calendar/calendar.service.js'
+import { buildCalendarContext, type DayKind } from '../calendar/calendar.service.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './attendance.repository.js'
 import { checkAbsenceStreaks } from './absence-alert.js'
@@ -301,6 +301,16 @@ export interface CalendarDayCounts {
   employed: number
 }
 
+/**
+ * A day's status for an employed employee: what was marked, else what the
+ * configured calendar makes it - a holiday or weekly off - else UNMARKED, a
+ * working day nobody marked.
+ */
+export function calendarStatusFor(recordStatus: string | null | undefined, dayKind: DayKind): CalendarStatus {
+  if (recordStatus) return recordStatus as CalendarStatus
+  return dayKind === 'HOLIDAY' ? 'HOLIDAY' : dayKind === 'WEEKLY_OFF' ? 'WEEKLY_OFF' : 'UNMARKED'
+}
+
 const COUNT_KEY: Record<CalendarStatus, keyof Omit<CalendarDayCounts, 'employed'>> = {
   PRESENT: 'present',
   ABSENT: 'absent',
@@ -360,15 +370,17 @@ export async function getAttendanceCalendar(auth: AuthContext, query: CalendarQu
       const employed = date >= employee.joining_date && (!employee.exit_date || date <= employee.exit_date)
       if (!employed) return null
 
-      let status = recordByKey.get(`${employee.employee_id}|${date}`)?.status as CalendarStatus | undefined
-      if (!status) {
-        const day = calendar.dayFor(date, {
-          departmentId: employee.department_id,
-          locationId: employee.location_id,
-          employeeId: employee.employee_id,
-        })
-        status = day.kind === 'HOLIDAY' ? 'HOLIDAY' : day.kind === 'WEEKLY_OFF' ? 'WEEKLY_OFF' : 'UNMARKED'
-      }
+      const recorded = recordByKey.get(`${employee.employee_id}|${date}`)?.status
+      const status = recorded
+        ? calendarStatusFor(recorded, 'WORKING')
+        : calendarStatusFor(
+            null,
+            calendar.dayFor(date, {
+              departmentId: employee.department_id,
+              locationId: employee.location_id,
+              employeeId: employee.employee_id,
+            }).kind,
+          )
 
       counts[COUNT_KEY[status] ?? 'unmarked'] += 1
       counts.employed += 1

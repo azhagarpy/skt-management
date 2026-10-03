@@ -63,7 +63,7 @@ export function toCsv(payload: ExportPayload): Buffer {
     lines.push(
       definition.columns
         .map((column, index) => {
-          if (index === 0) return csvCell('Total')
+          if (index === 0 && !column.total) return csvCell('Total')
           if (!column.total) return ''
           return csvCell(formatValue(totals[column.key], column.format))
         })
@@ -120,7 +120,7 @@ export async function toExcel(payload: ExportPayload): Promise<Buffer> {
   if (definition.columns.some((column) => column.total) && rows.length > 0) {
     const totalRow = sheet.addRow(
       definition.columns.map((column, index) => {
-        if (index === 0) return 'Total'
+        if (index === 0 && !column.total) return 'Total'
         if (!column.total) return ''
         return totals[column.key] ?? 0
       }),
@@ -235,7 +235,7 @@ export function toPdf(payload: ExportPayload): Promise<Buffer> {
     const hasTotals = columns.some((column) => column.total) && rows.length > 0
     const totalCells = hasTotals
       ? columns.map((column, index) =>
-          index === 0 ? 'Total' : column.total ? formatValue(totals[column.key], column.format) : '',
+          index === 0 && !column.total ? 'Total' : column.total ? formatValue(totals[column.key], column.format) : '',
         )
       : null
 
@@ -401,6 +401,8 @@ export function describeFilters(filters: Record<string, unknown>): string {
     to: 'To',
     year: 'Year',
     month: 'Month',
+    fromMonth: 'From month',
+    toMonth: 'To month',
     departmentId: 'Department',
     supervisorId: 'Supervisor',
     employeeId: 'Employee',

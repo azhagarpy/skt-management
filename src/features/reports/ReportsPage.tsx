@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { Download, FileSpreadsheet, FileText, FileType } from 'lucide-react'
-import { download, getWithMeta, get } from '../../lib/api'
+import { Download, FileSpreadsheet, FileText, FileType, Printer } from 'lucide-react'
+import { download, fetchBlob, getWithMeta, get } from '../../lib/api'
 import { MONTH_NAMES, formatCurrency, formatDate, formatDays, formatNumber, todayIso } from '../../lib/format'
+import { printPdf } from '../../lib/print'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
 import {
@@ -17,27 +18,71 @@ import {
   Spinner,
   StatusBadge,
 } from '../../components/ui'
-import { DepartmentMultiSelector, EmployeeSelector, SupervisorSelector } from '../../components/forms/selectors'
+import { DepartmentMultiSelector, EmployeeSelector, MultiSelect, SupervisorSelector } from '../../components/forms/selectors'
 import type { ReportColumn, ReportDescriptor } from '../../types/api'
+
+/** The ways a report's period can be chosen, and the filters each one sends. */
+type PeriodMode = 'month' | 'monthRange' | 'range'
+
+const PERIOD_KEYS: Record<PeriodMode, string[]> = {
+  month: ['year', 'month'],
+  monthRange: ['fromMonth', 'toMonth'],
+  range: ['from', 'to'],
+}
+
+const PERIOD_LABELS: Record<PeriodMode, string> = {
+  month: 'Month',
+  monthRange: 'Month range',
+  range: 'Date range',
+}
+
+const PERIOD_MODES: PeriodMode[] = ['month', 'monthRange', 'range']
+
+/** Each report's chosen columns, remembered in this browser only. */
+const COLUMN_CHOICE_KEY = 'skt.reports.columns'
+
+function loadColumnChoice(): Record<string, string[]> {
+  try {
+    const stored = window.localStorage.getItem(COLUMN_CHOICE_KEY)
+    return stored ? (JSON.parse(stored) as Record<string, string[]>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveColumnChoice(choice: Record<string, string[]>): void {
+  try {
+    window.localStorage.setItem(COLUMN_CHOICE_KEY, JSON.stringify(choice))
+  } catch {
+    // Not remembered; the choice still applies until the page is left.
+  }
+}
+
+const isNumeric = (format: ReportColumn['format']): boolean =>
+  format === 'currency' || format === 'days' || format === 'number'
 
 /**
  * Reports (plan sections 41 and 57).
  *
  * The catalogue is served by the API, including each report's columns and the
  * filters it accepts, so this one screen renders every report and its exports
- * without hard-coding any of them.
+ * without hard-coding any of them. The columns shown can be chosen, and the
+ * exports and prints carry just those.
  */
 export default function ReportsPage() {
   const toast = useToast()
   const { can } = useAuth()
 
   const now = new Date()
+  const years = Array.from({ length: 6 }, (_, index) => now.getFullYear() + 1 - index)
   const [selectedKey, setSelectedKey] = useState('')
   const [page, setPage] = useState(1)
   const [exporting, setExporting] = useState<string | null>(null)
   const [filters, setFilters] = useState<Record<string, string>>({
-    year: String(now.getFullYear()),
+    year: String(now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()),
     month: String(now.getMonth() === 0 ? 12 : now.getMonth()),
+    fromMonth: `${now.getFullYear()}-01`,
+    toMonth: `${now.getFullYear()}-12`,
     from: '',
     to: '',
     departmentId: '',
@@ -48,6 +93,7 @@ export default function ReportsPage() {
     leaveStatus: '',
     attendanceStatus: '',
   })
+  const [columnChoice, setColumnChoice] = useState<Record<string, string[]>>(loadColumnChoice)
 
   const catalogueQuery = useQuery({
     queryKey: ['reports', 'catalogue'],
@@ -61,14 +107,20 @@ export default function ReportsPage() {
     if (!selectedKey && reports[0]) setSelectedKey(reports[0].key)
   }, [reports, selectedKey])
 
-  // A report that takes both a month and a date range is run by one or the
-  // other: the period filters not chosen are neither shown nor sent.
-  const [periodMode, setPeriodMode] = useState<'month' | 'range'>('month')
-  const hasPeriodChoice = Boolean(report?.filters.includes('month') && report.filters.includes('from'))
-  const periodKeys = hasPeriodChoice ? (periodMode === 'month' ? ['year', 'month'] : ['from', 'to']) : []
+  // A report that takes more than one kind of period is run by one of them:
+  // the period filters not chosen are neither shown nor sent.
+  const [periodMode, setPeriodMode] = useState<PeriodMode>('month')
+  const modes = PERIOD_MODES.filter((mode) => report?.filters.includes(PERIOD_KEYS[mode][1] as string))
+  const modeList = modes.join(',')
+  const activeMode = modes.includes(periodMode) ? periodMode : modes[0]
+  const hasPeriodChoice = modes.length > 1
+  const periodKeys = hasPeriodChoice && activeMode ? PERIOD_KEYS[activeMode] : []
   const hiddenKeys = useMemo(
-    () => (hasPeriodChoice ? (periodMode === 'month' ? ['from', 'to'] : ['year', 'month']) : []),
-    [hasPeriodChoice, periodMode],
+    () =>
+      hasPeriodChoice
+        ? (modeList.split(',') as PeriodMode[]).filter((mode) => mode !== activeMode).flatMap((mode) => PERIOD_KEYS[mode])
+        : [],
+    [hasPeriodChoice, activeMode, modeList],
   )
   const accepts = (key: string): boolean => Boolean(report?.filters.includes(key)) && !hiddenKeys.includes(key)
 
@@ -85,20 +137,28 @@ export default function ReportsPage() {
   }, [report, filters, hiddenKeys])
 
   const missingRequired = [...(report?.requiredFilters ?? []), ...periodKeys].filter((key) => !filters[key])
+  const rangeBackwards =
+    accepts('fromMonth') && Boolean(filters.fromMonth && filters.toMonth) && filters.toMonth! < filters.fromMonth!
 
   const dataQuery = useQuery({
     queryKey: ['reports', report?.key, activeFilters, page],
     queryFn: () => getWithMeta<Record<string, unknown>[]>(`/reports/${report?.key}`, { ...activeFilters, page, pageSize: 50 }),
-    enabled: Boolean(report) && missingRequired.length === 0,
+    enabled: Boolean(report) && missingRequired.length === 0 && !rangeBackwards,
     placeholderData: keepPreviousData,
   })
 
   const rows = dataQuery.data?.data ?? []
   const meta = dataQuery.data?.meta
-  const columns = (meta?.columns as ReportColumn[] | undefined) ?? report?.columns ?? []
+  // Every column the report has for this period; none is ever dropped from the choice.
+  const allColumns = (meta?.columns as ReportColumn[] | undefined) ?? report?.columns ?? []
+  // No choice, or a choice none of whose columns exist any more, shows every column.
+  const chosenKeys = (report ? columnChoice[report.key] ?? [] : []).filter((key) =>
+    allColumns.some((column) => column.key === key),
+  )
+  const columns = chosenKeys.length > 0 ? allColumns.filter((column) => chosenKeys.includes(column.key)) : allColumns
   const totals = (meta?.totals as Record<string, number> | undefined) ?? {}
   const grandTotals = (meta?.grandTotals as Record<string, number> | undefined) ?? {}
-  const hasTotals = Object.keys(grandTotals).length > 0
+  const hasTotals = columns.some((column) => column.total) && Object.keys(grandTotals).length > 0
   // With a single page the page total is the grand total, so only one is shown.
   const isPaged = ((meta?.totalPages as number | undefined) ?? 1) > 1
 
@@ -106,6 +166,18 @@ export default function ReportsPage() {
     setFilters((current) => ({ ...current, [key]: value }))
     setPage(1)
   }
+
+  const chooseColumns = (keys: string[]): void => {
+    if (!report) return
+    const next = { ...columnChoice, [report.key]: keys }
+    if (keys.length === 0) delete next[report.key]
+    setColumnChoice(next)
+    saveColumnChoice(next)
+  }
+
+  // The chosen columns travel with every export and print.
+  const exportQuery = { ...activeFilters, ...(chosenKeys.length > 0 ? { columns: chosenKeys.join(',') } : {}) }
+  const cannotRun = missingRequired.length > 0 || rangeBackwards
 
   const runExport = async (format: 'csv' | 'xlsx' | 'pdf' | 'ecr'): Promise<void> => {
     if (!report) return
@@ -116,7 +188,7 @@ export default function ReportsPage() {
         format === 'ecr'
           ? `pf-ecr-${filters.year}-${String(filters.month).padStart(2, '0')}.txt`
           : `${report.key}-${todayIso()}.${format}`
-      const headers = await download(`/reports/${report.key}/export`, filename, { ...activeFilters, format })
+      const headers = await download(`/reports/${report.key}/export`, filename, { ...exportQuery, format })
       const skipped = Number(headers.get('X-Export-Skipped') ?? 0)
       if (format === 'ecr' && skipped > 0) {
         toast.info(
@@ -126,6 +198,18 @@ export default function ReportsPage() {
       }
     } catch (error) {
       toast.error('Export failed', error instanceof Error ? error.message : undefined)
+    } finally {
+      setExporting(null)
+    }
+  }
+
+  const runPrint = async (): Promise<void> => {
+    if (!report) return
+    setExporting('print')
+    try {
+      printPdf(await fetchBlob(`/reports/${report.key}/export`, { ...exportQuery, format: 'pdf' }))
+    } catch (error) {
+      toast.error('Could not print the report', error instanceof Error ? error.message : undefined)
     } finally {
       setExporting(null)
     }
@@ -153,13 +237,52 @@ export default function ReportsPage() {
   const isStatusColumn = (key: string): boolean =>
     key.endsWith('_status') || key === 'status' || key === 'employment_status' || key === 'payment_status'
 
+  /** A month and year picked together, as "YYYY-MM". */
+  const monthPicker = (key: 'fromMonth' | 'toMonth', label: string) => {
+    const [year, month] = (filters[key] ?? '').split('-')
+    const set = (nextYear: string, nextMonth: string): void => setFilter(key, `${nextYear}-${nextMonth.padStart(2, '0')}`)
+    return (
+      <Field label={label} htmlFor={`report-${key}`}>
+        <div className="row" style={{ gap: '0.4rem', flexWrap: 'nowrap' }}>
+          <Select
+            id={`report-${key}`}
+            aria-label={`${label}: month`}
+            value={String(Number(month))}
+            onChange={(event) => set(year ?? String(now.getFullYear()), event.target.value)}
+          >
+            {MONTH_NAMES.map((name, index) => (
+              <option key={name} value={index + 1}>
+                {name}
+              </option>
+            ))}
+          </Select>
+          <Select
+            aria-label={`${label}: year`}
+            value={year}
+            onChange={(event) => set(event.target.value, month ?? '01')}
+          >
+            {years.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </Field>
+    )
+  }
+
+  /** The label "total" sits in the first column, unless that column has a total of its own to show. */
+  const totalCell = (column: ReportColumn, index: number, label: string, values: Record<string, number>) =>
+    index === 0 && !column.total ? label : column.total ? renderCell(values[column.key], column.format) : ''
+
   if (catalogueQuery.isLoading) return <Spinner label="Loading reports" />
 
   return (
     <div className="page">
       <PageHeader
         title="Reports"
-        description="Every report can be filtered and exported to CSV, Excel or PDF."
+        description="Every report can be filtered, its columns chosen, and exported to CSV, Excel or PDF or printed."
         actions={
           can('report.export') && report ? (
             <>
@@ -167,7 +290,7 @@ export default function ReportsPage() {
                 variant="secondary"
                 icon={<Download size={15} />}
                 loading={exporting === 'csv'}
-                disabled={missingRequired.length > 0}
+                disabled={cannotRun}
                 onClick={() => void runExport('csv')}
               >
                 CSV
@@ -176,7 +299,7 @@ export default function ReportsPage() {
                 variant="secondary"
                 icon={<FileSpreadsheet size={15} />}
                 loading={exporting === 'xlsx'}
-                disabled={missingRequired.length > 0}
+                disabled={cannotRun}
                 onClick={() => void runExport('xlsx')}
               >
                 Excel
@@ -185,17 +308,26 @@ export default function ReportsPage() {
                 variant="secondary"
                 icon={<FileText size={15} />}
                 loading={exporting === 'pdf'}
-                disabled={missingRequired.length > 0}
+                disabled={cannotRun}
                 onClick={() => void runExport('pdf')}
               >
                 PDF
               </Button>
-              {report.key === 'pf-report' ? (
+              <Button
+                variant="secondary"
+                icon={<Printer size={15} />}
+                loading={exporting === 'print'}
+                disabled={cannotRun}
+                onClick={() => void runPrint()}
+              >
+                Print
+              </Button>
+              {report.key === 'pf-report' && activeMode !== 'monthRange' ? (
                 <Button
                   variant="secondary"
                   icon={<FileType size={15} />}
                   loading={exporting === 'ecr'}
-                  disabled={missingRequired.length > 0}
+                  disabled={cannotRun}
                   onClick={() => void runExport('ecr')}
                 >
                   PF text (ECR)
@@ -230,14 +362,17 @@ export default function ReportsPage() {
             <Field label="Period" htmlFor="report-period">
               <Select
                 id="report-period"
-                value={periodMode}
+                value={activeMode}
                 onChange={(event) => {
-                  setPeriodMode(event.target.value as 'month' | 'range')
+                  setPeriodMode(event.target.value as PeriodMode)
                   setPage(1)
                 }}
               >
-                <option value="month">Month</option>
-                <option value="range">Date range</option>
+                {modes.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {PERIOD_LABELS[mode]}
+                  </option>
+                ))}
               </Select>
             </Field>
           ) : null}
@@ -245,7 +380,7 @@ export default function ReportsPage() {
           {accepts('year') ? (
             <Field label="Year" htmlFor="report-year">
               <Select id="report-year" value={filters.year} onChange={(event) => setFilter('year', event.target.value)}>
-                {Array.from({ length: 5 }, (_, index) => now.getFullYear() - index).map((value) => (
+                {years.map((value) => (
                   <option key={value} value={value}>
                     {value}
                   </option>
@@ -265,6 +400,9 @@ export default function ReportsPage() {
               </Select>
             </Field>
           ) : null}
+
+          {accepts('fromMonth') ? monthPicker('fromMonth', 'From month') : null}
+          {accepts('toMonth') ? monthPicker('toMonth', 'To month') : null}
 
           {accepts('from') ? (
             <Field label="From" htmlFor="report-from">
@@ -374,6 +512,19 @@ export default function ReportsPage() {
               </Select>
             </Field>
           ) : null}
+
+          {report ? (
+            <Field label="Columns" htmlFor="report-columns">
+              <MultiSelect
+                id="report-columns"
+                options={allColumns.map((column) => ({ value: column.key, label: column.label }))}
+                value={chosenKeys}
+                onChange={chooseColumns}
+                allLabel="All columns"
+                searchPlaceholder="Search columns"
+              />
+            </Field>
+          ) : null}
         </div>
 
         {report ? <p className="subtle" style={{ padding: '0.75rem 1.25rem 0' }}>{report.description}</p> : null}
@@ -382,6 +533,16 @@ export default function ReportsPage() {
           <div style={{ padding: '1.25rem' }}>
             <div className="alert alert-info">
               Choose {missingRequired.join(' and ')} to run this report.
+            </div>
+          </div>
+        ) : rangeBackwards ? (
+          <div style={{ padding: '1.25rem' }}>
+            <div className="alert alert-warning">The last month cannot be before the first.</div>
+          </div>
+        ) : dataQuery.error ? (
+          <div style={{ padding: '1.25rem' }}>
+            <div className="alert alert-warning">
+              {dataQuery.error instanceof Error ? dataQuery.error.message : 'The report could not be run.'}
             </div>
           </div>
         ) : dataQuery.isFetching && rows.length === 0 ? (
@@ -398,24 +559,18 @@ export default function ReportsPage() {
               <thead>
                 <tr className="report-header-row">
                   {columns.map((column) => (
-                    <th
-                      key={column.key}
-                      className={column.format === 'currency' || column.format === 'days' || column.format === 'number' ? 'align-right' : ''}
-                    >
+                    <th key={column.key} className={isNumeric(column.format) ? 'align-right' : ''}>
                       {column.label}
                     </th>
                   ))}
                 </tr>
                 {hasTotals ? (
                   <tr className="report-grand-total">
-                    {columns.map((column, index) => {
-                      const numeric = column.format === 'currency' || column.format === 'days' || column.format === 'number'
-                      return (
-                        <td key={column.key} data-label={column.label} className={numeric ? 'align-right' : ''}>
-                          {index === 0 ? 'All pages total' : column.total ? renderCell(grandTotals[column.key], column.format) : ''}
-                        </td>
-                      )
-                    })}
+                    {columns.map((column, index) => (
+                      <td key={column.key} data-label={column.label} className={isNumeric(column.format) ? 'align-right' : ''}>
+                        {totalCell(column, index, 'All pages total', grandTotals)}
+                      </td>
+                    ))}
                   </tr>
                 ) : null}
               </thead>
@@ -424,9 +579,8 @@ export default function ReportsPage() {
                   <tr key={index}>
                     {columns.map((column) => {
                       const value = row[column.key]
-                      const numeric = column.format === 'currency' || column.format === 'days' || column.format === 'number'
                       return (
-                        <td key={column.key} data-label={column.label} className={numeric ? 'align-right' : ''}>
+                        <td key={column.key} data-label={column.label} className={isNumeric(column.format) ? 'align-right' : ''}>
                           {isStatusColumn(column.key) && typeof value === 'string' ? (
                             <StatusBadge status={value} />
                           ) : (
@@ -438,17 +592,14 @@ export default function ReportsPage() {
                   </tr>
                 ))}
               </tbody>
-              {isPaged && Object.keys(totals).length > 0 ? (
+              {isPaged && hasTotals ? (
                 <tfoot>
                   <tr>
-                    {columns.map((column, index) => {
-                      const numeric = column.format === 'currency' || column.format === 'days' || column.format === 'number'
-                      return (
-                        <td key={column.key} data-label={column.label} className={numeric ? 'align-right' : ''}>
-                          {index === 0 ? 'Page total' : column.total ? renderCell(totals[column.key], column.format) : ''}
-                        </td>
-                      )
-                    })}
+                    {columns.map((column, index) => (
+                      <td key={column.key} data-label={column.label} className={isNumeric(column.format) ? 'align-right' : ''}>
+                        {totalCell(column, index, 'Page total', totals)}
+                      </td>
+                    ))}
                   </tr>
                 </tfoot>
               ) : null}

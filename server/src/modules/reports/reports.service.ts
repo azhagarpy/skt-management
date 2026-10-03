@@ -10,11 +10,13 @@ import {
   findReportDefinition,
   REPORT_DEFINITIONS,
   type FilterKey,
+  type ReportColumn,
   type ReportDefinition,
 } from './report-definitions.js'
 import { idListParam } from '../../utils/query-params.js'
 import { payCycleFor, PAYROLL_CYCLE_CUTOFF_DAY } from '../../utils/dates.js'
 import { addHolidayAmounts, addOvertimeAmounts, addRegisterHolidayFigures, type ReportRow } from './report-amounts.js'
+import { addAttendanceDays, addAttendanceTotals } from './report-attendance.js'
 
 /**
  * The generic report runner.
@@ -25,11 +27,28 @@ import { addHolidayAmounts, addOvertimeAmounts, addRegisterHolidayFigures, type 
  * exporters render into CSV, Excel or PDF.
  */
 
+/** A payroll month, "YYYY-MM". */
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/
+
+/** The longest month range a report runs over: two years. */
+const MAX_RANGE_MONTHS = 24
+
+/** "2026-03" -> { year: 2026, month: 3 } */
+function parseMonth(value: string): { year: number; month: number } {
+  const [year, month] = value.split('-')
+  return { year: Number(year), month: Number(month) }
+}
+
+/** A month as one comparable number: "2026-03" -> 202603. */
+const monthNumber = (value: string): number => parseMonth(value).year * 100 + parseMonth(value).month
+
 export const reportFilterSchema = z.object({
   from: isoDateSchema.optional(),
   to: isoDateSchema.optional(),
   year: z.coerce.number().int().min(1970).max(2200).optional(),
   month: z.coerce.number().int().min(1).max(12).optional(),
+  fromMonth: z.string().regex(MONTH_PATTERN, 'Choose a month as YYYY-MM').optional(),
+  toMonth: z.string().regex(MONTH_PATTERN, 'Choose a month as YYYY-MM').optional(),
   departmentId: idListParam.optional(),
   supervisorId: z.string().uuid().optional(),
   employeeId: z.string().uuid().optional(),
@@ -50,6 +69,16 @@ export type ReportFilters = z.infer<typeof reportFilterSchema>
 export const exportQuerySchema = reportFilterSchema.extend({
   // `ecr` is the PF portal's upload text and exists for the PF report only.
   format: z.enum(['csv', 'xlsx', 'pdf', 'ecr']).default('csv'),
+  /** The columns to export, by key, comma separated; every column when left out. */
+  columns: z
+    .union([z.string(), z.array(z.string())])
+    .transform((value) =>
+      (Array.isArray(value) ? value : value.split(','))
+        .map((key) => key.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.string().regex(/^[A-Za-z0-9_-]{1,60}$/, 'Unknown column')).max(200))
+    .optional(),
 })
 
 export type ExportQuery = z.infer<typeof exportQuerySchema>
@@ -80,7 +109,6 @@ const FILTER_SQL: Partial<Record<FilterKey, (paramIndex: number) => string>> = {
  */
 const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?: string; month?: string }> = {
   'daily-attendance': { from: 'a.attendance_date', to: 'a.attendance_date' },
-  'monthly-attendance-summary': { from: 'a.attendance_date', to: 'a.attendance_date' },
   'holiday-report': {
     from: 'h.holiday_date',
     to: 'h.holiday_date',
@@ -89,11 +117,16 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   },
   // Its month is turned into dates by resolvePayrollMonth.
   'overtime-report': { from: 'o.work_date', to: 'o.work_date' },
+  // Everyone employed at some point in the period: they left on or after its
+  // first day and joined by its last. Its month is turned into dates by
+  // resolvePayrollMonth.
+  'monthly-attendance-summary': { from: "coalesce(e.exit_date, 'infinity'::date)", to: 'e.joining_date' },
   'leave-requests': { from: 'r.to_date', to: 'r.from_date' },
   'leave-balances': { year: 'b.leave_year' },
   'salary-register': { year: 'r.year', month: 'r.month' },
   'payment-status': { year: 'r.year', month: 'r.month' },
   'payment-transactions': { from: 't.payment_date', to: 't.payment_date' },
+  'bank-transfer': { year: 'r.year', month: 'r.month' },
   'bonus-report': { year: 'b.payroll_year', month: 'b.payroll_month' },
   'tax-deductions-report': { year: 't.payroll_year', month: 't.payroll_month' },
   'other-deductions-report': { year: 'a.apply_year', month: 'a.apply_month' },
@@ -103,45 +136,102 @@ const DATE_COLUMN_BY_REPORT: Record<string, { from?: string; to?: string; year?:
   'pf-report': { year: 'r.year', month: 'r.month' },
   'esi-report': { year: 'r.year', month: 'r.month' },
   'department-salary': { year: 'r.year', month: 'r.month' },
+  'payroll-summary': { year: 'r.year', month: 'r.month' },
+  'payroll-month-summary': { year: 'r.year', month: 'r.month' },
+  // As the Monthly Attendance report: everyone employed at some point in the period.
+  'attendance-summary': { from: "coalesce(e.exit_date, 'infinity'::date)", to: 'e.joining_date' },
 }
 
 /**
  * Reports whose month is the payroll month rather than the calendar month, so
  * they agree with what that month's payroll paid.
  */
-const PAYROLL_MONTH_REPORTS = new Set(['overtime-report'])
+const PAYROLL_MONTH_REPORTS = new Set(['overtime-report', 'monthly-attendance-summary', 'attendance-summary'])
 
 /**
- * Columns SQL cannot work out - amounts that follow payroll's own rules - are
- * filled in afterwards by these. A report with one is paged and totalled in
- * memory, over every matching row, rather than in SQL.
+ * Columns SQL cannot work out - amounts that follow payroll's own rules, or
+ * each day's attendance - are filled in afterwards by these, given the
+ * report's rows and its resolved filters. A report with one is paged and
+ * totalled in memory, over every matching row, rather than in SQL.
  */
-const ENRICH_BY_REPORT: Record<string, (organizationId: string, rows: ReportRow[]) => Promise<ReportRow[]>> = {
+const ENRICH_BY_REPORT: Record<
+  string,
+  (organizationId: string, rows: ReportRow[], filters: ReportFilters) => Promise<ReportRow[]>
+> = {
   'holiday-report': addHolidayAmounts,
   'overtime-report': addOvertimeAmounts,
   'salary-register': addRegisterHolidayFigures,
+  'monthly-attendance-summary': addAttendanceDays,
+  'attendance-summary': addAttendanceTotals,
 }
 
 /**
- * Turns a payroll-month report's year and month into the dates that month
- * covers: the run's own dates when the month has a run (they can be changed),
- * else the standard cycle, the 21st of the previous month to the 20th.
+ * The dates a payroll month covers: the run's own dates when the month has a
+ * run (they can be changed), else the standard cycle, the 21st of the
+ * previous month to the 20th.
+ */
+async function payrollMonthPeriod(organizationId: string, year: number, month: number): Promise<{ start: string; end: string }> {
+  const run = await queryOne<{ period_start: string; period_end: string }>(
+    pool,
+    'SELECT period_start, period_end FROM payroll_runs WHERE organization_id = $1 AND year = $2 AND month = $3',
+    [organizationId, year, month],
+  )
+  return run ? { start: run.period_start, end: run.period_end } : payCycleFor(year, month, PAYROLL_CYCLE_CUTOFF_DAY)
+}
+
+/**
+ * Turns a payroll-month report's month, or range of months, into the dates it
+ * covers: from the first month's first day to the last month's last.
  */
 async function resolvePayrollMonth(
   definition: ReportDefinition,
   auth: AuthContext,
   filters: ReportFilters,
 ): Promise<ReportFilters> {
-  if (!PAYROLL_MONTH_REPORTS.has(definition.key) || !filters.year || !filters.month) return filters
-  const run = await queryOne<{ period_start: string; period_end: string }>(
-    pool,
-    'SELECT period_start, period_end FROM payroll_runs WHERE organization_id = $1 AND year = $2 AND month = $3',
-    [auth.organizationId, filters.year, filters.month],
-  )
-  const period = run
-    ? { start: run.period_start, end: run.period_end }
-    : payCycleFor(filters.year, filters.month, PAYROLL_CYCLE_CUTOFF_DAY)
+  if (!PAYROLL_MONTH_REPORTS.has(definition.key)) return filters
+  if (filters.fromMonth && filters.toMonth && definition.filters.includes('fromMonth')) {
+    const first = parseMonth(filters.fromMonth)
+    const last = parseMonth(filters.toMonth)
+    const start = (await payrollMonthPeriod(auth.organizationId, first.year, first.month)).start
+    const end = (await payrollMonthPeriod(auth.organizationId, last.year, last.month)).end
+    return { ...filters, fromMonth: undefined, toMonth: undefined, from: start, to: end }
+  }
+  if (!filters.year || !filters.month) return filters
+  const period = await payrollMonthPeriod(auth.organizationId, filters.year, filters.month)
   return { ...filters, year: undefined, month: undefined, from: period.start, to: period.end }
+}
+
+/** A month range must run forwards, and over no more than MAX_RANGE_MONTHS. */
+function assertMonthRange(filters: ReportFilters): void {
+  if (!filters.fromMonth || !filters.toMonth) return
+  const first = parseMonth(filters.fromMonth)
+  const last = parseMonth(filters.toMonth)
+  const months = (last.year - first.year) * 12 + (last.month - first.month) + 1
+  if (months < 1) throw ApiError.badRequest('The last month cannot be before the first')
+  if (months > MAX_RANGE_MONTHS) {
+    throw ApiError.badRequest(`A report covers up to ${MAX_RANGE_MONTHS} months. Choose a shorter range.`)
+  }
+}
+
+/** Which payroll month a row belongs to, for a report run over a range of months. */
+const MONTH_COLUMN: ReportColumn = { key: 'report_month', label: 'Month', format: 'text' }
+
+/**
+ * The definition as it runs for these filters: a report's period-dependent
+ * columns are filled in, and one with a row per month run over a month range
+ * says which month each row is.
+ */
+function resolveDefinition(definition: ReportDefinition, filters: ReportFilters): ReportDefinition {
+  let columns = definition.columnsFor ? definition.columnsFor({ from: filters.from, to: filters.to }) : definition.columns
+  if (definition.monthColumn && filters.fromMonth && filters.toMonth) columns = [MONTH_COLUMN, ...columns]
+  return columns === definition.columns ? definition : { ...definition, columns }
+}
+
+/** A report carrying sensitive data needs its extra permission as well. */
+function assertCanRun(auth: AuthContext, definition: ReportDefinition): void {
+  if (definition.requires && !auth.has(definition.requires)) {
+    throw ApiError.forbidden(`You do not have permission to run the ${definition.name} report`)
+  }
 }
 
 interface BuiltQuery {
@@ -190,7 +280,20 @@ function buildQuery(
       predicates.push(`${dateColumns.month} = $${push(value)}`)
       continue
     }
-    if (filterKey === 'from' || filterKey === 'to' || filterKey === 'year' || filterKey === 'month') {
+    // A month range compares year and month as one number, 202603 for March 2026.
+    if ((filterKey === 'fromMonth' || filterKey === 'toMonth') && dateColumns.year && dateColumns.month) {
+      const operator = filterKey === 'fromMonth' ? '>=' : '<='
+      predicates.push(`(${dateColumns.year} * 100 + ${dateColumns.month}) ${operator} $${push(monthNumber(String(value)))}`)
+      continue
+    }
+    if (
+      filterKey === 'from' ||
+      filterKey === 'to' ||
+      filterKey === 'year' ||
+      filterKey === 'month' ||
+      filterKey === 'fromMonth' ||
+      filterKey === 'toMonth'
+    ) {
       // The report does not map this period filter; ignore rather than guess.
       continue
     }
@@ -257,7 +360,7 @@ export function listReports(auth: AuthContext) {
   const scope = auth.has(PERMISSIONS.REPORT_VIEW_ALL) ? 'ALL' : auth.has(PERMISSIONS.REPORT_VIEW_TEAM) ? 'TEAM' : null
   if (!scope) throw ApiError.forbidden('You do not have permission to view reports')
 
-  return REPORT_DEFINITIONS.map((definition) => ({
+  return REPORT_DEFINITIONS.filter((definition) => !definition.requires || auth.has(definition.requires)).map((definition) => ({
     key: definition.key,
     name: definition.name,
     description: definition.description,
@@ -307,15 +410,18 @@ function grandTotalsFrom(definition: ReportDefinition, row: Record<string, strin
 }
 
 export async function runReport(auth: AuthContext, key: string, filters: ReportFilters): Promise<ReportResult> {
-  const definition = findReportDefinition(key)
-  if (!definition) throw ApiError.notFound('Report')
+  const found = findReportDefinition(key)
+  if (!found) throw ApiError.notFound('Report')
 
   const scope = reportScope(auth)
-  if (!auth.has(definition.permission) && !auth.has(PERMISSIONS.REPORT_VIEW_TEAM)) {
+  if (!auth.has(found.permission) && !auth.has(PERMISSIONS.REPORT_VIEW_TEAM)) {
     throw ApiError.forbidden('You do not have permission to run this report')
   }
-  assertRequiredFilters(definition, filters)
-  const queryFilters = await resolvePayrollMonth(definition, auth, filters)
+  assertCanRun(auth, found)
+  assertRequiredFilters(found, filters)
+  assertMonthRange(filters)
+  const queryFilters = await resolvePayrollMonth(found, auth, filters)
+  const definition = resolveDefinition(found, queryFilters)
 
   let rows: ReportRow[]
   let total: number
@@ -323,7 +429,7 @@ export async function runReport(auth: AuthContext, key: string, filters: ReportF
 
   const enrich = ENRICH_BY_REPORT[definition.key]
   if (enrich) {
-    const all = await enrich(auth.organizationId, await loadAllRows(definition, auth, scope, queryFilters))
+    const all = await enrich(auth.organizationId, await loadAllRows(definition, auth, scope, queryFilters), queryFilters)
     const offset = (filters.page - 1) * filters.pageSize
     rows = all.slice(offset, offset + filters.pageSize)
     total = all.length
@@ -374,21 +480,37 @@ async function loadAllRows(
   return rows
 }
 
-/** Runs a report unpaged, for export. */
+/**
+ * The columns an export shows: the ones asked for, in the report's own order,
+ * or every column when none were asked for (or none of them exist).
+ */
+export function chooseColumns(definition: ReportDefinition, keys: string[] | undefined): ReportDefinition {
+  if (!keys?.length) return definition
+  const wanted = new Set(keys)
+  const chosen = definition.columns.filter((column) => wanted.has(column.key))
+  return chosen.length > 0 ? { ...definition, columns: chosen } : definition
+}
+
+/** Runs a report unpaged, for export, with just the columns asked for. */
 export async function runReportForExport(
   auth: AuthContext,
   key: string,
-  filters: ReportFilters,
+  filters: ExportQuery,
 ): Promise<{ definition: ReportDefinition; rows: Record<string, unknown>[]; totals: Record<string, number> }> {
-  const definition = findReportDefinition(key)
-  if (!definition) throw ApiError.notFound('Report')
+  const found = findReportDefinition(key)
+  if (!found) throw ApiError.notFound('Report')
 
   const scope = reportScope(auth)
-  assertRequiredFilters(definition, filters)
+  assertCanRun(auth, found)
+  assertRequiredFilters(found, filters)
+  assertMonthRange(filters)
 
-  const loaded = await loadAllRows(definition, auth, scope, await resolvePayrollMonth(definition, auth, filters))
-  const enrich = ENRICH_BY_REPORT[definition.key]
-  const rows = enrich ? await enrich(auth.organizationId, loaded) : loaded
+  const queryFilters = await resolvePayrollMonth(found, auth, filters)
+  const resolved = resolveDefinition(found, queryFilters)
+  const loaded = await loadAllRows(resolved, auth, scope, queryFilters)
+  const enrich = ENRICH_BY_REPORT[resolved.key]
+  const rows = enrich ? await enrich(auth.organizationId, loaded, queryFilters) : loaded
 
+  const definition = chooseColumns(resolved, filters.columns)
   return { definition, rows, totals: computeTotals(definition, rows) }
 }

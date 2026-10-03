@@ -1,5 +1,7 @@
 import type { PermissionCode } from '../auth/permissions.js'
 import { PERMISSIONS } from '../auth/permissions.js'
+import { ApiError } from '../../utils/api-error.js'
+import { countDaysBetween, datesBetween, type IsoDate } from '../../utils/dates.js'
 
 /**
  * The report catalogue (plan section 41).
@@ -30,6 +32,9 @@ export type FilterKey =
   | 'to'
   | 'year'
   | 'month'
+  /** A range of payroll months, each "YYYY-MM": every month from one to the other. */
+  | 'fromMonth'
+  | 'toMonth'
   | 'departmentId'
   | 'supervisorId'
   | 'employeeId'
@@ -46,7 +51,18 @@ export interface ReportDefinition {
   description: string
   category: ReportCategory
   permission: PermissionCode
+  /**
+   * A permission needed on top of viewing reports, for a report that carries
+   * sensitive data. Without it the report is neither listed nor run.
+   */
+  requires?: PermissionCode
   columns: ReportColumn[]
+  /**
+   * For a report whose columns depend on the period it covers - one per day,
+   * say: the full column list for the period, in place of `columns`, which is
+   * then what the catalogue shows before a period is chosen.
+   */
+  columnsFor?: (period: { from?: IsoDate; to?: IsoDate }) => ReportColumn[]
   filters: FilterKey[]
   /** Filters without which the report is meaningless. */
   requiredFilters?: FilterKey[]
@@ -60,6 +76,11 @@ export interface ReportDefinition {
    * scope predicate and `{{filters}}` with the bound filter predicates.
    */
   sql: string
+  /**
+   * Each row belongs to one payroll month, which the SQL selects as
+   * `report_month`; run over a month range, the report gains a Month column.
+   */
+  monthColumn?: boolean
   orderBy: string
   /** Alias of the employees table, used to apply the caller's scope. */
   employeeAlias: string
@@ -156,6 +177,46 @@ const PAY_CATEGORIES_NOTE =
 /** The overtime paid on a payroll item (`i`), for reports without the full breakdown. */
 const OVERTIME_AMOUNT = `coalesce((SELECT sum(oc.amount) FROM payroll_item_components oc
                           WHERE oc.payroll_item_id = i.id AND oc.source = 'OVERTIME'), 0)`
+
+/** The longest period the day-by-day attendance report covers: two months. */
+export const ATTENDANCE_REPORT_MAX_DAYS = 62
+
+/** The key of the attendance report's column for one day. */
+export const attendanceDayKey = (date: IsoDate): string => `day_${date}`
+
+/** A day's column heading, kept short so a month of them fits across a page: "2026-08-21" -> "21/8". */
+const dayHeading = (date: IsoDate): string => `${Number(date.slice(8, 10))}/${Number(date.slice(5, 7))}`
+
+/** The attendance reports' totals - whole days of each status - filled in by report-attendance.ts. */
+const ATTENDANCE_TOTAL_COLUMNS: ReportColumn[] = [
+  { key: 'present_days', label: 'Present', format: 'number', total: true },
+  { key: 'absent_days', label: 'Absent', format: 'number', total: true },
+  { key: 'leave_days', label: 'Leave', format: 'number', total: true },
+  { key: 'half_days', label: 'Half Day', format: 'number', total: true },
+  { key: 'holiday_days', label: 'Holiday', format: 'number', total: true },
+  { key: 'weekly_off_days', label: 'Weekly Off', format: 'number', total: true },
+  { key: 'paid_off_days', label: 'Paid Off', format: 'number', total: true },
+  { key: 'unmarked_days', label: 'Not Marked', format: 'number', total: true },
+]
+
+/** One column per day of the period, then the totals. */
+function attendanceColumns(period: { from?: IsoDate; to?: IsoDate }): ReportColumn[] {
+  const { from, to } = period
+  if (!from || !to) return [...EMPLOYEE_COLUMNS, ...ATTENDANCE_TOTAL_COLUMNS]
+  if (to < from) throw ApiError.badRequest('The end date cannot be before the start date')
+  if (countDaysBetween(from, to) > ATTENDANCE_REPORT_MAX_DAYS) {
+    throw ApiError.badRequest(
+      `Monthly Attendance covers up to ${ATTENDANCE_REPORT_MAX_DAYS} days. Choose a month or a shorter date range.`,
+    )
+  }
+  return [
+    ...EMPLOYEE_COLUMNS,
+    ...datesBetween(from, to).map(
+      (date): ReportColumn => ({ key: attendanceDayKey(date), label: dayHeading(date), format: 'text' }),
+    ),
+    ...ATTENDANCE_TOTAL_COLUMNS,
+  ]
+}
 
 export const REPORT_DEFINITIONS: ReportDefinition[] = [
   // -------------------------------------------------------------------------
@@ -286,39 +347,37 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   },
   {
     key: 'monthly-attendance-summary',
-    name: 'Monthly Attendance Summary',
-    description: 'Per-employee attendance totals for a date range.',
+    name: 'Monthly Attendance',
+    description:
+      "Every employee's attendance on each day of a month or date range, with their totals. A month is the payroll month (the 21st to the 20th). P present, A absent, L leave, HL half-day leave, H holiday, WO weekly off, PO paid off, NM a working day not marked; a day left blank is one the employee was not employed.",
     category: 'ATTENDANCE',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['from', 'to', 'departmentId', 'supervisorId'],
-    requiredFilters: ['from', 'to'],
-    columns: [
-      ...EMPLOYEE_COLUMNS,
-      { key: 'present_days', label: 'Present', format: 'days', total: true },
-      { key: 'absent_days', label: 'Absent', format: 'days', total: true },
-      { key: 'leave_days', label: 'Leave', format: 'days', total: true },
-      { key: 'half_days', label: 'Half Day', format: 'days', total: true },
-      { key: 'holiday_days', label: 'Holiday', format: 'days', total: true },
-      { key: 'weekly_off_days', label: 'Weekly Off', format: 'days', total: true },
+    filters: ['year', 'month', 'from', 'to', 'departmentId', 'supervisorId', 'employeeId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['from', 'to'],
     ],
+    // The day columns and the totals are filled in by report-attendance.ts.
+    columns: attendanceColumns({}),
+    columnsFor: attendanceColumns,
+    // Everyone employed at any point in the period, marked or not, as the
+    // attendance calendar lists them; the period filters match on employment.
     sql: `
       SELECT e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
-             count(*) FILTER (WHERE a.status = 'PRESENT')        AS present_days,
-             count(*) FILTER (WHERE a.status = 'ABSENT')         AS absent_days,
-             count(*) FILTER (WHERE a.status = 'ON_LEAVE')       AS leave_days,
-             count(*) FILTER (WHERE a.status = 'HALF_DAY_LEAVE') AS half_days,
-             count(*) FILTER (WHERE a.status = 'HOLIDAY')        AS holiday_days,
-             count(*) FILTER (WHERE a.status = 'WEEKLY_OFF')     AS weekly_off_days
+             -- Not shown as columns: what each day's status is worked out from.
+             e.id AS employee_id,
+             e.department_id,
+             e.location_id,
+             e.joining_date,
+             e.exit_date
         FROM employees e
-        JOIN attendance a ON a.employee_id = e.id
         LEFT JOIN departments  d ON d.id = e.department_id
         LEFT JOIN designations g ON g.id = e.designation_id
-       WHERE {{scope}} {{filters}}
-       GROUP BY e.id, e.employee_code, e.first_name, e.last_name, d.name, g.name
+       WHERE {{scope}} {{filters}} AND e.employment_status <> 'INACTIVE'
     `,
     orderBy: 'e.employee_code',
   },
@@ -330,9 +389,10 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'ATTENDANCE',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'from', 'to', 'departmentId', 'employeeId'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'from', 'to', 'departmentId', 'employeeId'],
     requiredOneOf: [
       ['year', 'month'],
+      ['fromMonth', 'toMonth'],
       ['from', 'to'],
     ],
     // The amounts are filled in by report-amounts.ts, with payroll's arithmetic.
@@ -397,9 +457,10 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'from', 'to', 'departmentId', 'employeeId'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'from', 'to', 'departmentId', 'employeeId'],
     requiredOneOf: [
       ['year', 'month'],
+      ['fromMonth', 'toMonth'],
       ['from', 'to'],
     ],
     // The rate and amount are filled in by report-amounts.ts, with payroll's arithmetic.
@@ -526,8 +587,11 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'supervisorId', 'payrollRunId', 'paymentStatus'],
-    requiredFilters: ['year', 'month'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'supervisorId', 'payrollRunId', 'paymentStatus'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
     // The working days and holiday figures are filled in by report-amounts.ts.
     columns: [
       ...EMPLOYEE_COLUMNS,
@@ -541,7 +605,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'payment_status', label: 'Payment Status', format: 'text' },
     ],
     sql: `
-      SELECT i.employee_code,
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             i.employee_code,
              i.employee_name,
              i.department_name,
              i.designation_name,
@@ -565,7 +630,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN employee_salary_assignments asg ON asg.id = i.salary_assignment_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
     `,
-    orderBy: 'i.employee_code',
+    monthColumn: true,
+    orderBy: 'r.year, r.month, i.employee_code',
   },
   {
     key: 'payment-status',
@@ -574,8 +640,11 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'PAYMENT',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'paymentStatus', 'payrollRunId'],
-    requiredFilters: ['year', 'month'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'paymentStatus', 'payrollRunId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
     columns: [
       ...EMPLOYEE_COLUMNS,
       ...PAY_CATEGORY_COLUMNS,
@@ -585,7 +654,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'last_payment_date', label: 'Last Payment', format: 'date' },
     ],
     sql: `
-      SELECT i.employee_code,
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             i.employee_code,
              i.employee_name,
              i.department_name,
              i.designation_name,${PAY_CATEGORY_SELECT},
@@ -599,7 +669,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
        WHERE {{scope}} {{filters}}
     `,
-    orderBy: 'i.payment_status, i.employee_code',
+    monthColumn: true,
+    orderBy: 'r.year, r.month, i.payment_status, i.employee_code',
   },
   {
     key: 'payment-transactions',
@@ -636,14 +707,54 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     orderBy: 't.payment_date DESC, i.employee_code',
   },
   {
+    key: 'bank-transfer',
+    name: 'Bank Transfer Statement',
+    description:
+      "The salary list to send to the bank for a payroll month: each employee's primary bank account and the net salary to pay them. Anyone with no bank account on file is still listed, with the account details blank, so nobody is left out unnoticed. Employees with no net pay are not listed.",
+    category: 'PAYMENT',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    // It carries full account numbers.
+    requires: PERMISSIONS.SENSITIVE_DATA_VIEW,
+    employeeAlias: 'e',
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'paymentStatus', 'payrollRunId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
+    columns: [
+      { key: 'employee_code', label: 'Employee ID', format: 'text' },
+      { key: 'employee_name', label: 'Name', format: 'text' },
+      { key: 'account_number', label: 'Account Number', format: 'text' },
+      { key: 'ifsc_code', label: 'IFSC Code', format: 'text' },
+      { key: 'branch_name', label: 'Branch', format: 'text' },
+      { key: 'net_salary', label: 'Amount', format: 'currency', total: true },
+    ],
+    sql: `
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             i.employee_code,
+             i.employee_name,
+             b.account_number,
+             b.ifsc_code,
+             b.branch_name,
+             i.net_salary
+        FROM payroll_items i
+        JOIN payroll_runs r ON r.id = i.payroll_run_id
+        JOIN employees e ON e.id = i.employee_id
+        LEFT JOIN employee_bank_accounts b ON b.employee_id = i.employee_id AND b.is_primary
+       WHERE {{scope}} {{filters}} AND i.net_salary > 0
+    `,
+    monthColumn: true,
+    orderBy: 'r.year, r.month, i.employee_code',
+  },
+  {
     key: 'bonus-report',
     name: 'Bonus Report',
     description: 'Bonuses by employee and month, and how and when each was paid. Bonuses are paid separately from salary.',
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'employeeId'],
-    requiredFilters: ['year'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'employeeId'],
+    requiredOneOf: [['year'], ['fromMonth', 'toMonth']],
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'bonus_name', label: 'Bonus Name', format: 'text' },
@@ -655,7 +766,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'reference_number', label: 'Reference', format: 'text' },
     ],
     sql: `
-      SELECT e.employee_code,
+      SELECT to_char(make_date(b.payroll_year, b.payroll_month, 1), 'Mon YYYY') AS report_month,
+             e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
@@ -672,6 +784,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN designations g ON g.id = e.designation_id
        WHERE {{scope}} {{filters}}
     `,
+    monthColumn: true,
     orderBy: 'b.payroll_year DESC, b.payroll_month DESC, e.employee_code',
   },
   {
@@ -681,8 +794,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'STATUTORY',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'employeeId'],
-    requiredFilters: ['year'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'employeeId'],
+    requiredOneOf: [['year'], ['fromMonth', 'toMonth']],
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'wage_base', label: 'Wages Charged On', format: 'currency', total: true },
@@ -691,7 +804,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'period_to', label: 'Wage Period To', format: 'date' },
     ],
     sql: `
-      SELECT e.employee_code,
+      SELECT to_char(make_date(t.payroll_year, t.payroll_month, 1), 'Mon YYYY') AS report_month,
+             e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
@@ -705,6 +819,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN designations g ON g.id = e.designation_id
        WHERE {{scope}} {{filters}}
     `,
+    monthColumn: true,
     orderBy: 't.payroll_year DESC, t.payroll_month DESC, e.employee_code',
   },
   {
@@ -714,8 +829,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'employeeId'],
-    requiredFilters: ['year'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'employeeId'],
+    requiredOneOf: [['year'], ['fromMonth', 'toMonth']],
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'category', label: 'Category', format: 'text' },
@@ -724,7 +839,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'status', label: 'Status', format: 'text' },
     ],
     sql: `
-      SELECT e.employee_code,
+      SELECT to_char(make_date(a.apply_year, a.apply_month, 1), 'Mon YYYY') AS report_month,
+             e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
@@ -738,6 +854,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN designations g ON g.id = e.designation_id
        WHERE {{scope}} {{filters}} AND a.component_code LIKE 'OD\\_%'
     `,
+    monthColumn: true,
     orderBy: 'a.apply_year DESC, a.apply_month DESC, e.employee_code',
   },
   {
@@ -747,8 +864,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'employeeId'],
-    requiredFilters: ['year'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'employeeId'],
+    requiredOneOf: [['year'], ['fromMonth', 'toMonth']],
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'category', label: 'Category', format: 'text' },
@@ -757,7 +874,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'status', label: 'Status', format: 'text' },
     ],
     sql: `
-      SELECT e.employee_code,
+      SELECT to_char(make_date(a.apply_year, a.apply_month, 1), 'Mon YYYY') AS report_month,
+             e.employee_code,
              trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
              d.name AS department_name,
              g.name AS designation_name,
@@ -771,6 +889,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN designations g ON g.id = e.designation_id
        WHERE {{scope}} {{filters}} AND a.component_code LIKE 'OC\\_%'
     `,
+    monthColumn: true,
     orderBy: 'a.apply_year DESC, a.apply_month DESC, e.employee_code',
   },
   {
@@ -860,8 +979,11 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'STATUTORY',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'payrollRunId'],
-    requiredFilters: ['year', 'month'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'payrollRunId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
     columns: [
       ...EMPLOYEE_COLUMNS,
       { key: 'pf_number', label: 'PF Number', format: 'text' },
@@ -877,7 +999,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
       { key: 'pension_applicable', label: 'Pension (1/0)', format: 'number' },
     ],
     sql: `
-      SELECT i.employee_code,
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             i.employee_code,
              i.employee_name,
              i.department_name,
              i.designation_name,
@@ -909,7 +1032,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         LEFT JOIN employee_pf_details pf ON pf.employee_id = i.employee_id
        WHERE {{scope}} {{filters}}
     `,
-    orderBy: 'i.employee_code',
+    monthColumn: true,
+    orderBy: 'r.year, r.month, i.employee_code',
   },
   {
     key: 'esi-report',
@@ -918,8 +1042,11 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     category: 'STATUTORY',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'departmentId', 'payrollRunId'],
-    requiredFilters: ['year', 'month'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'departmentId', 'payrollRunId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
     columns: [
       { key: 'ip_number', label: 'IP Number', format: 'text' },
       { key: 'ip_name', label: 'IP Name', format: 'text' },
@@ -933,7 +1060,8 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     // other ESIC codes (retired, out of coverage, strike, etc.) need a human
     // judgement call this data model cannot make, so verify before uploading.
     sql: `
-      SELECT esi.esi_number AS ip_number,
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             esi.esi_number AS ip_number,
              coalesce(esi.esi_name, i.employee_name) AS ip_name,
              ceil(i.paid_days)::int AS days_paid,
              -- Every wage earned in the month, overtime included. The columns are
@@ -956,17 +1084,21 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
         JOIN employee_esi_details esi ON esi.employee_id = i.employee_id AND esi.esi_applicable
        WHERE {{scope}} {{filters}}
     `,
-    orderBy: 'esi.esi_number',
+    monthColumn: true,
+    orderBy: 'r.year, r.month, esi.esi_number',
   },
   {
     key: 'department-salary',
     name: 'Department Salary Report',
-    description: `Payroll totals grouped by department, split by category. ${PAY_CATEGORIES_NOTE}`,
+    description: `Payroll totals grouped by department, for a month or a range of months, split by category. ${PAY_CATEGORIES_NOTE}`,
     category: 'PAYROLL',
     permission: PERMISSIONS.REPORT_VIEW_ALL,
     employeeAlias: 'e',
-    filters: ['year', 'month', 'payrollRunId'],
-    requiredFilters: ['year', 'month'],
+    filters: ['year', 'month', 'fromMonth', 'toMonth', 'payrollRunId'],
+    requiredOneOf: [
+      ['year', 'month'],
+      ['fromMonth', 'toMonth'],
+    ],
     columns: [
       { key: 'department_name', label: 'Department', format: 'text' },
       { key: 'employees', label: 'Employees', format: 'number', total: true },
@@ -976,7 +1108,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     ],
     sql: `
       SELECT coalesce(i.department_name, 'Unassigned') AS department_name,
-             count(*) AS employees,${PAY_CATEGORY_SUMS},
+             count(DISTINCT i.employee_id) AS employees,${PAY_CATEGORY_SUMS},
              sum(i.paid_amount)      AS paid_amount,
              sum(i.pending_amount)   AS pending_amount
         FROM payroll_items i
@@ -986,6 +1118,104 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
        GROUP BY coalesce(i.department_name, 'Unassigned')
     `,
     orderBy: 'department_name',
+  },
+  {
+    key: 'payroll-summary',
+    name: 'Payroll Summary',
+    description: `Each employee's payroll totalled over a range of payroll months - a year, say - split by category. ${PAY_CATEGORIES_NOTE}`,
+    category: 'PAYROLL',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['fromMonth', 'toMonth', 'departmentId', 'supervisorId', 'employeeId'],
+    requiredFilters: ['fromMonth', 'toMonth'],
+    columns: [
+      ...EMPLOYEE_COLUMNS,
+      { key: 'months', label: 'Months Paid', format: 'number', total: true },
+      { key: 'paid_days', label: 'Paid Days', format: 'days', total: true },
+      ...PAY_CATEGORY_COLUMNS,
+      { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
+      { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
+    ],
+    sql: `
+      SELECT e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             count(*) AS months,
+             sum(i.paid_days) AS paid_days,${PAY_CATEGORY_SUMS},
+             sum(i.paid_amount) AS paid_amount,
+             sum(i.pending_amount) AS pending_amount
+        FROM payroll_items i
+        JOIN payroll_runs r ON r.id = i.payroll_run_id
+        JOIN employees e ON e.id = i.employee_id
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id${PAY_CATEGORIES_JOIN}
+       WHERE {{scope}} {{filters}}
+       GROUP BY e.id, e.employee_code, e.first_name, e.last_name, d.name, g.name
+    `,
+    orderBy: 'e.employee_code',
+  },
+  {
+    key: 'payroll-month-summary',
+    name: 'Payroll Month-wise Summary',
+    description: `The whole payroll for each month of a range - a year, say - one row per month, split by category. ${PAY_CATEGORIES_NOTE}`,
+    category: 'PAYROLL',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['fromMonth', 'toMonth', 'departmentId', 'supervisorId'],
+    requiredFilters: ['fromMonth', 'toMonth'],
+    columns: [
+      { key: 'report_month', label: 'Month', format: 'text' },
+      { key: 'employees', label: 'Employees', format: 'number' },
+      ...PAY_CATEGORY_COLUMNS,
+      { key: 'paid_amount', label: 'Paid', format: 'currency', total: true },
+      { key: 'pending_amount', label: 'Pending', format: 'currency', total: true },
+    ],
+    sql: `
+      SELECT to_char(make_date(r.year, r.month, 1), 'Mon YYYY') AS report_month,
+             count(*) AS employees,${PAY_CATEGORY_SUMS},
+             sum(i.paid_amount) AS paid_amount,
+             sum(i.pending_amount) AS pending_amount
+        FROM payroll_items i
+        JOIN payroll_runs r ON r.id = i.payroll_run_id
+        JOIN employees e ON e.id = i.employee_id${PAY_CATEGORIES_JOIN}
+       WHERE {{scope}} {{filters}}
+       GROUP BY r.year, r.month
+    `,
+    orderBy: 'r.year, r.month',
+  },
+  {
+    key: 'attendance-summary',
+    name: 'Attendance Summary',
+    description:
+      "Each employee's attendance totalled over a range of payroll months - a year, say - or a date range: the days of each status, counted as the Monthly Attendance report counts them.",
+    category: 'ATTENDANCE',
+    permission: PERMISSIONS.REPORT_VIEW_ALL,
+    employeeAlias: 'e',
+    filters: ['fromMonth', 'toMonth', 'from', 'to', 'departmentId', 'supervisorId', 'employeeId'],
+    requiredOneOf: [
+      ['fromMonth', 'toMonth'],
+      ['from', 'to'],
+    ],
+    // The totals are filled in by report-attendance.ts.
+    columns: [...EMPLOYEE_COLUMNS, ...ATTENDANCE_TOTAL_COLUMNS],
+    sql: `
+      SELECT e.employee_code,
+             trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS employee_name,
+             d.name AS department_name,
+             g.name AS designation_name,
+             -- Not shown as columns: what each day's status is worked out from.
+             e.id AS employee_id,
+             e.department_id,
+             e.location_id,
+             e.joining_date,
+             e.exit_date
+        FROM employees e
+        LEFT JOIN departments  d ON d.id = e.department_id
+        LEFT JOIN designations g ON g.id = e.designation_id
+       WHERE {{scope}} {{filters}} AND e.employment_status <> 'INACTIVE'
+    `,
+    orderBy: 'e.employee_code',
   },
 ]
 

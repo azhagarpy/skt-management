@@ -66,6 +66,9 @@ reportRouter.get(
     if (query.format === 'ecr' && key !== 'pf-report') {
       throw ApiError.badRequest('The ECR text format is only available for the PF report')
     }
+    if (query.format === 'ecr' && (query.fromMonth || query.toMonth)) {
+      throw ApiError.badRequest('The ECR text file is uploaded one month at a time. Choose a single month.')
+    }
 
     const { definition, rows, totals } = await service.runReportForExport(auth, key, query)
 
@@ -139,7 +142,12 @@ reportRouter.get(
       newValues: { report: key, format: query.format, rows: ecrSummary?.included ?? rows.length, ...(ecrSummary ? { skipped: ecrSummary.skipped } : {}) },
     })
 
-    const period = query.year && query.month ? `${query.year}-${String(query.month).padStart(2, '0')}` : new Date().toISOString().slice(0, 10)
+    const period =
+      query.fromMonth && query.toMonth
+        ? `${query.fromMonth}-to-${query.toMonth}`
+        : query.year && query.month
+          ? `${query.year}-${String(query.month).padStart(2, '0')}`
+          : new Date().toISOString().slice(0, 10)
     const filename = `${query.format === 'ecr' ? 'pf-ecr' : definition.key}-${period}.${extension}`
     res.setHeader('Content-Type', mimeType)
     res.setHeader('Content-Length', String(buffer.length))
