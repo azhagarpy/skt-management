@@ -31,8 +31,8 @@ export interface PayrollRunRow {
   locked_at: Date | null
   created_by_name?: string | null
   approved_by_name?: string | null
-  pf_payment_status?: 'PAID' | 'PENDING' | null
-  esi_payment_status?: 'PAID' | 'PENDING' | null
+  pf_payment_status?: 'PAID' | 'PARTIALLY_PAID' | 'PENDING' | null
+  esi_payment_status?: 'PAID' | 'PARTIALLY_PAID' | 'PENDING' | null
 }
 
 export interface PayrollItemRow {
@@ -135,19 +135,22 @@ export interface PayrollAdjustmentRow {
 // ---------------------------------------------------------------------------
 
 /**
- * A run's PF or ESI remittance (statutory-payments.module.ts): PAID once its
- * challan is recorded, PENDING while the run has something due for the scheme,
- * else null. `codes` is a fixed list of component codes, never user input.
+ * A run's PF or ESI remittance, as schemeStatus (statutory-payments.module.ts)
+ * works it out: PAID once its challans cover what is due, PARTIALLY_PAID while
+ * they fall short, PENDING with none and something due, else null. `codes` is
+ * a fixed list of component codes, never user input.
  */
 const statutoryStatus = (scheme: 'PF' | 'ESI', codes: string): string => `
-  CASE
-    WHEN EXISTS (SELECT 1 FROM payroll_statutory_payments sp WHERE sp.payroll_run_id = r.id AND sp.scheme = '${scheme}')
-      THEN 'PAID'
-    WHEN EXISTS (SELECT 1 FROM payroll_items si
-                   JOIN payroll_item_components sc ON sc.payroll_item_id = si.id
-                  WHERE si.payroll_run_id = r.id AND sc.component_code IN (${codes}) AND sc.amount > 0)
-      THEN 'PENDING'
-  END`
+  (SELECT CASE
+            WHEN paid.total IS NOT NULL AND paid.total >= coalesce(due.total, 0) THEN 'PAID'
+            WHEN paid.total IS NOT NULL THEN 'PARTIALLY_PAID'
+            WHEN due.total > 0 THEN 'PENDING'
+          END
+     FROM (SELECT sum(sc.amount) AS total FROM payroll_statutory_challans sc
+            WHERE sc.payroll_run_id = r.id AND sc.scheme = '${scheme}') paid,
+          (SELECT sum(pc.amount) AS total FROM payroll_items si
+             JOIN payroll_item_components pc ON pc.payroll_item_id = si.id
+            WHERE si.payroll_run_id = r.id AND pc.component_code IN (${codes})) due)`
 
 const RUN_SELECT = `
   SELECT r.*, cu.full_name AS created_by_name, au.full_name AS approved_by_name,
@@ -273,6 +276,19 @@ export async function updateRun(
     `UPDATE payroll_runs SET ${assignments.join(', ')} WHERE id = $1 AND organization_id = $2 RETURNING *`,
     [id, organizationId, ...params],
   )
+}
+
+/** The salary payments recorded against a run's items and not reversed. */
+export async function countLivePayments(runId: string, db: Queryable = pool): Promise<number> {
+  const row = await queryOne<{ count: string }>(
+    db,
+    `SELECT count(*)::text AS count
+       FROM payroll_payment_transactions t
+       JOIN payroll_items i ON i.id = t.payroll_item_id
+      WHERE i.payroll_run_id = $1 AND t.reversed_at IS NULL`,
+    [runId],
+  )
+  return Number(row?.count ?? 0)
 }
 
 /** Recomputes the run totals from its items, so header and detail never diverge. */

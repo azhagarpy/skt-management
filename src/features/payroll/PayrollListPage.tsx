@@ -126,8 +126,8 @@ export default function PayrollListPage() {
       render: (row) =>
         row.pfPaymentStatus || row.esiPaymentStatus ? (
           <div className="row" style={{ gap: '0.3rem', flexWrap: 'wrap' }}>
-            {row.pfPaymentStatus ? <Badge tone={row.pfPaymentStatus === 'PAID' ? 'success' : 'warning'}>PF {row.pfPaymentStatus === 'PAID' ? 'paid' : 'pending'}</Badge> : null}
-            {row.esiPaymentStatus ? <Badge tone={row.esiPaymentStatus === 'PAID' ? 'success' : 'warning'}>ESI {row.esiPaymentStatus === 'PAID' ? 'paid' : 'pending'}</Badge> : null}
+            {row.pfPaymentStatus ? <StatutoryBadge scheme="PF" status={row.pfPaymentStatus} /> : null}
+            {row.esiPaymentStatus ? <StatutoryBadge scheme="ESI" status={row.esiPaymentStatus} /> : null}
           </div>
         ) : (
           <span className="muted">—</span>
@@ -324,5 +324,16 @@ export default function PayrollListPage() {
         onCancel={() => setDeleteTarget(null)}
       />
     </div>
+  )
+}
+
+const STATUTORY_LABELS = { PAID: 'paid', PARTIALLY_PAID: 'part paid', PENDING: 'pending' } as const
+
+/** A run's PF or ESI at a glance: whether its challans cover what is due. */
+function StatutoryBadge({ scheme, status }: { scheme: string; status: keyof typeof STATUTORY_LABELS }) {
+  return (
+    <Badge tone={status === 'PAID' ? 'success' : 'warning'}>
+      {scheme} {STATUTORY_LABELS[status]}
+    </Badge>
   )
 }

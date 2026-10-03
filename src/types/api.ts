@@ -760,16 +760,16 @@ export interface PayrollRun {
   lockedAt: string | null
   isEditable: boolean
   isLocked: boolean
-  /** Whether the run's PF / ESI challan has been paid; null when nothing is due. */
-  pfPaymentStatus: 'PAID' | 'PENDING' | null
-  esiPaymentStatus: 'PAID' | 'PENDING' | null
+  /** Whether the run's PF / ESI challans cover what is due; null when nothing is due. */
+  pfPaymentStatus: 'PAID' | 'PARTIALLY_PAID' | 'PENDING' | null
+  esiPaymentStatus: 'PAID' | 'PARTIALLY_PAID' | 'PENDING' | null
 }
 
-/** A run's PF and ESI: what is due and whether the challan has been paid. */
+/** A run's PF and ESI: what is due, and the challans that paid it. */
 export interface StatutoryPayments {
   runId: string
   monthLabel: string
-  /** Only an approved or locked run can be marked paid. */
+  /** Challans can be recorded only against an approved or locked run. */
   isPayable: boolean
   schemes: StatutoryScheme[]
 }
@@ -781,16 +781,23 @@ export interface StatutoryScheme {
   employeeShare: number
   employerShare: number
   totalDue: number
-  status: 'PAID' | 'PENDING' | 'NOT_DUE'
-  payment: {
-    amount: number
-    paidOn: string
-    referenceNumber: string | null
-    notes: string | null
-    proofFilename: string
-    paidByName: string | null
-    updatedAt: string
-  } | null
+  /** The challans' total. */
+  totalPaid: number
+  /** What is still to pay, never below zero. */
+  balance: number
+  status: 'PAID' | 'PARTIALLY_PAID' | 'PENDING' | 'NOT_DUE'
+  challans: StatutoryChallan[]
+}
+
+export interface StatutoryChallan {
+  id: string
+  amount: number
+  paidOn: string
+  challanNumber: string | null
+  notes: string | null
+  proofFilename: string
+  uploadedByName: string | null
+  createdAt: string
 }
 
 export interface PayrollAttendance {

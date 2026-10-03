@@ -167,6 +167,18 @@ payrollRouter.post(
   }),
 )
 
+/** Returns an approved or locked run to Calculated, so it can be corrected and recalculated. */
+payrollRouter.post(
+  '/runs/:id/unlock',
+  requirePermissions(PERMISSIONS.PAYROLL_UNLOCK),
+  validate({ params: idParam }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const data = await service.unlockRun(auth, req.params.id as string, auditContextFrom(req))
+    return sendSuccess(res, data, 'Payroll unlocked')
+  }),
+)
+
 payrollRouter.get(
   '/runs/:id/items',
   canView,

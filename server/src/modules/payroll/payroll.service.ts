@@ -960,6 +960,59 @@ export async function lockRun(auth: AuthContext, runId: string, context: AuditCo
   })
 }
 
+/**
+ * Unlocks an approved or locked run so it can be corrected: the run goes back
+ * to CALCULATED, with its figures intact, and the attendance and overtime it
+ * locked can be edited again. It is recalculated if anything changed, and
+ * approved again, before payments, payslips or PF / ESI challans can be added.
+ *
+ * Refused while salary payments are recorded against it, because
+ * recalculating rebuilds the run's items and would delete them; they are
+ * reversed first. PF and ESI challans belong to the run and are kept.
+ */
+export async function unlockRun(auth: AuthContext, runId: string, context: AuditContext) {
+  return withTransaction(async (tx) => {
+    const run = await repository.findRunForUpdate(runId, auth.organizationId, tx)
+    if (!run) throw ApiError.notFound('Payroll run')
+    if (run.status !== 'APPROVED' && run.status !== 'LOCKED') {
+      throw ApiError.payroll('Only an approved or locked payroll run can be unlocked')
+    }
+
+    const livePayments = await repository.countLivePayments(runId, tx)
+    if (livePayments > 0) {
+      throw ApiError.payroll(
+        `${livePayments} salary payment${livePayments === 1 ? ' is' : 's are'} recorded against this run. Reverse ${
+          livePayments === 1 ? 'it' : 'them'
+        } on the Payments page before unlocking it.`,
+      )
+    }
+
+    const attendanceRowsReleased = await attendanceRepository.unlockAttendanceForRun(runId, tx)
+    const overtimeRowsReleased = await overtimeRepository.unlockOvertimeForRun(runId, tx)
+
+    const updated = await repository.updateRun(
+      runId,
+      auth.organizationId,
+      { status: 'CALCULATED', approved_at: null, approved_by: null, locked_at: null, locked_by: null },
+      tx,
+    )
+
+    await recordAudit(
+      {
+        ...context,
+        action: 'PAYROLL_UNLOCKED',
+        entityType: 'payroll_run',
+        entityId: runId,
+        oldValues: { status: run.status },
+        newValues: { status: 'CALCULATED', attendanceRowsReleased, overtimeRowsReleased },
+      },
+      tx,
+    )
+
+    return presentRun(updated as repository.PayrollRunRow)
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------

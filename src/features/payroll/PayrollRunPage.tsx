@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BadgeCheck, Calculator, CalendarRange, Download, FileText, Lock, MessageCircle, Send, Trash2, Wallet } from 'lucide-react'
+import { BadgeCheck, Calculator, CalendarRange, Download, FileText, Lock, LockOpen, MessageCircle, Send, Trash2, Wallet } from 'lucide-react'
 import { del, download, downloadPost, get, getWithMeta, patch, post } from '../../lib/api'
 import { formatCurrency, formatDate, formatDateTime, formatDays } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
@@ -53,7 +53,7 @@ export default function PayrollRunPage() {
   const [search, setSearch] = useState('')
   const [departmentIds, setDepartmentIds] = useState<string[]>([])
   const [paymentStatus, setPaymentStatus] = useState('')
-  const [confirm, setConfirm] = useState<null | 'approve' | 'lock' | 'delete'>(null)
+  const [confirm, setConfirm] = useState<null | 'approve' | 'lock' | 'unlock' | 'delete'>(null)
   const [calculation, setCalculation] = useState<CalculationResult | null>(null)
   const [editingPeriod, setEditingPeriod] = useState(false)
   const [period, setPeriod] = useState({ periodStart: '', periodEnd: '' })
@@ -129,6 +129,19 @@ export default function PayrollRunPage() {
     onError: (error: Error) => {
       setConfirm(null)
       toast.error('Could not lock', error.message)
+    },
+  })
+
+  const unlockMutation = useMutation({
+    mutationFn: () => post(`/payroll/runs/${id}/unlock`),
+    onSuccess: async () => {
+      toast.success('Payroll unlocked', 'Correct what is needed, recalculate, and approve it again.')
+      setConfirm(null)
+      await invalidate()
+    },
+    onError: (error: Error) => {
+      setConfirm(null)
+      toast.error('Could not unlock', error.message)
     },
   })
 
@@ -348,6 +361,12 @@ export default function PayrollRunPage() {
               </Button>
             ) : null}
 
+            {can('payroll.unlock') && (run.status === 'APPROVED' || run.status === 'LOCKED') ? (
+              <Button variant="secondary" icon={<LockOpen size={15} />} onClick={() => setConfirm('unlock')}>
+                Unlock
+              </Button>
+            ) : null}
+
             {can('payslip.generate') && (run.status === 'APPROVED' || run.status === 'LOCKED') ? (
               <Button variant="secondary" icon={<FileText size={15} />} loading={payslipMutation.isPending} onClick={() => payslipMutation.mutate()}>
                 Generate payslips
@@ -456,7 +475,7 @@ export default function PayrollRunPage() {
       {run.isLocked ? (
         <div className="alert alert-info">
           This run is locked. Salary, attendance and payroll figures for this period can no longer be edited; use a payroll
-          adjustment in a later month to correct anything.
+          adjustment in a later month to correct anything{can('payroll.unlock') ? ', or unlock the run' : ''}.
         </div>
       ) : null}
 
@@ -608,6 +627,28 @@ export default function PayrollRunPage() {
         confirmLabel="Lock payroll"
         loading={lockMutation.isPending}
         onConfirm={() => lockMutation.mutate()}
+        onCancel={() => setConfirm(null)}
+      />
+
+      <ConfirmDialog
+        open={confirm === 'unlock'}
+        title="Unlock payroll"
+        message={
+          <>
+            <p>
+              Unlocking {run.monthLabel} returns it to Calculated: its attendance and overtime can be edited again, and it can be
+              recalculated. Employees stop seeing it until it is approved again.
+            </p>
+            <p style={{ marginTop: '0.6rem' }}>
+              Payments, payslips and PF / ESI challans can be added again once it is re-approved. Any salary payments already
+              recorded must be reversed first.
+            </p>
+          </>
+        }
+        confirmLabel="Unlock payroll"
+        tone="danger"
+        loading={unlockMutation.isPending}
+        onConfirm={() => unlockMutation.mutate()}
         onCancel={() => setConfirm(null)}
       />
 
