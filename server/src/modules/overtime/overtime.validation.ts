@@ -58,8 +58,21 @@ export const overtimeWeekQuerySchema = z.object({
   date: isoDateSchema,
 })
 
+/** A Supply employee's paid offs (paid-offs.ts): everyone the caller can see who has one, or one employee. */
+export const paidOffListQuerySchema = z.object({
+  employeeId: z.string().uuid().optional(),
+})
+
+/** Gives one earned paid off a date. */
+export const schedulePaidOffSchema = z.object({
+  employeeId: z.string().uuid('A valid employee is required'),
+  date: isoDateSchema,
+})
+
 export type RecordOvertimeInput = z.infer<typeof recordOvertimeSchema>
 export type UpdateOvertimeInput = z.infer<typeof updateOvertimeSchema>
 export type OvertimeListQuery = z.infer<typeof overtimeListQuerySchema>
 export type OvertimeWeekQuery = z.infer<typeof overtimeWeekQuerySchema>
 export type OvertimeEmployeeQuery = z.infer<typeof overtimeEmployeeQuerySchema>
+export type PaidOffListQuery = z.infer<typeof paidOffListQuerySchema>
+export type SchedulePaidOffInput = z.infer<typeof schedulePaidOffSchema>

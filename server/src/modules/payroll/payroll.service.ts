@@ -138,6 +138,7 @@ export function employeeDays(
       isEmployed,
       holidayExtraPay: calendarDay.holidayExtraPay,
       holidayName: calendarDay.holidayName,
+      paidOff: calendarDay.isPaidOff,
     }
   })
 
@@ -202,6 +203,7 @@ export function presentItem(row: repository.PayrollItemRow) {
       halfDayLeaveDays: Number(row.half_day_leave_days),
       holidayDays: Number(row.holiday_days),
       weeklyOffDays: Number(row.weekly_off_days),
+      paidOffDays: Number(row.paid_off_days),
       unmarkedDays: Number(row.unmarked_days),
       paidDays: Number(row.paid_days),
       payableDaysBasis: Number(row.payable_days_basis),
@@ -626,7 +628,7 @@ export async function calculateRun(
 
         const employeeAdjustments = adjustmentsByEmployee.get(employee.id) ?? []
 
-        // Paid-hourly overtime is money; off-in-lieu overtime converts to extra weekly offs
+        // Paid-hourly overtime is money; off-in-lieu overtime earns paid offs
         // instead (overtime.service.ts) and never reaches payroll at all. Each
         // entry carries the rate it was recorded at: one day's salary / n hours
         // (worked out by the calculator) or a custom amount per hour.
@@ -700,6 +702,7 @@ export async function calculateRun(
             half_day_leave_days: result.attendance.halfDayLeaveDays,
             holiday_days: result.attendance.holidayDays,
             weekly_off_days: result.attendance.weeklyOffDays,
+            paid_off_days: result.attendance.paidOffDays,
             unmarked_days: result.attendance.unmarkedDays,
             paid_days: result.attendance.paidDays,
             payable_days_basis: result.attendance.payableDaysBasis,

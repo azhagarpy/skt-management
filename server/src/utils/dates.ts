@@ -47,6 +47,20 @@ export function todayIso(): IsoDate {
   return toIsoDate(new Date())
 }
 
+const MONTH_ABBREVIATIONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** "2026-08-15" -> "15 Aug 2026", for dates in messages and payslip notes. */
+export function formatDayMonthYear(date: IsoDate): string {
+  const [year, month, day] = date.split('-')
+  return `${Number(day)} ${MONTH_ABBREVIATIONS[Number(month) - 1] ?? month} ${year}`
+}
+
+/**
+ * Today's date in India, where SKT works, as SQL. The server runs on UTC,
+ * whose date is five and a half hours behind India's each night.
+ */
+export const TODAY_IN_INDIA_SQL = `(now() AT TIME ZONE 'Asia/Kolkata')::date`
+
 export function addDays(value: IsoDate, days: number): IsoDate {
   const date = parseIsoDate(value)
   date.setUTCDate(date.getUTCDate() + days)

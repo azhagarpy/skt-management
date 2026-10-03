@@ -214,3 +214,43 @@ export async function unlockOvertimeForRun(payrollRunId: string, db: Queryable =
   ])
   return result.rowCount ?? 0
 }
+
+/** Each employee's overtime hours in each week (Monday to Sunday), for the paid offs they earn. */
+export async function sumOvertimeHoursByWeek(
+  employeeIds: string[],
+  db: Queryable = pool,
+): Promise<{ employee_id: string; week_start: IsoDate; hours: string }[]> {
+  if (employeeIds.length === 0) return []
+  return queryRows(
+    db,
+    `SELECT employee_id, date_trunc('week', work_date)::date AS week_start, sum(hours)::text AS hours
+       FROM overtime_entries
+      WHERE employee_id = ANY($1::uuid[])
+      GROUP BY employee_id, week_start`,
+    [employeeIds],
+  )
+}
+
+/**
+ * The offs overtime has already been turned into: paid offs (PAID_OFF), and
+ * extra weekly offs from before paid offs (OVERTIME_CONVERSION), which used up
+ * the overtime that earned them all the same.
+ */
+export interface OvertimeOffRow {
+  id: string
+  employee_id: string
+  off_date: IsoDate
+  source: 'PAID_OFF' | 'OVERTIME_CONVERSION'
+}
+
+export async function listOvertimeOffs(employeeIds: string[], db: Queryable = pool): Promise<OvertimeOffRow[]> {
+  if (employeeIds.length === 0) return []
+  return queryRows<OvertimeOffRow>(
+    db,
+    `SELECT id, employee_id, off_date, source
+       FROM employee_extra_weekly_offs
+      WHERE employee_id = ANY($1::uuid[]) AND source IN ('PAID_OFF', 'OVERTIME_CONVERSION')
+      ORDER BY off_date`,
+    [employeeIds],
+  )
+}

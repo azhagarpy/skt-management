@@ -390,6 +390,9 @@ export const deleteExtraWeeklyOff = asyncHandler(async (req: Request, res: Respo
   const existing = await repository.findExtraWeeklyOff(id, auth.organizationId)
   if (!existing) throw ApiError.notFound('Weekly off grant')
   await assertEmployeeInScope(auth, existing.employee_id, scope)
+  if (existing.source === 'PAID_OFF') {
+    throw ApiError.businessRule('This is a paid off earned with overtime. Remove it from the Overtime page.')
+  }
 
   await repository.deleteExtraWeeklyOff(id, auth.organizationId)
   await recordAudit({

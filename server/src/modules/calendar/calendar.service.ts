@@ -30,6 +30,11 @@ export interface DayInfo {
   holidayIsPaid: boolean
   /** Working this holiday earns one extra day's pay (see payroll.calculator). */
   holidayExtraPay: boolean
+  /**
+   * The day is a paid off: an extra weekly off earned by a Supply employee's
+   * overtime (overtime.service.ts), paid like a day worked. Always a WEEKLY_OFF.
+   */
+  isPaidOff: boolean
 }
 
 export interface EmployeeCalendarScope {
@@ -151,11 +156,12 @@ export async function buildCalendarContext(
   // Per-employee overrides, kept out of the department/location cache below so
   // that cache still resolves once per scope rather than once per employee - the
   // N+1 concern this function already exists to avoid (see the comment above).
-  const extraOffByEmployee = new Map<string, Set<IsoDate>>()
+  // Each employee's extra offs, by date, with what granted them.
+  const extraOffByEmployee = new Map<string, Map<IsoDate, string>>()
   for (const grant of extraWeeklyOffs) {
-    const set = extraOffByEmployee.get(grant.employee_id) ?? new Set<IsoDate>()
-    set.add(grant.off_date)
-    extraOffByEmployee.set(grant.employee_id, set)
+    const byDate = extraOffByEmployee.get(grant.employee_id) ?? new Map<IsoDate, string>()
+    byDate.set(grant.off_date, grant.source)
+    extraOffByEmployee.set(grant.employee_id, byDate)
   }
 
   const assignmentsByEmployee = new Map<string, repository.EmployeeWeeklyOffAssignmentRow[]>()
@@ -185,6 +191,7 @@ export async function buildCalendarContext(
     holidayIsOptional: false,
     holidayIsPaid: true,
     holidayExtraPay: false,
+    isPaidOff: false,
   }
 
   const allDates = datesBetween(from, to)
@@ -223,6 +230,7 @@ export async function buildCalendarContext(
         holidayIsOptional: holiday?.is_optional ?? false,
         holidayIsPaid: holiday?.is_paid ?? true,
         holidayExtraPay: holiday?.extra_pay_if_worked ?? false,
+        isPaidOff: false,
       })
     }
 
@@ -234,8 +242,9 @@ export async function buildCalendarContext(
   // that date - it is the most specific thing that can be said about a day.
   function resolveDay(date: IsoDate, scope: EmployeeCalendarScope): DayInfo {
     if (scope.employeeId) {
-      if (extraOffByEmployee.get(scope.employeeId)?.has(date)) {
-        return { date, ...WEEKLY_OFF_DAY }
+      const extraOff = extraOffByEmployee.get(scope.employeeId)?.get(date)
+      if (extraOff) {
+        return { date, ...WEEKLY_OFF_DAY, isPaidOff: extraOff === 'PAID_OFF' }
       }
       if (employeeAssignmentCoversDate(scope.employeeId, date)) {
         return { date, ...WEEKLY_OFF_DAY }
@@ -253,6 +262,7 @@ export async function buildCalendarContext(
         holidayIsOptional: false,
         holidayIsPaid: true,
         holidayExtraPay: false,
+        isPaidOff: false,
       }
     )
   }

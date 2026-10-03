@@ -36,6 +36,8 @@ function user(overrides: Partial<UserWithEmployee> = {}): UserWithEmployee {
     app_pin_failed_attempts: 0,
     employee_id: 'emp-1',
     employee_code: 'SENT0001',
+    employee_exit_date: null,
+    employment_ended: false,
     ...overrides,
   }
 }

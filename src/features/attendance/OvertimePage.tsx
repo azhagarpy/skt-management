@@ -1,28 +1,34 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { CalendarPlus, Plus, Trash2, X } from 'lucide-react'
 import { del, get, post } from '../../lib/api'
 import { formatCurrency, formatDate, todayIso } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
-import { Badge, Button, Card, Field, Input, PageHeader, Select, Textarea } from '../../components/ui'
+import { Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Textarea } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { EmployeeSelector } from '../../components/forms/selectors'
-import type { OvertimeEmployeeSettings, OvertimeEntry, OvertimeRateBasis, OvertimeWeekSummary } from '../../types/api'
+import type {
+  OvertimeEmployeeSettings,
+  OvertimeEntry,
+  OvertimeRateBasis,
+  OvertimeWeekSummary,
+  PaidOffEmployee,
+} from '../../types/api'
 
 /**
  * Overtime entry.
  *
- * Supply employees never see OT as money here - every 8 hours accumulated in a
- * week converts to one extra weekly off (capped at 2/week), shown as a running
- * indicator as hours are entered. PSR employees are paid for OT instead, in the
- * next payroll run, at the rate chosen on each entry: one day's salary / n
- * hours, or a custom amount per hour.
+ * Supply employees never see OT as money here - every 8 hours in a week earns
+ * one paid off (up to 2 a week), shown as a running indicator as hours are
+ * entered; the Paid offs section below gives each one the date chosen for it.
+ * PSR employees are paid for OT instead, in the next payroll run, at the rate
+ * chosen on each entry: one day's salary / n hours, or a custom amount per hour.
  */
 
 /** "Day's salary ÷ 8" or "₹100.00/hour", for the list. */
 function describeRate(entry: OvertimeEntry): string {
-  if (entry.overtimeHandling === 'OFF_IN_LIEU') return 'Extra weekly off'
+  if (entry.overtimeHandling === 'OFF_IN_LIEU') return 'Paid off (8 hours = 1 day)'
   return entry.rateBasis === 'CUSTOM' ? `${formatCurrency(entry.ratePerHour)}/hour` : `Day's salary ÷ ${entry.dayDivisor}`
 }
 export default function OvertimePage() {
@@ -64,7 +70,7 @@ export default function OvertimePage() {
   })
   const isPaidHourly = employeeSettings?.overtimeHandling === 'PAID_HOURLY'
   // The rate inputs show from the start, and go only once the chosen employee
-  // turns out to be one whose OT becomes extra weekly offs rather than money.
+  // turns out to be one whose OT earns paid offs rather than money.
   const showRate = employeeSettings?.overtimeHandling !== 'OFF_IN_LIEU'
 
   // Start each employee's entries at their default rate; the rate then stays as
@@ -116,6 +122,7 @@ export default function OvertimePage() {
       setForm({ ...form, hours: '', remarks: '' })
       await queryClient.invalidateQueries({ queryKey: ['overtime'] })
       await queryClient.invalidateQueries({ queryKey: ['overtime-week-summary'] })
+      await queryClient.invalidateQueries({ queryKey: ['overtime-paid-offs'] })
     },
     onError: (mutationError: Error) => toast.error('Could not record overtime', mutationError.message),
   })
@@ -126,6 +133,7 @@ export default function OvertimePage() {
       toast.success('Overtime entry removed')
       await queryClient.invalidateQueries({ queryKey: ['overtime'] })
       await queryClient.invalidateQueries({ queryKey: ['overtime-week-summary'] })
+      await queryClient.invalidateQueries({ queryKey: ['overtime-paid-offs'] })
     },
     onError: (mutationError: Error) => toast.error('Could not remove the entry', mutationError.message),
   })
@@ -168,7 +176,7 @@ export default function OvertimePage() {
     <div className="page">
       <PageHeader
         title="Overtime"
-        description="Supply employees convert OT into extra weekly offs automatically; PSR employees are paid for it in payroll, at the rate chosen on each entry."
+        description="Supply employees earn a paid off for every 8 hours of OT in a week, on a date you choose; PSR employees are paid for it in payroll, at the rate chosen on each entry."
       />
 
       {canManage ? (
@@ -197,7 +205,7 @@ export default function OvertimePage() {
                   label="Pay per hour"
                   htmlFor="ot-rate-basis"
                   required
-                  hint={employeeSettings ? undefined : 'Not used for Supply employees - their OT becomes extra weekly offs.'}
+                  hint={employeeSettings ? undefined : 'Not used for Supply employees - their OT earns paid offs.'}
                 >
                   <Select
                     id="ot-rate-basis"
@@ -247,8 +255,11 @@ export default function OvertimePage() {
           {weekSummary ? (
             <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
               This week ({formatDate(weekSummary.weekStart)}–{formatDate(weekSummary.weekEnd)}): {weekSummary.totalHours} hour(s)
-              logged → {weekSummary.extraOffsEarned} extra weekly off(s) earned
-              {weekSummary.offDates.length > 0 ? ` (${weekSummary.offDates.map((date) => formatDate(date)).join(', ')})` : ''}.
+              logged → {weekSummary.paidOffsEarned} paid off(s) earned.
+              <p className="subtle" style={{ marginTop: '0.3rem' }}>
+                Paid offs: {weekSummary.balance.earned} earned, {weekSummary.balance.scheduled} scheduled,{' '}
+                <strong>{weekSummary.balance.available} to schedule</strong> - choose their dates under Paid offs below.
+              </p>
               {weekSummary.warnings.map((warning) => (
                 <p key={warning} className="subtle" style={{ marginTop: '0.3rem' }}>
                   {warning}
@@ -289,6 +300,8 @@ export default function OvertimePage() {
         </Card>
       ) : null}
 
+      <PaidOffsCard employeeId={employeeId} canManage={canManage} />
+
       <Card padded={false}>
         <div className="filter-bar">
           <Field label="From" htmlFor="ot-from">
@@ -315,5 +328,170 @@ export default function OvertimePage() {
         />
       </Card>
     </div>
+  )
+}
+
+/**
+ * Supply employees' paid offs: what their overtime has earned, the dates chosen
+ * for them, and how many are still to be given a date. An administrator,
+ * manager or supervisor picks each date; payroll pays the day.
+ */
+function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage: boolean }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const [scheduleFor, setScheduleFor] = useState<PaidOffEmployee | null>(null)
+  const [date, setDate] = useState('')
+
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ['overtime-paid-offs', employeeId],
+    queryFn: () => get<PaidOffEmployee[]>('/overtime/paid-offs', { employeeId: employeeId || undefined }),
+  })
+
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['overtime-paid-offs'] })
+    await queryClient.invalidateQueries({ queryKey: ['overtime-week-summary'] })
+  }
+
+  const scheduleMutation = useMutation({
+    mutationFn: () => post('/overtime/paid-offs', { employeeId: scheduleFor?.employeeId, date }),
+    onSuccess: async (response) => {
+      toast.success('Paid off scheduled', response.message)
+      setScheduleFor(null)
+      await refresh()
+    },
+    onError: (mutationError: Error) => toast.error('Could not schedule the paid off', mutationError.message),
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => del(`/overtime/paid-offs/${id}`),
+    onSuccess: async (response) => {
+      toast.success('Paid off removed', response.message)
+      await refresh()
+    },
+    onError: (mutationError: Error) => toast.error('Could not remove the paid off', mutationError.message),
+  })
+
+  const columns: Column<PaidOffEmployee>[] = [
+    {
+      key: 'employee',
+      header: 'Employee',
+      render: (row) => (
+        <div>
+          <strong>{row.employeeName}</strong>
+          <p className="subtle">
+            {row.employeeCode}
+            {row.departmentName ? ` · ${row.departmentName}` : ''}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: 'earned',
+      header: 'Earned',
+      align: 'right',
+      render: (row) => (
+        <span className="numeric" title={row.convertedBefore > 0 ? `${row.convertedBefore} taken earlier as an extra weekly off` : undefined}>
+          {row.earned}
+        </span>
+      ),
+    },
+    {
+      key: 'scheduled',
+      header: 'Scheduled on',
+      render: (row) =>
+        row.scheduled.length === 0 ? (
+          <span className="subtle">—</span>
+        ) : (
+          <div className="row" style={{ flexWrap: 'wrap', gap: '0.35rem' }}>
+            {row.scheduled.map((off) => (
+              <Badge key={off.id} tone={off.locked ? 'accent' : 'info'}>
+                {formatDate(off.date)}
+                {canManage && !off.locked ? (
+                  <button
+                    type="button"
+                    aria-label={`Remove the paid off on ${formatDate(off.date)}`}
+                    title="Remove this paid off"
+                    disabled={removeMutation.isPending}
+                    onClick={() => removeMutation.mutate(off.id)}
+                    style={{ marginLeft: '0.25rem', background: 'none', border: 0, cursor: 'pointer', padding: 0, color: 'inherit' }}
+                  >
+                    <X size={11} />
+                  </button>
+                ) : null}
+              </Badge>
+            ))}
+          </div>
+        ),
+    },
+    {
+      key: 'available',
+      header: 'To schedule',
+      align: 'right',
+      render: (row) => (row.available > 0 ? <strong className="numeric">{row.available}</strong> : <span className="numeric">0</span>),
+    },
+    ...(canManage
+      ? [
+          {
+            key: 'actions',
+            header: '',
+            align: 'right' as const,
+            render: (row: PaidOffEmployee) =>
+              row.available > 0 ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<CalendarPlus size={13} />}
+                  onClick={() => {
+                    setScheduleFor(row)
+                    setDate('')
+                  }}
+                >
+                  Schedule
+                </Button>
+              ) : null,
+          },
+        ]
+      : []),
+  ]
+
+  return (
+    <Card
+      title="Paid offs"
+      description="Every 8 hours of a Supply employee's overtime in a week earns one paid off, up to 2 a week: a day off that is paid like a day worked, on a working day you choose. One in an approved payroll month can no longer be removed."
+      padded={false}
+    >
+      <DataTable
+        columns={columns}
+        rows={data ?? []}
+        rowKey={(row) => row.employeeId}
+        loading={isFetching}
+        error={error}
+        onRetry={() => void refetch()}
+        emptyTitle="No paid offs earned"
+        emptyDescription="Supply employees who earn a paid off with overtime will appear here."
+        caption="Paid offs"
+      />
+
+      <Modal
+        open={scheduleFor !== null}
+        title={`Schedule a paid off for ${scheduleFor?.employeeName ?? ''}`}
+        description={`${scheduleFor?.available ?? 0} still to schedule. Choose one of their working days with no attendance marked yet.`}
+        onClose={() => setScheduleFor(null)}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setScheduleFor(null)}>
+              Cancel
+            </Button>
+            <Button loading={scheduleMutation.isPending} disabled={!date} onClick={() => scheduleMutation.mutate()}>
+              Schedule paid off
+            </Button>
+          </>
+        }
+      >
+        <Field label="Paid off date" htmlFor="paid-off-date" required hint="That day becomes their off, and payroll pays it.">
+          <Input id="paid-off-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </Field>
+      </Modal>
+    </Card>
   )
 }

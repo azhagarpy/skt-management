@@ -7,7 +7,7 @@ import {
   roundHalfUp,
   type Minor,
 } from '../../utils/money.js'
-import type { IsoDate } from '../../utils/dates.js'
+import { formatDayMonthYear, type IsoDate } from '../../utils/dates.js'
 
 /**
  * The payroll calculation engine.
@@ -54,6 +54,12 @@ export interface DayInput {
    * after: it is not paid (see `forfeitedHolidayDates`).
    */
   holidayForfeited?: boolean
+  /**
+   * A paid off: an extra weekly off a Supply employee earned with overtime, on a
+   * date chosen for it. Unlike a weekly off it is paid, as a day worked is - every
+   * component included.
+   */
+  paidOff?: boolean
 }
 
 /**
@@ -254,7 +260,10 @@ export interface AttendanceSummary {
   unpaidLeaveDays: number
   halfDayLeaveDays: number
   holidayDays: number
+  /** Weekly offs, not counting paid offs. */
   weeklyOffDays: number
+  /** Paid offs taken (see DayInput.paidOff); each is a paid day. */
+  paidOffDays: number
   unmarkedDays: number
   paidDays: number
   /**
@@ -377,6 +386,7 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
   let halfDayLeaveDays = 0
   let holidayDays = 0
   let weeklyOffDays = 0
+  let paidOffDays = 0
   let unmarkedDays = 0
   let paidDays = 0
   let workingPaidDays = 0
@@ -447,6 +457,11 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
         break
 
       case 'WEEKLY_OFF':
+        if (day.paidOff) {
+          paidOffDays += 1
+          dayPaid = 1
+          break
+        }
         weeklyOffDays += 1
         dayPaid = policy.countWeeklyOffAsPaid ? 1 : 0
         break
@@ -505,6 +520,7 @@ export function summariseAttendance(days: DayInput[], policy: PolicyInput): Atte
     halfDayLeaveDays: roundDays(halfDayLeaveDays),
     holidayDays: roundDays(holidayDays),
     weeklyOffDays: roundDays(weeklyOffDays),
+    paidOffDays: roundDays(paidOffDays),
     unmarkedDays: roundDays(unmarkedDays),
     paidDays: roundDays(effectivePaidDays),
     paidHolidayDays: roundDays(effectiveHolidayPaidDays),
@@ -647,14 +663,6 @@ function roundToDecimals(minor: Minor, decimals: number): Minor {
   if (decimals >= 2) return minor
   const factor = decimals === 0 ? 100 : 10
   return roundHalfUp(minor / factor) * factor
-}
-
-const MONTH_ABBREVIATIONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-
-/** "2026-08-15" -> "15 Aug 2026". */
-function formatDayMonthYear(date: IsoDate): string {
-  const [year, month, day] = date.split('-')
-  return `${Number(day)} ${MONTH_ABBREVIATIONS[Number(month) - 1] ?? month} ${year}`
 }
 
 /**

@@ -1,10 +1,9 @@
 import { ApiError } from '../../utils/api-error.js'
-import { withTransaction, type TxClient } from '../../database/tx.js'
+import { withTransaction } from '../../database/tx.js'
 import { pool, queryOne, type Queryable } from '../../database/pool.js'
 import {
   addDays,
   countDaysBetween,
-  datesBetween,
   payCycleContaining,
   PAYROLL_CYCLE_CUTOFF_DAY,
   startOfIsoWeek,
@@ -17,35 +16,42 @@ import * as salaryRepository from '../salary/salary.repository.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { assertEmployeeInScope, resolveScope, scopeClause, type EmployeeScope } from '../employees/employee-access.js'
-import { buildCalendarContext } from '../calendar/calendar.service.js'
-import * as calendarRepository from '../calendar/calendar.repository.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './overtime.repository.js'
+import {
+  assertPaidOffsStillEarned,
+  HOURS_PER_PAID_OFF,
+  loadPaidOffBalances,
+  MAX_PAID_OFFS_PER_WEEK,
+  paidOffsForWeek,
+  type PaidOffBalance,
+} from './paid-offs.js'
 import type { OvertimeListQuery, RecordOvertimeInput, UpdateOvertimeInput } from './overtime.validation.js'
 
 /**
  * Overtime (README wishlist item 4).
  *
- * Supply employees never see OT as money: every 8 hours accumulated in a week
- * converts to one extra weekly off, capped at 2/week (16 hours). PSR employees
- * never see OT as days off: hours are paid in payroll (payroll.service.ts) at
- * the rate chosen on each entry - one day's salary / n hours, or a custom
- * amount per hour. The employee's type carries which of the two applies
- * as `overtime_handling`, so a type added later has to declare its behaviour
- * rather than falling through both branches.
+ * Supply employees never see OT as money: every 8 hours in a week earns one
+ * paid off, up to 2 a week - a paid day off on a date chosen for it
+ * (paid-offs.ts). PSR employees never see OT as days off: hours are paid in
+ * payroll (payroll.service.ts) at the rate chosen on each entry - one day's
+ * salary / n hours, or a custom amount per hour. The employee's type carries
+ * which of the two applies as `overtime_handling`, so a type added later has to
+ * declare its behaviour rather than falling through both branches.
  */
 
-const SUPPLY_HOURS_PER_OFF = 8
-const SUPPLY_MAX_OFFS_PER_WEEK = 2
 /** The n in "one day's salary / n" when an entry does not choose its own. */
 const DEFAULT_DAY_DIVISOR = 8
 
-export interface WeekConversionSummary {
+/** A Supply employee's week of overtime, the paid offs it earns, and their paid-off balance. */
+export interface PaidOffWeekSummary {
   weekStart: IsoDate
   weekEnd: IsoDate
   totalHours: number
-  extraOffsEarned: number
-  offDates: IsoDate[]
+  /** Paid offs this week's hours earn. */
+  paidOffsEarned: number
+  /** Over every week: earned, given a date, and still to be given one. */
+  balance: { earned: number; scheduled: number; available: number }
   warnings: string[]
 }
 
@@ -149,82 +155,31 @@ function presentOvertimeWithEmployee(row: repository.OvertimeWithEmployeeRow) {
   }
 }
 
-/**
- * Recomputes a Supply employee's extra-off entitlement for the week containing
- * `date`, and reconciles employee_extra_weekly_offs so it always matches -
- * recalculated from scratch on every change rather than incrementally, which is
- * what keeps it correct across edits and deletions alike.
- */
-async function reconcileSupplyConversion(
-  auth: AuthContext,
-  employee: EmployeeOvertimeContext,
-  date: IsoDate,
-  tx: TxClient,
-): Promise<WeekConversionSummary> {
+/** The week containing `date` for a Supply employee, with their paid-off balance. */
+async function supplyWeekSummary(employeeId: string, date: IsoDate, db: Queryable): Promise<PaidOffWeekSummary> {
   const weekStart = startOfIsoWeek(date)
   const weekEnd = addDays(weekStart, 6)
-  const warnings: string[] = []
-
-  const entries = await repository.listOvertimeForEmployee(employee.id, weekStart, weekEnd, tx)
+  const entries = await repository.listOvertimeForEmployee(employeeId, weekStart, weekEnd, db)
   const totalHours = entries.reduce((sum, entry) => sum + Number(entry.hours), 0)
 
-  const rawOffs = Math.floor(totalHours / SUPPLY_HOURS_PER_OFF)
-  const extraOffsEarned = Math.min(rawOffs, SUPPLY_MAX_OFFS_PER_WEEK)
-
-  if (totalHours % SUPPLY_HOURS_PER_OFF !== 0) {
-    warnings.push(`${totalHours - rawOffs * SUPPLY_HOURS_PER_OFF} hour(s) this week are short of a full ${SUPPLY_HOURS_PER_OFF}-hour block and do not convert.`)
+  const warnings: string[] = []
+  const fullBlocks = Math.floor(totalHours / HOURS_PER_PAID_OFF)
+  if (totalHours % HOURS_PER_PAID_OFF !== 0) {
+    warnings.push(
+      `${totalHours - fullBlocks * HOURS_PER_PAID_OFF} hour(s) this week are short of a full ${HOURS_PER_PAID_OFF}-hour block and earn no paid off.`,
+    )
   }
-  if (rawOffs > SUPPLY_MAX_OFFS_PER_WEEK) {
-    warnings.push(`Overtime this week supports ${rawOffs} extra off(s), but only ${SUPPLY_MAX_OFFS_PER_WEEK} can be taken in one week.`)
-  }
-
-  const existingGrants = (
-    await calendarRepository.listExtraWeeklyOffsInRange(auth.organizationId, weekStart, weekEnd, tx)
-  )
-    .filter((grant) => grant.employee_id === employee.id && grant.source === 'OVERTIME_CONVERSION')
-    .sort((a, b) => (a.off_date < b.off_date ? -1 : 1))
-
-  if (existingGrants.length > extraOffsEarned) {
-    const excess = existingGrants.slice(extraOffsEarned)
-    for (const grant of excess) {
-      await calendarRepository.deleteExtraWeeklyOff(grant.id, auth.organizationId, tx)
-    }
-  } else if (existingGrants.length < extraOffsEarned) {
-    const needed = extraOffsEarned - existingGrants.length
-    const taken = new Set(existingGrants.map((grant) => grant.off_date))
-    const calendar = await buildCalendarContext(auth.organizationId, weekStart, weekEnd, tx)
-    const scope = { departmentId: employee.department_id, locationId: employee.location_id, employeeId: employee.id }
-
-    const candidates = datesBetween(weekStart, weekEnd).filter((candidateDate) => {
-      if (taken.has(candidateDate)) return false
-      return calendar.dayFor(candidateDate, scope).kind === 'WORKING'
-    })
-
-    for (const candidateDate of candidates.slice(0, needed)) {
-      await calendarRepository.insertExtraWeeklyOffs(
-        auth.organizationId,
-        [employee.id],
-        candidateDate,
-        'OVERTIME_CONVERSION',
-        auth.userId,
-        tx,
-      )
-    }
-    if (candidates.length < needed) {
-      warnings.push('Not every earned extra off could be placed on a working day this week; review the calendar manually.')
-    }
+  if (fullBlocks > MAX_PAID_OFFS_PER_WEEK) {
+    warnings.push(`This week's overtime comes to ${fullBlocks} paid offs, but at most ${MAX_PAID_OFFS_PER_WEEK} can be earned in one week.`)
   }
 
-  const finalGrants = (
-    await calendarRepository.listExtraWeeklyOffsInRange(auth.organizationId, weekStart, weekEnd, tx)
-  ).filter((grant) => grant.employee_id === employee.id && grant.source === 'OVERTIME_CONVERSION')
-
+  const balance = (await loadPaidOffBalances([employeeId], db)).get(employeeId) as PaidOffBalance
   return {
     weekStart,
     weekEnd,
     totalHours,
-    extraOffsEarned,
-    offDates: finalGrants.map((grant) => grant.off_date).sort(),
+    paidOffsEarned: paidOffsForWeek(totalHours),
+    balance: { earned: balance.earned, scheduled: balance.scheduled.length, available: balance.available },
     warnings,
   }
 }
@@ -261,9 +216,11 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
       tx,
     )
 
-    let conversion: WeekConversionSummary | null = null
+    // Less overtime can leave scheduled paid offs unearned; that undoes the change.
+    let paidOffs: PaidOffWeekSummary | null = null
     if (employee.overtime_handling === 'OFF_IN_LIEU') {
-      conversion = await reconcileSupplyConversion(auth, employee, input.workDate, tx)
+      await assertPaidOffsStillEarned(employee.id, tx)
+      paidOffs = await supplyWeekSummary(employee.id, input.workDate, tx)
     }
 
     await recordAudit(
@@ -278,7 +235,7 @@ export async function recordOvertime(auth: AuthContext, input: RecordOvertimeInp
       tx,
     )
 
-    return { entry: presentOvertime(row), conversion }
+    return { entry: presentOvertime(row), paidOffs }
   })
 }
 
@@ -315,9 +272,10 @@ export async function updateOvertime(
       tx,
     )
 
-    let conversion: WeekConversionSummary | null = null
+    let paidOffs: PaidOffWeekSummary | null = null
     if (employee.overtime_handling === 'OFF_IN_LIEU') {
-      conversion = await reconcileSupplyConversion(auth, employee, existing.work_date, tx)
+      await assertPaidOffsStillEarned(employee.id, tx)
+      paidOffs = await supplyWeekSummary(employee.id, existing.work_date, tx)
     }
 
     await recordAudit(
@@ -332,7 +290,7 @@ export async function updateOvertime(
       tx,
     )
 
-    return { entry: presentOvertime(row), conversion }
+    return { entry: presentOvertime(row), paidOffs }
   })
 }
 
@@ -352,9 +310,10 @@ export async function deleteOvertime(auth: AuthContext, id: string, context: Aud
     const employee = await loadEmployeeContext(existing.employee_id, tx)
     await repository.deleteOvertime(id, auth.organizationId, tx)
 
-    let conversion: WeekConversionSummary | null = null
+    let paidOffs: PaidOffWeekSummary | null = null
     if (employee.overtime_handling === 'OFF_IN_LIEU') {
-      conversion = await reconcileSupplyConversion(auth, employee, existing.work_date, tx)
+      await assertPaidOffsStillEarned(employee.id, tx)
+      paidOffs = await supplyWeekSummary(employee.id, existing.work_date, tx)
     }
 
     await recordAudit(
@@ -368,7 +327,7 @@ export async function deleteOvertime(auth: AuthContext, id: string, context: Aud
       tx,
     )
 
-    return { conversion }
+    return { paidOffs }
   })
 }
 
@@ -417,31 +376,10 @@ export async function getEmployeeOvertimeSettings(auth: AuthContext, employeeId:
   }
 }
 
-/** Read-only week summary, used by the entry screen's running "X/16 hrs" indicator. */
-export async function getWeekSummary(auth: AuthContext, employeeId: string, date: IsoDate): Promise<WeekConversionSummary | null> {
-  const scope = viewScope(auth)
-  await assertEmployeeInScope(auth, employeeId, scope)
-
+/** Read-only week summary, for the entry screen's running hours and paid-offs indicator. */
+export async function getWeekSummary(auth: AuthContext, employeeId: string, date: IsoDate): Promise<PaidOffWeekSummary | null> {
+  await assertEmployeeInScope(auth, employeeId, viewScope(auth))
   const employee = await loadEmployeeContext(employeeId, pool)
   if (employee.overtime_handling !== 'OFF_IN_LIEU') return null
-
-  const weekStart = startOfIsoWeek(date)
-  const weekEnd = addDays(weekStart, 6)
-  const entries = await repository.listOvertimeForEmployee(employeeId, weekStart, weekEnd)
-  const totalHours = entries.reduce((sum, entry) => sum + Number(entry.hours), 0)
-  const rawOffs = Math.floor(totalHours / SUPPLY_HOURS_PER_OFF)
-  const extraOffsEarned = Math.min(rawOffs, SUPPLY_MAX_OFFS_PER_WEEK)
-
-  const grants = (await calendarRepository.listExtraWeeklyOffsInRange(auth.organizationId, weekStart, weekEnd)).filter(
-    (grant) => grant.employee_id === employeeId && grant.source === 'OVERTIME_CONVERSION',
-  )
-
-  return {
-    weekStart,
-    weekEnd,
-    totalHours,
-    extraOffsEarned,
-    offDates: grants.map((grant) => grant.off_date).sort(),
-    warnings: [],
-  }
+  return supplyWeekSummary(employeeId, date, pool)
 }

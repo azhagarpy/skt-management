@@ -172,6 +172,7 @@ describe('isPaidRestedHoliday', () => {
         holidayIsOptional: false,
         holidayIsPaid: true,
         holidayExtraPay: kind === 'HOLIDAY',
+        isPaidOff: false,
       }
     }
     return {

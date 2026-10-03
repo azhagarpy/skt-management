@@ -155,6 +155,8 @@ export function drawPayslipPage(doc: Pdf, data: PayslipPdfData): void {
     ['Absent', String(Number(item.absent_days))],
     ['Leave', String(Number(item.leave_days))],
     ['Holidays / offs', String(Number(item.holiday_days) + Number(item.weekly_off_days))],
+    // Paid offs earned with overtime are paid days, so they get a cell of their own.
+    ...(Number(item.paid_off_days ?? 0) > 0 ? ([['Paid offs', String(Number(item.paid_off_days))]] as [string, string][]) : []),
   ]
   const stripHeight = 38
   doc.rect(PAGE.left, y, PAGE.width, stripHeight).fill(COLOR.tint)

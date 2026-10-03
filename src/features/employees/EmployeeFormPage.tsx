@@ -447,7 +447,7 @@ export default function EmployeeFormPage() {
             <Field
               label="Supply type"
               htmlFor="employeeTypeId"
-              hint="The type decides whether overtime becomes extra weekly offs or is paid per hour. Manage the list under Organization."
+              hint="The type decides whether overtime earns paid offs or is paid per hour. Manage the list under Organization."
               error={errors.employeeTypeId?.message}
               required
             >
@@ -568,7 +568,11 @@ export default function EmployeeFormPage() {
             </Field>
 
             {isEdit ? (
-              <Field label="Exit date" htmlFor="exitDate" hint="Set this when the employee leaves.">
+              <Field
+                label="Exit date"
+                htmlFor="exitDate"
+                hint="Set this when the employee leaves. Their login stops working the day after it."
+              >
                 <Input id="exitDate" type="date" {...register('exitDate')} />
               </Field>
             ) : null}

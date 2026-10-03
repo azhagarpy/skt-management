@@ -1464,3 +1464,49 @@ describe('calculatePayrollItem - holiday pay without the components left out of 
     expect(toMajor(result.grossEarningsMinor)).toBe(42_000)
   })
 })
+
+describe('calculatePayrollItem - paid offs', () => {
+  // SKT's daily structure and its policy: a weekly off is not paid.
+  const employee = { id: 'emp-3', code: 'EMP003', name: 'Supply Worker', salaryBasis: 'DAILY' } as const
+  const components = [
+    component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(494), displayOrder: 1 }),
+    component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(287), displayOrder: 2 }),
+    component({ code: 'SA', name: 'Special Allowance', amountMinor: toMinor(138), displayOrder: 3, holidayExtraPay: false }),
+  ]
+  const policy: PolicyInput = { ...DEFAULT_POLICY, countWeeklyOffAsPaid: false }
+  // Wednesday 16 Sept 2026, a working day given to the employee as an off.
+  const OFF = '2026-09-16'
+  const calculate = (off: Partial<DayInput>) =>
+    calculatePayrollItem(
+      baseInput({ employee, components, policy, days: septemberDays({ [OFF]: { dayKind: 'WEEKLY_OFF', status: 'WEEKLY_OFF', ...off } }) }),
+    )
+
+  it('pays a paid off as a day worked, every component included', () => {
+    const result = calculate({ paidOff: true })
+
+    expect(result.attendance.paidOffDays).toBe(1)
+    expect(result.attendance.weeklyOffDays).toBe(8)
+    // 21 weekdays worked and the paid off; the weekends are not paid.
+    expect(result.attendance.paidDays).toBe(22)
+    expect(toMajor(result.grossEarningsMinor)).toBe(919 * 22)
+  })
+
+  it('pays it the same when the day was never marked', () => {
+    expect(toMajor(calculate({ paidOff: true, status: null }).grossEarningsMinor)).toBe(919 * 22)
+  })
+
+  it('leaves an ordinary extra weekly off unpaid', () => {
+    const result = calculate({})
+
+    expect(result.attendance.paidOffDays).toBe(0)
+    expect(result.attendance.weeklyOffDays).toBe(9)
+    expect(toMajor(result.grossEarningsMinor)).toBe(919 * 21)
+  })
+
+  it('pays a paid off that was worked anyway as the day worked, not twice', () => {
+    const result = calculate({ paidOff: true, status: 'PRESENT' })
+
+    expect(result.attendance.paidOffDays).toBe(0)
+    expect(toMajor(result.grossEarningsMinor)).toBe(919 * 22)
+  })
+})

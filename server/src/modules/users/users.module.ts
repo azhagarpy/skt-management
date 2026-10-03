@@ -10,6 +10,8 @@ import { ApiError } from '../../utils/api-error.js'
 import { withTransaction } from '../../database/tx.js'
 import { buildUpdate } from '../organization/organization.repository.js'
 import { auditContextFrom, recordAudit } from '../audit/audit.service.js'
+import { formatDayMonthYear } from '../../utils/dates.js'
+import { employmentEndedSql } from '../auth/leavers.js'
 import { hashPassword } from '../auth/password.service.js'
 import { PERMISSION_DEFINITIONS, PERMISSIONS, ROLE_PERMISSIONS, type RoleKey } from '../auth/permissions.js'
 import { passwordSchema } from '../auth/auth.validation.js'
@@ -230,6 +232,19 @@ userRouter.patch(
     }
     if (id === auth.userId && input.role && input.role !== existing.role) {
       throw ApiError.businessRule('You cannot change your own role')
+    }
+    // A leaver's login is refused anyway (leavers.ts), so re-activating it would do nothing.
+    if (input.status === 'ACTIVE' && existing.status !== 'ACTIVE' && existing.employee_id) {
+      const leaver = await queryOne<{ exit_date: string }>(
+        pool,
+        `SELECT e.exit_date FROM employees e WHERE e.id = $1 AND ${employmentEndedSql('e')}`,
+        [existing.employee_id],
+      )
+      if (leaver) {
+        throw ApiError.businessRule(
+          `${existing.full_name} left on ${formatDayMonthYear(leaver.exit_date)}. Clear or change their exit date before activating this login.`,
+        )
+      }
     }
 
     const updated = await withTransaction(async (tx) => {

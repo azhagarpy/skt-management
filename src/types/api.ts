@@ -587,13 +587,28 @@ export interface OvertimeEmployeeSettings {
   daySalary: number | null
 }
 
+/** A Supply employee's week of overtime, the paid offs it earns, and their paid-off balance. */
 export interface OvertimeWeekSummary {
   weekStart: string
   weekEnd: string
   totalHours: number
-  extraOffsEarned: number
-  offDates: string[]
+  paidOffsEarned: number
+  balance: { earned: number; scheduled: number; available: number }
   warnings: string[]
+}
+
+/** GET /overtime/paid-offs - one Supply employee's paid offs. */
+export interface PaidOffEmployee {
+  employeeId: string
+  employeeCode: string
+  employeeName: string
+  departmentName: string | null
+  earned: number
+  /** Overtime turned into unpaid extra weekly offs before paid offs; used up all the same. */
+  convertedBefore: number
+  available: number
+  /** Paid offs given a date. A locked one is in an approved payroll and can no longer be removed. */
+  scheduled: { id: string; date: string; locked: boolean }[]
 }
 
 export interface WeeklyOffCalendarDay {
@@ -724,6 +739,8 @@ export interface PayrollAttendance {
   halfDayLeaveDays: number
   holidayDays: number
   weeklyOffDays: number
+  /** Paid offs earned with overtime: days off that are paid. */
+  paidOffDays: number
   unmarkedDays: number
   paidDays: number
   payableDaysBasis: number

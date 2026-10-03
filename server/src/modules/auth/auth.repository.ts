@@ -1,4 +1,6 @@
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
+import type { IsoDate } from '../../utils/dates.js'
+import { employmentEndedSql } from './leavers.js'
 import type { PermissionCode, RoleKey } from './permissions.js'
 
 export interface UserRecord {
@@ -23,6 +25,9 @@ export interface UserRecord {
 export interface UserWithEmployee extends UserRecord {
   employee_id: string | null
   employee_code: string | null
+  employee_exit_date: IsoDate | null
+  /** The linked employee's exit date is over: they may no longer sign in (leavers.ts). */
+  employment_ended: boolean
 }
 
 const USER_SELECT = `
@@ -42,7 +47,9 @@ const USER_SELECT = `
          u.app_pin_hash,
          u.app_pin_failed_attempts,
          e.id   AS employee_id,
-         e.employee_code
+         e.employee_code,
+         e.exit_date AS employee_exit_date,
+         coalesce(${employmentEndedSql('e')}, false) AS employment_ended
     FROM users u
     LEFT JOIN employees e ON e.user_id = u.id
 `

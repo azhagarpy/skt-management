@@ -4,6 +4,7 @@ import { logger } from './utils/logger.js'
 import { closePool, pool } from './database/pool.js'
 import { migrateUp } from './database/migrate.js'
 import { syncPermissionCatalogue } from './modules/auth/auth.service.js'
+import { scheduleLeaverDeactivation } from './modules/auth/leavers.js'
 
 async function bootstrap(): Promise<void> {
   // Fail fast with a clear message rather than on the first request.
@@ -14,6 +15,7 @@ async function bootstrap(): Promise<void> {
   if (applied.length > 0) logger.info({ applied }, 'Pending migrations applied on startup')
 
   await syncPermissionCatalogue()
+  const stopLeaverDeactivation = scheduleLeaverDeactivation()
 
   const app = createApp()
   const server = app.listen(env.PORT, () => {
@@ -22,6 +24,7 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = (signal: string): void => {
     logger.info({ signal }, 'Shutting down')
+    stopLeaverDeactivation()
     server.close(() => {
       void closePool().then(() => process.exit(0))
     })

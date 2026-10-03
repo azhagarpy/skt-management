@@ -730,7 +730,7 @@ function EmployeeTypesTab({ canManage }: { canManage: boolean }) {
               value={String(values.overtimeHandling ?? 'OFF_IN_LIEU')}
               onChange={(event) => set({ ...values, overtimeHandling: event.target.value })}
             >
-              <option value="OFF_IN_LIEU">Converts to extra weekly offs (8 hours per off)</option>
+              <option value="OFF_IN_LIEU">Earns paid offs (8 hours per paid off)</option>
               <option value="PAID_HOURLY">Paid at the employee's hourly rate</option>
             </Select>
           </Field>

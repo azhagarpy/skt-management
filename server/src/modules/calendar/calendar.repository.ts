@@ -618,7 +618,8 @@ export async function deleteExtraWeeklyOffForDate(
   offDate: IsoDate,
   db: Queryable = pool,
 ): Promise<void> {
-  await db.query('DELETE FROM employee_extra_weekly_offs WHERE employee_id = $1 AND off_date = $2', [
+  // A paid off is removed only through the overtime screen, which checks its payroll (paid-offs.ts).
+  await db.query("DELETE FROM employee_extra_weekly_offs WHERE employee_id = $1 AND off_date = $2 AND source <> 'PAID_OFF'", [
     employeeId,
     offDate,
   ])

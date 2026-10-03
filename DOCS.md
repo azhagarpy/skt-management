@@ -115,6 +115,15 @@ Each step depends on the ones above it.
 - **Overtime** — paid hourly overtime is added straight to net pay, like Other
   Credits: it is not part of gross earnings, so no PF, ESI or other deduction is taken
   from it. Net salary = gross earnings − total deductions + overtime + other credits.
+- **Paid offs** — a Supply employee's overtime is never money: every 8 hours in a week
+  (Monday–Sunday) earns one paid off, up to 2 a week; hours short of 8 do not carry
+  into the next week. An administrator, manager or supervisor gives each one a date
+  under Overtime → Paid offs: one of the employee's working days, with no attendance
+  marked yet, in a payroll month not yet approved (a supervisor or manager for their
+  team, never themselves). That day becomes the employee's off and payroll pays it as
+  a day worked, every component included, shown as `Paid offs` on the payslip.
+  Removing one puts it back in the balance, until its payroll is approved; overtime
+  cannot be reduced below the paid offs already scheduled from it.
 - **Tax** — the tax amount for each band of wages (Tax → Tax slabs). The tax report
   applies the bands to each employee's *total wages over a period* (usually a
   half-year) and exports the P.TAX workbook, a sheet per department. From the
@@ -133,6 +142,11 @@ Each step depends on the ones above it.
   calculated. Moving or clearing the exit date withdraws it (unless that payroll is
   approved), and "Deduct from salary" on the tax report leaves out a leaver whose
   tax for the period already came out on exit.
+- **Leavers' logins** — an employee can sign in up to and including their exit date.
+  From midnight (India time) after it, sign-in, staying signed in and every request
+  are refused, and within the hour their login is marked inactive on the Users page.
+  Only the login changes: the employee is still paid their final salary. To let them
+  back in, clear or change the exit date first, then activate the login.
 
 **At month end**
 

@@ -131,8 +131,8 @@ async function loadPeriodSalaries(
 
 /**
  * Overtime report: the rate each entry is paid at and what it comes to. A
- * Supply employee's overtime becomes extra weekly offs instead and is never
- * paid, so it carries no amount.
+ * Supply employee's overtime earns paid offs instead (paid-offs.ts) and is
+ * never paid as money, so it carries no amount.
  */
 export async function addOvertimeAmounts(organizationId: string, rows: ReportRow[]): Promise<ReportRow[]> {
   const paid = rows.filter((row) => row.overtime_handling === 'PAID_HOURLY')
@@ -143,7 +143,7 @@ export async function addOvertimeAmounts(organizationId: string, rows: ReportRow
 
   return rows.map((row) => {
     if (row.overtime_handling !== 'PAID_HOURLY') {
-      return { ...row, rate: 'Extra weekly off', rate_per_hour: null, amount: null }
+      return { ...row, rate: 'Paid off (8 hours = 1 day)', rate_per_hour: null, amount: null }
     }
 
     const hours = Number(row.hours)

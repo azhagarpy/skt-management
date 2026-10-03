@@ -182,8 +182,10 @@ export default function PayrollItemPage() {
         />
         <StatTile
           label="Non-working"
-          value={formatDays(item.attendance.holidayDays + item.attendance.weeklyOffDays)}
-          sublabel={`${formatDays(item.attendance.holidayDays)} holidays · ${formatDays(item.attendance.weeklyOffDays)} weekly offs`}
+          value={formatDays(item.attendance.holidayDays + item.attendance.weeklyOffDays + item.attendance.paidOffDays)}
+          sublabel={`${formatDays(item.attendance.holidayDays)} holidays · ${formatDays(item.attendance.weeklyOffDays)} weekly offs${
+            item.attendance.paidOffDays > 0 ? ` · ${formatDays(item.attendance.paidOffDays)} paid offs (paid)` : ''
+          }`}
           tone="neutral"
         />
       </div>

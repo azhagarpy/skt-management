@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express'
 import { ApiError } from '../utils/api-error.js'
 import { query } from '../database/pool.js'
 import { verifyAccessToken } from '../modules/auth/token.service.js'
+import { employmentEndedMessage, employmentEndedSql } from '../modules/auth/leavers.js'
 import type { PermissionCode, RoleKey } from '../modules/auth/permissions.js'
 import { ROLE_PERMISSIONS } from '../modules/auth/permissions.js'
 import type { AuthContext } from '../types/express.js'
@@ -14,6 +15,8 @@ interface UserRow {
   full_name: string
   status: 'ACTIVE' | 'INACTIVE' | 'LOCKED'
   employee_id: string | null
+  employee_exit_date: string | null
+  employment_ended: boolean
 }
 
 interface PermissionRow {
@@ -86,7 +89,9 @@ async function resolvePrincipal(req: Request, _res: Response, next: NextFunction
               u.email,
               u.full_name,
               u.status,
-              e.id AS employee_id
+              e.id AS employee_id,
+              e.exit_date AS employee_exit_date,
+              coalesce(${employmentEndedSql('e')}, false) AS employment_ended
          FROM users u
          LEFT JOIN employees e ON e.user_id = u.id
         WHERE u.id = $1`,
@@ -96,6 +101,7 @@ async function resolvePrincipal(req: Request, _res: Response, next: NextFunction
     const user = rows[0]
     if (!user) throw ApiError.unauthenticated('Account no longer exists')
     if (user.status !== 'ACTIVE') throw ApiError.forbidden('This account is not active')
+    if (user.employment_ended) throw ApiError.forbidden(employmentEndedMessage(user.employee_exit_date))
 
     const { rows: overrides } = await query<PermissionRow>(
       `SELECT p.code, up.granted

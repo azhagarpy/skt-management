@@ -57,6 +57,7 @@ export interface PayrollItemRow {
   half_day_leave_days: string
   holiday_days: string
   weekly_off_days: string
+  paid_off_days: string
   unmarked_days: string
   paid_days: string
   payable_days_basis: string
@@ -354,10 +355,10 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
        weekly_off_days, unmarked_days, paid_days, payable_days_basis,
        gross_earnings, total_overtime, total_deductions, employer_contributions,
        pf_wage, pf_wage_ceiling, esi_wage, net_salary,
-       paid_amount, pending_amount, payment_status, remarks, calculation_snapshot, total_credits
+       paid_amount, pending_amount, payment_status, remarks, calculation_snapshot, total_credits, paid_off_days
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38::jsonb, $39
+       $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38::jsonb, $39, $40
      ) RETURNING *`,
     [
       values.organization_id,
@@ -399,6 +400,7 @@ export async function insertItem(values: Record<string, unknown>, db: Queryable)
       values.remarks ?? null,
       JSON.stringify(values.calculation_snapshot ?? {}),
       values.total_credits ?? '0',
+      values.paid_off_days ?? 0,
     ],
   )
   return row as PayrollItemRow

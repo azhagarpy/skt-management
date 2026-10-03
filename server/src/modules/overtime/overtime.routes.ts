@@ -8,16 +8,21 @@ import { sendCreated, sendSuccess } from '../../utils/http.js'
 import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import * as service from './overtime.service.js'
+import * as paidOffs from './paid-offs.js'
 import {
   overtimeEmployeeQuerySchema,
   overtimeListQuerySchema,
   overtimeWeekQuerySchema,
+  paidOffListQuerySchema,
   recordOvertimeSchema,
+  schedulePaidOffSchema,
   updateOvertimeSchema,
   type OvertimeEmployeeQuery,
   type OvertimeListQuery,
   type OvertimeWeekQuery,
+  type PaidOffListQuery,
   type RecordOvertimeInput,
+  type SchedulePaidOffInput,
   type UpdateOvertimeInput,
 } from './overtime.validation.js'
 
@@ -53,7 +58,7 @@ overtimeRouter.get(
   }),
 )
 
-/** The running weekly total, so the entry screen can show "X/16 hrs -> Y extra off(s)" as it is typed. */
+/** The running weekly total, so the entry screen can show the hours and the paid offs they earn as it is typed. */
 overtimeRouter.get(
   '/week-summary',
   canView,
@@ -62,6 +67,40 @@ overtimeRouter.get(
     const auth = requireAuth(req)
     const query = req.query as unknown as OvertimeWeekQuery
     return sendSuccess(res, await service.getWeekSummary(auth, query.employeeId, query.date))
+  }),
+)
+
+/** Supply employees' paid offs: earned, scheduled and still to schedule (paid-offs.ts). */
+overtimeRouter.get(
+  '/paid-offs',
+  canView,
+  validate({ query: paidOffListQuerySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(res, await paidOffs.listPaidOffs(auth, req.query as unknown as PaidOffListQuery))
+  }),
+)
+
+/** Gives one of an employee's earned paid offs the date chosen for it. */
+overtimeRouter.post(
+  '/paid-offs',
+  canManage,
+  validate({ body: schedulePaidOffSchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const { result, message } = await paidOffs.schedulePaidOff(auth, req.body as SchedulePaidOffInput, auditContextFrom(req))
+    return sendCreated(res, result, message)
+  }),
+)
+
+overtimeRouter.delete(
+  '/paid-offs/:id',
+  canManage,
+  validate({ params: z.object({ id: z.string().uuid() }) }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const message = await paidOffs.removePaidOff(auth, req.params.id as string, auditContextFrom(req))
+    return sendSuccess(res, null, message)
   }),
 )
 

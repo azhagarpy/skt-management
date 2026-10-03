@@ -4,6 +4,7 @@ import { withTransaction } from '../../database/tx.js'
 import { pool } from '../../database/pool.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import * as repository from './auth.repository.js'
+import { employmentEndedMessage } from './leavers.js'
 import { hashPassword, verifyPassword } from './password.service.js'
 import {
   generateOpaqueToken,
@@ -186,6 +187,20 @@ export async function login(
     throw invalidCredentials
   }
 
+  // Checked only after the password, so the leaving date is shown to no one else.
+  if (user.employment_ended) {
+    await recordAudit({
+      ...context,
+      organizationId: user.organization_id,
+      userId: user.id,
+      action: 'USER_LOGIN_FAILED',
+      entityType: 'user',
+      entityId: user.id,
+      newValues: { reason: 'EMPLOYMENT_ENDED', exitDate: user.employee_exit_date },
+    })
+    throw ApiError.forbidden(employmentEndedMessage(user.employee_exit_date))
+  }
+
   await repository.recordSuccessfulLogin(user.id)
   const result = await issueSession(user, { userAgent: context.userAgent, ipAddress: context.ipAddress })
 
@@ -230,6 +245,10 @@ export async function refresh(
     const user = await repository.findUserById(stored.user_id, tx)
     if (!user) throw ApiError.unauthenticated('Account no longer exists')
     if (user.status !== 'ACTIVE') throw ApiError.forbidden('This account is not active')
+    if (user.employment_ended) {
+      await repository.revokeAllRefreshTokensForUser(user.id, tx)
+      throw ApiError.forbidden(employmentEndedMessage(user.employee_exit_date))
+    }
 
     const appLocked = refreshNeedsPin(user, previousAccessToken)
     const accessToken = accessTokenFor(user, appLocked)
@@ -372,7 +391,7 @@ export interface ForgotPasswordResult {
 export async function forgotPassword(email: string, includeToken: boolean): Promise<ForgotPasswordResult> {
   const user = await repository.findUserByEmail(email)
   // Always succeed: revealing whether an address exists would leak accounts.
-  if (!user || user.status !== 'ACTIVE') return {}
+  if (!user || user.status !== 'ACTIVE' || user.employment_ended) return {}
 
   const { token, hash } = generateOpaqueToken()
   await repository.invalidateOtherResetTokens(user.id)
