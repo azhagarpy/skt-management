@@ -63,6 +63,19 @@ export const paidOffListQuerySchema = z.object({
   employeeId: z.string().uuid().optional(),
 })
 
+/** An employee's days over a stretch (up to about two months), for choosing a paid off date. */
+export const paidOffCalendarQuerySchema = z
+  .object({
+    employeeId: z.string().uuid(),
+    from: isoDateSchema,
+    to: isoDateSchema,
+  })
+  .refine((query) => query.to >= query.from, { path: ['to'], message: 'The end date cannot be before the start date' })
+  .refine((query) => new Date(query.to).getTime() - new Date(query.from).getTime() <= 62 * 86_400_000, {
+    path: ['to'],
+    message: 'Ask for at most two months at a time',
+  })
+
 /** Gives one earned paid off a date. */
 export const schedulePaidOffSchema = z.object({
   employeeId: z.string().uuid('A valid employee is required'),
@@ -76,3 +89,4 @@ export type OvertimeWeekQuery = z.infer<typeof overtimeWeekQuerySchema>
 export type OvertimeEmployeeQuery = z.infer<typeof overtimeEmployeeQuerySchema>
 export type PaidOffListQuery = z.infer<typeof paidOffListQuerySchema>
 export type SchedulePaidOffInput = z.infer<typeof schedulePaidOffSchema>
+export type PaidOffCalendarQuery = z.infer<typeof paidOffCalendarQuerySchema>

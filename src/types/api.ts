@@ -597,6 +597,36 @@ export interface OvertimeWeekSummary {
   warnings: string[]
 }
 
+/** One day for one employee, as the paid-off date picker shows it. */
+export interface PaidOffDay {
+  date: string
+  /** The employee's calendar for the day, paid offs and other extra offs included. */
+  kind: 'WORKING' | 'WEEKLY_OFF' | 'HOLIDAY'
+  /** For a weekly off, what made it one. */
+  offSource: 'WEEKLY' | 'EXTRA' | 'OVERTIME' | 'PAID_OFF' | null
+  isHalfWeeklyOff: boolean
+  holidayName: string | null
+  attendance: AttendanceStatus | null
+  /** A leave request covering the day, approved or still waiting for a decision. */
+  leave: { typeName: string; status: 'APPROVED' | 'PENDING'; halfDay: boolean } | null
+  employed: boolean
+  /** The payroll month holding the day is approved or locked. */
+  payrollClosed: boolean
+  paidOffId: string | null
+  /** A paid off can be scheduled on it; when not, `reason` says why. */
+  selectable: boolean
+  reason: string | null
+}
+
+/** GET /overtime/paid-offs/calendar */
+export interface PaidOffCalendar {
+  employeeId: string
+  employeeName: string
+  employeeCode: string
+  available: number
+  days: PaidOffDay[]
+}
+
 /** GET /overtime/paid-offs - one Supply employee's paid offs. */
 export interface PaidOffEmployee {
   employeeId: string

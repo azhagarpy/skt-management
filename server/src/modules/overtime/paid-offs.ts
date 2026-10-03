@@ -1,15 +1,21 @@
 import { ApiError } from '../../utils/api-error.js'
 import { withAdvisoryLock, withTransaction } from '../../database/tx.js'
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
-import { formatDayMonthYear, monthLabel, type IsoDate } from '../../utils/dates.js'
+import { datesBetween, formatDayMonthYear, monthLabel, type IsoDate } from '../../utils/dates.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertCanManageEmployee, resolveScope, scopeClause, type EmployeeScope } from '../employees/employee-access.js'
+import {
+  assertCanManageEmployee,
+  assertEmployeeInScope,
+  resolveScope,
+  scopeClause,
+  type EmployeeScope,
+} from '../employees/employee-access.js'
 import { buildCalendarContext } from '../calendar/calendar.service.js'
 import * as calendarRepository from '../calendar/calendar.repository.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './overtime.repository.js'
-import type { PaidOffListQuery, SchedulePaidOffInput } from './overtime.validation.js'
+import type { PaidOffCalendarQuery, PaidOffListQuery, SchedulePaidOffInput } from './overtime.validation.js'
 
 /**
  * Paid offs: what a Supply employee's overtime earns.
@@ -124,6 +130,171 @@ function recalculateNote(run: PayrollRunForDate | null): string {
   return run && needsRecalculation(run) ? ` Recalculate the ${monthLabel(run.year, run.month)} payroll to apply it.` : ''
 }
 
+/** What one day is for an employee, as the paid-off date picker shows it. */
+export interface PaidOffDay {
+  date: IsoDate
+  /** The employee's calendar for the day, paid offs and other extra offs included. */
+  kind: 'WORKING' | 'WEEKLY_OFF' | 'HOLIDAY'
+  /** For a weekly off, what made it one: their weekly rule, a one-off grant, overtime before paid offs, or a paid off. */
+  offSource: 'WEEKLY' | 'EXTRA' | 'OVERTIME' | 'PAID_OFF' | null
+  /** A half working day under the weekly off rule. */
+  isHalfWeeklyOff: boolean
+  holidayName: string | null
+  /** The attendance marked on the day, if any. */
+  attendance: string | null
+  /** A leave request covering the day that is approved or still waiting for a decision. */
+  leave: { typeName: string; status: 'APPROVED' | 'PENDING'; halfDay: boolean } | null
+  employed: boolean
+  /** The payroll month holding the day is approved or locked. */
+  payrollClosed: boolean
+  /** This employee's paid off on the day, when one is scheduled. */
+  paidOffId: string | null
+  /** A paid off can be scheduled on the day; when not, `reason` says why. */
+  selectable: boolean
+  reason: string | null
+}
+
+interface PaidOffEmployeeRow {
+  id: string
+  name: string
+  employee_code: string
+  joining_date: IsoDate
+  exit_date: IsoDate | null
+  department_id: string | null
+  location_id: string | null
+  overtime_handling: string
+}
+
+async function findPaidOffEmployee(organizationId: string, employeeId: string, db: Queryable): Promise<PaidOffEmployeeRow> {
+  const employee = await queryOne<PaidOffEmployeeRow>(
+    db,
+    `SELECT e.id, trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS name, e.employee_code, e.joining_date,
+            e.exit_date, e.department_id, e.location_id, t.overtime_handling::text AS overtime_handling
+       FROM employees e
+       JOIN employee_types t ON t.id = e.employee_type_id
+      WHERE e.id = $1 AND e.organization_id = $2`,
+    [employeeId, organizationId],
+  )
+  if (!employee) throw ApiError.notFound('Employee')
+  return employee
+}
+
+const ATTENDANCE_LABELS: Record<string, string> = {
+  PRESENT: 'present',
+  ABSENT: 'absent',
+  HALF_DAY_LEAVE: 'a half day',
+  ON_LEAVE: 'on leave',
+  HOLIDAY: 'a holiday',
+  WEEKLY_OFF: 'a weekly off',
+}
+
+/**
+ * Every day from `from` to `to` for one employee, and whether a paid off can go
+ * on it. A paid off needs a working day - not a weekly off or a holiday - while
+ * they are employed, with no attendance marked and no leave approved or asked
+ * for, in a payroll month not yet approved. Scheduling checks the same days,
+ * so the picker and the server always agree.
+ */
+async function loadPaidOffDays(
+  organizationId: string,
+  employee: PaidOffEmployeeRow,
+  from: IsoDate,
+  to: IsoDate,
+  db: Queryable,
+): Promise<PaidOffDay[]> {
+  const [calendar, extraOffs, attendance, leaves, closedRuns] = await Promise.all([
+    buildCalendarContext(organizationId, from, to, db),
+    calendarRepository.listExtraWeeklyOffsInRange(organizationId, from, to, db),
+    queryRows<{ attendance_date: IsoDate; status: string }>(
+      db,
+      `SELECT attendance_date, status::text AS status FROM attendance
+        WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3`,
+      [employee.id, from, to],
+    ),
+    queryRows<{ from_date: IsoDate; to_date: IsoDate; status: 'APPROVED' | 'PENDING'; day_portion: string; type_name: string }>(
+      db,
+      `SELECT r.from_date, r.to_date, r.status::text AS status, r.day_portion::text AS day_portion, t.name AS type_name
+         FROM leave_requests r
+         JOIN leave_types t ON t.id = r.leave_type_id
+        WHERE r.employee_id = $1 AND r.status IN ('APPROVED', 'PENDING') AND r.from_date <= $3 AND r.to_date >= $2`,
+      [employee.id, from, to],
+    ),
+    queryRows<{ period_start: IsoDate; period_end: IsoDate }>(
+      db,
+      `SELECT period_start, period_end FROM payroll_runs
+        WHERE organization_id = $1 AND status IN ('APPROVED', 'LOCKED') AND period_start <= $3 AND period_end >= $2`,
+      [organizationId, from, to],
+    ),
+  ])
+
+  const extraOffByDate = new Map(
+    extraOffs.filter((off) => off.employee_id === employee.id).map((off) => [off.off_date, off]),
+  )
+  const attendanceByDate = new Map(attendance.map((row) => [row.attendance_date, row.status]))
+  const scope = { departmentId: employee.department_id, locationId: employee.location_id, employeeId: employee.id }
+
+  return datesBetween(from, to).map((date): PaidOffDay => {
+    const calendarDay = calendar.dayFor(date, scope)
+    const extraOff = extraOffByDate.get(date)
+    const offSource: PaidOffDay['offSource'] =
+      calendarDay.kind !== 'WEEKLY_OFF'
+        ? null
+        : extraOff?.source === 'PAID_OFF'
+          ? 'PAID_OFF'
+          : extraOff?.source === 'OVERTIME_CONVERSION'
+            ? 'OVERTIME'
+            : extraOff
+              ? 'EXTRA'
+              : 'WEEKLY'
+    const marked = attendanceByDate.get(date) ?? null
+    const leave = leaves.find((request) => date >= request.from_date && date <= request.to_date) ?? null
+    const employed = date >= employee.joining_date && (employee.exit_date === null || date <= employee.exit_date)
+    const payrollClosed = closedRuns.some((run) => date >= run.period_start && date <= run.period_end)
+
+    let reason: string | null = null
+    if (!employed) reason = date < employee.joining_date ? 'Before they joined' : 'After they left'
+    else if (payrollClosed) reason = "This month's payroll is already approved"
+    else if (offSource === 'PAID_OFF') reason = 'A paid off is already scheduled on this day'
+    else if (calendarDay.kind === 'HOLIDAY') reason = `Holiday: ${calendarDay.holidayName ?? 'holiday'}`
+    else if (calendarDay.kind === 'WEEKLY_OFF') reason = 'Already a weekly off'
+    else if (marked && marked !== 'WEEKLY_OFF') reason = `Attendance already marked ${ATTENDANCE_LABELS[marked] ?? marked.toLowerCase()}`
+    else if (leave?.status === 'APPROVED') reason = `On approved leave (${leave.type_name})`
+    else if (leave) reason = `Leave asked for (${leave.type_name}) - approve or reject it first`
+
+    return {
+      date,
+      kind: calendarDay.kind,
+      offSource,
+      isHalfWeeklyOff: calendarDay.isHalfWeeklyOff,
+      holidayName: calendarDay.holidayName && calendarDay.kind === 'HOLIDAY' ? calendarDay.holidayName : null,
+      attendance: marked,
+      leave: leave ? { typeName: leave.type_name, status: leave.status, halfDay: leave.day_portion === 'HALF_DAY' } : null,
+      employed,
+      payrollClosed,
+      paidOffId: offSource === 'PAID_OFF' ? (extraOff?.id ?? null) : null,
+      selectable: reason === null,
+      reason,
+    }
+  })
+}
+
+/** One employee's days over a stretch, for choosing a paid off date, with their balance. */
+export async function paidOffCalendar(auth: AuthContext, query: PaidOffCalendarQuery) {
+  await assertEmployeeInScope(auth, query.employeeId, viewScope(auth))
+  const employee = await findPaidOffEmployee(auth.organizationId, query.employeeId, pool)
+  const [days, balances] = await Promise.all([
+    loadPaidOffDays(auth.organizationId, employee, query.from, query.to, pool),
+    loadPaidOffBalances([employee.id]),
+  ])
+  return {
+    employeeId: employee.id,
+    employeeName: employee.name,
+    employeeCode: employee.employee_code,
+    available: balances.get(employee.id)?.available ?? 0,
+    days,
+  }
+}
+
 /**
  * The paid-off balance of each Supply employee the caller can see who has
  * earned one, or of the one employee asked for.
@@ -185,11 +356,10 @@ export async function listPaidOffs(auth: AuthContext, query: PaidOffListQuery) {
 }
 
 /**
- * Gives one of an employee's earned paid offs a date.
- *
- * The date must be a working day for them - not already a weekly off or a
- * holiday - with no attendance marked yet, while they are employed, in a
- * payroll month not yet approved.
+ * Gives one of an employee's earned paid offs a date: one the picker offers
+ * (loadPaidOffDays) - a working day while they are employed, with no
+ * attendance marked and no leave approved or asked for, in a payroll month not
+ * yet approved.
  */
 export async function schedulePaidOff(auth: AuthContext, input: SchedulePaidOffInput, context: AuditContext) {
   const scope = manageScope(auth)
@@ -200,24 +370,7 @@ export async function schedulePaidOff(auth: AuthContext, input: SchedulePaidOffI
     withAdvisoryLock(tx, `paid-offs:${input.employeeId}`, async () => {
       await assertCanManageEmployee(auth, input.employeeId, scope, tx)
 
-      const employee = await queryOne<{
-        id: string
-        name: string
-        joining_date: IsoDate
-        exit_date: IsoDate | null
-        department_id: string | null
-        location_id: string | null
-        overtime_handling: string
-      }>(
-        tx,
-        `SELECT e.id, trim(e.first_name || ' ' || coalesce(e.last_name, '')) AS name, e.joining_date, e.exit_date,
-                e.department_id, e.location_id, t.overtime_handling::text AS overtime_handling
-           FROM employees e
-           JOIN employee_types t ON t.id = e.employee_type_id
-          WHERE e.id = $1 AND e.organization_id = $2`,
-        [input.employeeId, auth.organizationId],
-      )
-      if (!employee) throw ApiError.notFound('Employee')
+      const employee = await findPaidOffEmployee(auth.organizationId, input.employeeId, tx)
       if (employee.overtime_handling !== 'OFF_IN_LIEU') {
         throw ApiError.businessRule(`${employee.name} is paid for overtime, so has no paid offs to schedule.`)
       }
@@ -230,40 +383,12 @@ export async function schedulePaidOff(auth: AuthContext, input: SchedulePaidOffI
       }
 
       const shown = formatDayMonthYear(date)
-      if (date < employee.joining_date || (employee.exit_date !== null && date > employee.exit_date)) {
-        throw ApiError.businessRule(`${employee.name} is not employed on ${shown}.`)
-      }
-
-      const calendar = await buildCalendarContext(auth.organizationId, date, date, tx)
-      const day = calendar.dayFor(date, {
-        departmentId: employee.department_id,
-        locationId: employee.location_id,
-        employeeId: employee.id,
-      })
-      if (day.kind === 'HOLIDAY') {
-        throw ApiError.businessRule(`${shown} is a holiday (${day.holidayName ?? 'holiday'}). Choose one of ${employee.name}'s working days.`)
-      }
-      if (day.kind === 'WEEKLY_OFF') {
-        throw ApiError.businessRule(`${shown} is already a weekly off for ${employee.name}. Choose one of their working days.`)
-      }
-
-      const attendance = await queryOne<{ status: string }>(
-        tx,
-        'SELECT status::text AS status FROM attendance WHERE employee_id = $1 AND attendance_date = $2',
-        [employee.id, date],
-      )
-      if (attendance && attendance.status !== 'WEEKLY_OFF') {
-        throw ApiError.businessRule(
-          `Attendance on ${shown} is already marked ${attendance.status.toLowerCase().replace(/_/g, ' ')} for ${employee.name}. Choose another day, or clear that attendance first.`,
-        )
+      const [day] = await loadPaidOffDays(auth.organizationId, employee, date, date, tx)
+      if (!day?.selectable) {
+        throw ApiError.businessRule(`A paid off cannot go on ${shown} for ${employee.name}: ${day?.reason ?? 'not available'}. Choose another day.`)
       }
 
       const run = await payrollRunFor(auth.organizationId, date, tx)
-      if (isClosed(run)) {
-        throw ApiError.businessRule(
-          `Payroll for ${monthLabel(run!.year, run!.month)} is already ${run!.status.toLowerCase()}, so a paid off can no longer be added to it.`,
-        )
-      }
 
       const row = await queryOne<{ id: string }>(
         tx,

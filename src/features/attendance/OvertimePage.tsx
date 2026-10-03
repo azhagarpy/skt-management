@@ -8,6 +8,7 @@ import { useToast } from '../../app/providers/ToastProvider'
 import { Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Textarea } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { EmployeeSelector } from '../../components/forms/selectors'
+import { PaidOffDatePicker } from './PaidOffDatePicker'
 import type {
   OvertimeEmployeeSettings,
   OvertimeEntry,
@@ -349,6 +350,7 @@ function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ['overtime-paid-offs'] })
+    await queryClient.invalidateQueries({ queryKey: ['overtime-paid-off-calendar'] })
     await queryClient.invalidateQueries({ queryKey: ['overtime-week-summary'] })
   }
 
@@ -475,7 +477,8 @@ function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage
       <Modal
         open={scheduleFor !== null}
         title={`Schedule a paid off for ${scheduleFor?.employeeName ?? ''}`}
-        description={`${scheduleFor?.available ?? 0} still to schedule. Choose one of their working days with no attendance marked yet.`}
+        description={`${scheduleFor?.available ?? 0} still to schedule. That day becomes their off, and payroll pays it like a day worked.`}
+        size="lg"
         onClose={() => setScheduleFor(null)}
         footer={
           <>
@@ -488,9 +491,7 @@ function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage
           </>
         }
       >
-        <Field label="Paid off date" htmlFor="paid-off-date" required hint="That day becomes their off, and payroll pays it.">
-          <Input id="paid-off-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
-        </Field>
+        {scheduleFor ? <PaidOffDatePicker employeeId={scheduleFor.employeeId} value={date} onChange={setDate} /> : null}
       </Modal>
     </Card>
   )

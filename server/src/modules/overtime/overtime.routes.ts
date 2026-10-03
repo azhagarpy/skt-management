@@ -13,6 +13,7 @@ import {
   overtimeEmployeeQuerySchema,
   overtimeListQuerySchema,
   overtimeWeekQuerySchema,
+  paidOffCalendarQuerySchema,
   paidOffListQuerySchema,
   recordOvertimeSchema,
   schedulePaidOffSchema,
@@ -20,6 +21,7 @@ import {
   type OvertimeEmployeeQuery,
   type OvertimeListQuery,
   type OvertimeWeekQuery,
+  type PaidOffCalendarQuery,
   type PaidOffListQuery,
   type RecordOvertimeInput,
   type SchedulePaidOffInput,
@@ -78,6 +80,17 @@ overtimeRouter.get(
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     return sendSuccess(res, await paidOffs.listPaidOffs(auth, req.query as unknown as PaidOffListQuery))
+  }),
+)
+
+/** One employee's days - holidays, weekly offs, leave, attendance - and which can take a paid off. */
+overtimeRouter.get(
+  '/paid-offs/calendar',
+  canView,
+  validate({ query: paidOffCalendarQuerySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(res, await paidOffs.paidOffCalendar(auth, req.query as unknown as PaidOffCalendarQuery))
   }),
 )
 

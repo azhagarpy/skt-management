@@ -3036,6 +3036,110 @@ button.att-day:focus-visible {
   gap: 0.35rem;
 }
 
+/* Paid off date picker: the employee's month, the days a paid off can go on in green. */
+.po-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.po-head-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.po-month .att-day {
+  min-height: 82px;
+  gap: 0.35rem;
+  padding: 0.4rem 0.45rem;
+}
+
+.po-day-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.po-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.6875rem;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+
+.po-bg-available { background: var(--att-present); }
+.po-bg-paid-off { background: var(--brand-500); }
+.po-bg-pending {
+  background: transparent;
+  border: 1.5px dashed var(--att-leave);
+  color: var(--att-leave);
+}
+
+.att-day.po-available {
+  border-color: color-mix(in srgb, var(--att-present) 50%, var(--border));
+  background: color-mix(in srgb, var(--att-present) 7%, var(--surface));
+}
+
+.att-day.po-available .po-label {
+  color: var(--att-present);
+  font-weight: 600;
+}
+
+.att-day.po-paid-off {
+  border-color: color-mix(in srgb, var(--brand-500) 50%, var(--border));
+  background: color-mix(in srgb, var(--brand-500) 12%, var(--surface));
+}
+
+.att-day.po-pending {
+  border-style: dashed;
+  border-color: var(--att-leave);
+}
+
+.po-day.is-unavailable .att-circle {
+  opacity: 0.75;
+}
+
+.po-day.is-selected,
+button.po-day.is-selected:hover {
+  border-color: var(--brand-500);
+  background: color-mix(in srgb, var(--brand-500) 16%, var(--surface));
+  box-shadow: inset 0 0 0 2px var(--brand-500);
+}
+
+.po-day.is-selected .po-label {
+  color: var(--brand-500);
+}
+
+.po-legend {
+  margin-top: 0.75rem;
+}
+
+.po-selected {
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 720px) {
+  .po-month .att-day {
+    min-height: 52px;
+  }
+
+  .po-label {
+    display: none;
+  }
+}
+
 /* Who, on a day */
 .att-people {
   max-height: 50vh;
