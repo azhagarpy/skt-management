@@ -21,6 +21,7 @@ import * as repository from './overtime.repository.js'
 import {
   assertPaidOffsStillEarned,
   HOURS_PER_PAID_OFF,
+  loadOvertimeRemovalCheck,
   loadPaidOffBalances,
   MAX_PAID_OFFS_PER_WEEK,
   paidOffsForWeek,
@@ -145,13 +146,15 @@ function presentOvertime(row: repository.OvertimeRow) {
   }
 }
 
-function presentOvertimeWithEmployee(row: repository.OvertimeWithEmployeeRow) {
+function presentOvertimeWithEmployee(row: repository.OvertimeWithEmployeeRow, paidOffScheduled: boolean) {
   return {
     ...presentOvertime(row),
     employeeCode: row.employee_code,
     employeeName: [row.first_name, row.last_name].filter(Boolean).join(' '),
     departmentName: row.department_name,
     overtimeHandling: row.overtime_handling,
+    /** Supply overtime whose paid off has been given a date: it can no longer be deleted. */
+    paidOffScheduled,
   }
 }
 
@@ -336,7 +339,14 @@ export async function listOvertime(auth: AuthContext, query: OvertimeListQuery) 
   const scope = viewScope(auth)
   const clause = scopeClause(auth, scope, 'e', 1)
   const rows = await repository.listOvertime(clause, query)
-  return rows.map(presentOvertimeWithEmployee)
+  const supplyIds = [...new Set(rows.filter((row) => row.overtime_handling === 'OFF_IN_LIEU').map((row) => row.employee_id))]
+  const removalBlocked = await loadOvertimeRemovalCheck(supplyIds)
+  return rows.map((row) =>
+    presentOvertimeWithEmployee(
+      row,
+      row.overtime_handling === 'OFF_IN_LIEU' && removalBlocked(row.employee_id, row.work_date, Number(row.hours)),
+    ),
+  )
 }
 
 /**

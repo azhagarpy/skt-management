@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { paidOffBalance, paidOffsForWeek } from './paid-offs.js'
+import { overtimeRemovalBlocked, paidOffBalance, paidOffsForWeek } from './paid-offs.js'
 
 describe('paidOffsForWeek', () => {
   it('earns one paid off for each full 8 hours in the week', () => {
@@ -43,5 +43,29 @@ describe('paidOffBalance', () => {
 
   it('never shows less than nothing to schedule', () => {
     expect(paidOffBalance([], [off('a', 'OVERTIME_CONVERSION')]).available).toBe(0)
+  })
+})
+
+describe('overtimeRemovalBlocked', () => {
+  // Week of Mon 28 Sept 2026: 9 hours, which earn one paid off.
+  const weeks = [{ week_start: '2026-09-28', hours: 9 }]
+  const scheduled = [{ id: 'a', off_date: '2026-10-07', source: 'PAID_OFF' as const }]
+
+  it('lets overtime go while the paid off it earned has no date', () => {
+    expect(overtimeRemovalBlocked(weeks, [], '2026-10-03', 9)).toBe(false)
+  })
+
+  it('keeps overtime once the paid off it earned is scheduled', () => {
+    expect(overtimeRemovalBlocked(weeks, scheduled, '2026-10-03', 9)).toBe(true)
+  })
+
+  it('lets the hours beyond what earned the scheduled paid off go', () => {
+    // 9 hours earned it; dropping one still leaves 8.
+    expect(overtimeRemovalBlocked(weeks, scheduled, '2026-10-01', 1)).toBe(false)
+  })
+
+  it('lets overtime go when other weeks still earn every scheduled paid off', () => {
+    const twoWeeks = [...weeks, { week_start: '2026-10-05', hours: 8 }]
+    expect(overtimeRemovalBlocked(twoWeeks, scheduled, '2026-10-03', 9)).toBe(false)
   })
 })

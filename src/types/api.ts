@@ -571,6 +571,8 @@ export interface OvertimeEntry {
   ratePerHour: number | null
   overtimeHandling?: OvertimeHandling
   isLocked: boolean
+  /** Supply overtime whose paid off has been given a date: it can no longer be deleted. */
+  paidOffScheduled?: boolean
   updatedAt: string
 }
 
@@ -639,6 +641,8 @@ export interface PaidOffEmployee {
   available: number
   /** Paid offs given a date. A locked one is in an approved payroll and can no longer be removed. */
   scheduled: { id: string; date: string; locked: boolean }[]
+  /** The overtime behind the paid offs, latest first. Each can be deleted until its paid off is scheduled. */
+  overtime: { id: string; date: string; hours: number; locked: boolean; paidOffScheduled: boolean }[]
 }
 
 export interface WeeklyOffCalendarDay {

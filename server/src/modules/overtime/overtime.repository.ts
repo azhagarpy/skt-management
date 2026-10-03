@@ -254,3 +254,13 @@ export async function listOvertimeOffs(employeeIds: string[], db: Queryable = po
     [employeeIds],
   )
 }
+
+/** Every overtime entry of these employees, latest first. */
+export async function listOvertimeForEmployees(employeeIds: string[], db: Queryable = pool): Promise<OvertimeRow[]> {
+  if (employeeIds.length === 0) return []
+  return queryRows<OvertimeRow>(
+    db,
+    'SELECT * FROM overtime_entries WHERE employee_id = ANY($1::uuid[]) ORDER BY work_date DESC',
+    [employeeIds],
+  )
+}

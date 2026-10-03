@@ -1,7 +1,7 @@
 import { ApiError } from '../../utils/api-error.js'
 import { withAdvisoryLock, withTransaction } from '../../database/tx.js'
 import { pool, queryOne, queryRows, type Queryable } from '../../database/pool.js'
-import { datesBetween, formatDayMonthYear, monthLabel, type IsoDate } from '../../utils/dates.js'
+import { datesBetween, formatDayMonthYear, monthLabel, startOfIsoWeek, type IsoDate } from '../../utils/dates.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import {
@@ -73,6 +73,43 @@ export async function loadPaidOffBalances(employeeIds: string[], db: Queryable =
       ),
     ]),
   )
+}
+
+/**
+ * Whether taking `hours` of overtime off the week holding `date` would leave
+ * paid offs scheduled without the overtime that earned them: that overtime's
+ * paid off has been given a date, so the overtime has to stay. The same test
+ * as assertPaidOffsStillEarned, made beforehand so a screen offers to delete
+ * only the overtime that can go.
+ */
+export function overtimeRemovalBlocked(
+  weeks: { week_start: IsoDate; hours: number }[],
+  offs: Pick<repository.OvertimeOffRow, 'id' | 'off_date' | 'source'>[],
+  date: IsoDate,
+  hours: number,
+): boolean {
+  const week = startOfIsoWeek(date)
+  const after = weeks.map((entry) => (entry.week_start === week ? Math.max(0, entry.hours - hours) : entry.hours))
+  const balance = paidOffBalance(after, offs)
+  return balance.scheduled.length > Math.max(0, balance.earned - balance.convertedBefore)
+}
+
+/** overtimeRemovalBlocked for any overtime of these employees, from two queries. */
+export async function loadOvertimeRemovalCheck(
+  employeeIds: string[],
+  db: Queryable = pool,
+): Promise<(employeeId: string, date: IsoDate, hours: number) => boolean> {
+  const [weeks, offs] = await Promise.all([
+    repository.sumOvertimeHoursByWeek(employeeIds, db),
+    repository.listOvertimeOffs(employeeIds, db),
+  ])
+  return (employeeId, date, hours) =>
+    overtimeRemovalBlocked(
+      weeks.filter((week) => week.employee_id === employeeId).map((week) => ({ week_start: week.week_start, hours: Number(week.hours) })),
+      offs.filter((off) => off.employee_id === employeeId),
+      date,
+      hours,
+    )
 }
 
 /**
@@ -325,14 +362,17 @@ export async function listPaidOffs(auth: AuthContext, query: PaidOffListQuery) {
     params,
   )
 
-  const [balances, closedRuns] = await Promise.all([
-    loadPaidOffBalances(employees.map((employee) => employee.id)),
+  const employeeIds = employees.map((employee) => employee.id)
+  const [balances, closedRuns, overtime, removalBlocked] = await Promise.all([
+    loadPaidOffBalances(employeeIds),
     queryRows<{ period_start: IsoDate; period_end: IsoDate }>(
       pool,
       `SELECT period_start, period_end FROM payroll_runs
         WHERE organization_id = $1 AND status IN ('APPROVED', 'LOCKED')`,
       [auth.organizationId],
     ),
+    repository.listOvertimeForEmployees(employeeIds),
+    loadOvertimeRemovalCheck(employeeIds),
   ])
   const inClosedPayroll = (date: IsoDate): boolean =>
     closedRuns.some((run) => date >= run.period_start && date <= run.period_end)
@@ -350,6 +390,17 @@ export async function listPaidOffs(auth: AuthContext, query: PaidOffListQuery) {
         available: balance.available,
         // A paid off in an approved or locked payroll has been paid and stays.
         scheduled: balance.scheduled.map((off) => ({ ...off, locked: inClosedPayroll(off.date) })),
+        // The overtime behind the paid offs. Each can be deleted until the paid
+        // off it earned is given a date (or its payroll is locked).
+        overtime: overtime
+          .filter((entry) => entry.employee_id === employee.id)
+          .map((entry) => ({
+            id: entry.id,
+            date: entry.work_date,
+            hours: Number(entry.hours),
+            locked: entry.locked_by_payroll_run_id !== null,
+            paidOffScheduled: removalBlocked(employee.id, entry.work_date, Number(entry.hours)),
+          })),
       }
     })
     .filter((row) => query.employeeId || row.earned > 0 || row.scheduled.length > 0 || row.convertedBefore > 0)

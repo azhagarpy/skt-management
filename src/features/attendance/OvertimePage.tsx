@@ -5,7 +5,7 @@ import { del, get, post } from '../../lib/api'
 import { formatCurrency, formatDate, todayIso } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
-import { Badge, Button, Card, Field, Input, Modal, PageHeader, Select, Textarea } from '../../components/ui'
+import { Badge, Button, Card, ConfirmDialog, Field, Input, Modal, PageHeader, Select, Textarea } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { EmployeeSelector } from '../../components/forms/selectors'
 import { PaidOffDatePicker } from './PaidOffDatePicker'
@@ -26,6 +26,15 @@ import type {
  * PSR employees are paid for OT instead, in the next payroll run, at the rate
  * chosen on each entry: one day's salary / n hours, or a custom amount per hour.
  */
+
+/** An overtime entry about to be deleted, from either list on the page. */
+interface OvertimeToDelete {
+  id: string
+  date: string
+  hours: number
+  employeeName: string
+  supply: boolean
+}
 
 /** "Day's salary ÷ 8" or "₹100.00/hour", for the list. */
 function describeRate(entry: OvertimeEntry): string {
@@ -128,15 +137,20 @@ export default function OvertimePage() {
     onError: (mutationError: Error) => toast.error('Could not record overtime', mutationError.message),
   })
 
+  // Overtime can be deleted until its payroll is locked - and a Supply
+  // employee's until the paid off it earned is given a date.
+  const [deleteTarget, setDeleteTarget] = useState<OvertimeToDelete | null>(null)
   const deleteMutation = useMutation({
-    mutationFn: (entry: OvertimeEntry) => del(`/overtime/${entry.id}`),
+    mutationFn: (target: OvertimeToDelete) => del(`/overtime/${target.id}`),
     onSuccess: async () => {
-      toast.success('Overtime entry removed')
+      toast.success('Overtime deleted')
+      setDeleteTarget(null)
       await queryClient.invalidateQueries({ queryKey: ['overtime'] })
       await queryClient.invalidateQueries({ queryKey: ['overtime-week-summary'] })
       await queryClient.invalidateQueries({ queryKey: ['overtime-paid-offs'] })
+      await queryClient.invalidateQueries({ queryKey: ['overtime-paid-off-calendar'] })
     },
-    onError: (mutationError: Error) => toast.error('Could not remove the entry', mutationError.message),
+    onError: (mutationError: Error) => toast.error('Could not delete the overtime', mutationError.message),
   })
 
   const columns: Column<OvertimeEntry>[] = [
@@ -157,7 +171,18 @@ export default function OvertimePage() {
     { key: 'hours', header: 'Hours', align: 'right', render: (row) => <span className="numeric">{row.hours}</span> },
     { key: 'rate', header: 'Paid at', hideOnMobile: true, render: (row) => describeRate(row) },
     { key: 'remarks', header: 'Remarks', hideOnMobile: true, render: (row) => row.remarks ?? <span className="subtle">—</span> },
-    { key: 'status', header: '', render: (row) => (row.isLocked ? <Badge tone="accent">Locked</Badge> : null) },
+    {
+      key: 'status',
+      header: '',
+      render: (row) =>
+        row.isLocked ? (
+          <Badge tone="accent">Locked</Badge>
+        ) : row.paidOffScheduled ? (
+          <span title="The paid off this overtime earned has a date, so the overtime stays. Remove that paid off first to delete it.">
+            <Badge tone="info">Paid off scheduled</Badge>
+          </span>
+        ) : null,
+    },
     ...(canManage
       ? [
           {
@@ -165,8 +190,23 @@ export default function OvertimePage() {
             header: '',
             align: 'right' as const,
             render: (row: OvertimeEntry) =>
-              row.isLocked ? null : (
-                <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => deleteMutation.mutate(row)} />
+              row.isLocked || row.paidOffScheduled ? null : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<Trash2 size={13} />}
+                  onClick={() =>
+                    setDeleteTarget({
+                      id: row.id,
+                      date: row.workDate,
+                      hours: row.hours,
+                      employeeName: row.employeeName ?? '',
+                      supply: row.overtimeHandling === 'OFF_IN_LIEU',
+                    })
+                  }
+                >
+                  Delete
+                </Button>
               ),
           },
         ]
@@ -301,7 +341,7 @@ export default function OvertimePage() {
         </Card>
       ) : null}
 
-      <PaidOffsCard employeeId={employeeId} canManage={canManage} />
+      <PaidOffsCard employeeId={employeeId} canManage={canManage} onDeleteOvertime={setDeleteTarget} />
 
       <Card padded={false}>
         <div className="filter-bar">
@@ -328,6 +368,30 @@ export default function OvertimePage() {
           caption="Overtime entries"
         />
       </Card>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete overtime"
+        tone="danger"
+        confirmLabel="Delete"
+        loading={deleteMutation.isPending}
+        message={
+          deleteTarget ? (
+            <>
+              <p style={{ margin: 0 }}>
+                Delete {deleteTarget.hours} hour(s) of overtime on {formatDate(deleteTarget.date)} for {deleteTarget.employeeName}?
+              </p>
+              {deleteTarget.supply ? (
+                <p className="subtle" style={{ margin: '0.5rem 0 0' }}>
+                  Any paid off it earned comes off their balance too.
+                </p>
+              ) : null}
+            </>
+          ) : null
+        }
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }
@@ -337,7 +401,15 @@ export default function OvertimePage() {
  * for them, and how many are still to be given a date. An administrator,
  * manager or supervisor picks each date; payroll pays the day.
  */
-function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage: boolean }) {
+function PaidOffsCard({
+  employeeId,
+  canManage,
+  onDeleteOvertime,
+}: {
+  employeeId: string
+  canManage: boolean
+  onDeleteOvertime: (target: OvertimeToDelete) => void
+}) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const [scheduleFor, setScheduleFor] = useState<PaidOffEmployee | null>(null)
@@ -386,6 +458,51 @@ function PaidOffsCard({ employeeId, canManage }: { employeeId: string; canManage
           </p>
         </div>
       ),
+    },
+    {
+      key: 'overtime',
+      header: 'Overtime',
+      render: (row) =>
+        row.overtime.length === 0 ? (
+          <span className="subtle">—</span>
+        ) : (
+          <div className="row" style={{ flexWrap: 'wrap', gap: '0.35rem' }}>
+            {row.overtime.map((entry) => {
+              const deletable = canManage && !entry.locked && !entry.paidOffScheduled
+              const why = entry.locked
+                ? 'In a locked payroll'
+                : entry.paidOffScheduled
+                  ? 'Its paid off is scheduled, so this overtime stays. Remove that paid off first to delete it.'
+                  : 'Can be deleted until its paid off is scheduled'
+              return (
+                <span key={entry.id} title={why}>
+                  <Badge tone={deletable ? 'warning' : 'neutral'}>
+                    {formatDate(entry.date)} · {entry.hours} h
+                    {deletable ? (
+                      <button
+                        type="button"
+                        aria-label={`Delete the overtime on ${formatDate(entry.date)}`}
+                        title="Delete this overtime"
+                        onClick={() =>
+                          onDeleteOvertime({
+                            id: entry.id,
+                            date: entry.date,
+                            hours: entry.hours,
+                            employeeName: row.employeeName,
+                            supply: true,
+                          })
+                        }
+                        style={{ marginLeft: '0.25rem', background: 'none', border: 0, cursor: 'pointer', padding: 0, color: 'inherit' }}
+                      >
+                        <X size={11} />
+                      </button>
+                    ) : null}
+                  </Badge>
+                </span>
+              )
+            })}
+          </div>
+        ),
     },
     {
       key: 'earned',
