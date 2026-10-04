@@ -55,7 +55,12 @@ Each step depends on the ones above it.
 5. **Leave → Leave types** — `isPaid`, `excludeWeeklyOff`, `excludeHolidays` and
    `sandwichHolidays` are read by the payroll engine.
 6. **Calendar** — holidays and weekly offs. This defines what a working day is.
-7. **Salary → PF, ESI & policy** — statutory rates and how paid days are counted.
+7. **Salary → PF, ESI & policy** — statutory rates and how paid days are counted. PF and
+   ESI rates, the PF wage ceiling, the EPS share and the ESI wage limit are kept per
+   structure as dated periods: each applies from its date until the next one starts (the
+   first has no start date and covers everything before). To change a rate from a date,
+   open the structure's **Rates** and *Add rate change*. Payroll uses the period in force
+   on the run's last day; approved runs keep the rates they were calculated with.
 8. **Employees → Add employee** — optionally creating a login at the same time.
 9. **Salary → Assign salary** — until this exists, payroll produces no line for that employee.
 

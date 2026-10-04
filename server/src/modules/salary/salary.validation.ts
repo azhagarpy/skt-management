@@ -34,7 +34,26 @@ export const structureComponentSchema = z.object({
   displayOrder: z.coerce.number().int().min(0).max(999).default(0),
 })
 
-export const salaryStructureSchema = z.object({
+// PF is deducted, on both sides, on the wage up to pfWageCeiling; ESI applies,
+// on both sides, only when a standard month's wage is at or below
+// esiWageLimit, on the wage up to it. These change over time, so a structure
+// keeps them as dated periods (statutory-rates.ts) rather than one value.
+const statutoryRateFields = {
+  pfEmployeeRate: percentageSchema,
+  pfEmployerRate: percentageSchema,
+  pfWageCeiling: amountSchema,
+  /** Share of pfEmployerRate that goes to the Pension Scheme (EPS). */
+  pfEpsRate: percentageSchema,
+  esiEmployeeRate: percentageSchema,
+  esiEmployerRate: percentageSchema,
+  esiWageLimit: amountSchema,
+}
+
+/**
+ * A structure's name, components and other details. Its PF and ESI periods are
+ * managed on their own (statutoryRateSchema), so an update leaves them alone.
+ */
+export const updateSalaryStructureSchema = z.object({
   name: z.string().trim().min(2, 'A structure name is required').max(120),
   code: codeSchema,
   description: z.string().trim().max(300).nullish(),
@@ -42,22 +61,29 @@ export const salaryStructureSchema = z.object({
   currencyCode: z.string().trim().toUpperCase().length(3).default('INR'),
   isActive: z.boolean().default(true),
   components: z.array(structureComponentSchema).min(1, 'Add at least one salary component').max(50),
-  // PF is deducted, on both sides, on the wage up to pfWageCeiling; ESI
-  // applies, on both sides, only when a standard month's wage is at or below
-  // esiWageLimit, on the wage up to it (plan: simplified salary module - rates
-  // and limits live on the structure, not a separate organization-wide
-  // statutory rule).
-  pfEmployeeRate: percentageSchema.default(12),
-  pfEmployerRate: percentageSchema.default(12),
-  pfWageCeiling: amountSchema.default(15_000),
-  /** Share of pfEmployerRate that goes to the Pension Scheme (EPS). */
-  pfEpsRate: percentageSchema.default(8.33),
-  esiEmployeeRate: percentageSchema.default(0.75),
-  esiEmployerRate: percentageSchema.default(3.25),
-  esiWageLimit: amountSchema.default(21_000),
 })
 
-export const updateSalaryStructureSchema = salaryStructureSchema
+/** A new structure also takes its first PF and ESI period, which has no start date. */
+export const salaryStructureSchema = updateSalaryStructureSchema.extend({
+  pfEmployeeRate: statutoryRateFields.pfEmployeeRate.default(12),
+  pfEmployerRate: statutoryRateFields.pfEmployerRate.default(12),
+  pfWageCeiling: statutoryRateFields.pfWageCeiling.default(15_000),
+  pfEpsRate: statutoryRateFields.pfEpsRate.default(8.33),
+  esiEmployeeRate: statutoryRateFields.esiEmployeeRate.default(0.75),
+  esiEmployerRate: statutoryRateFields.esiEmployerRate.default(3.25),
+  esiWageLimit: statutoryRateFields.esiWageLimit.default(21_000),
+})
+
+/**
+ * One period of PF and ESI settings. `effectiveFrom` is null only for a
+ * structure's first period, which covers every date before the next one.
+ */
+export const statutoryRateSchema = z.object({
+  effectiveFrom: isoDateSchema.nullable(),
+  ...statutoryRateFields,
+})
+
+export const statutoryRateParams = z.object({ id: z.string().uuid(), rateId: z.string().uuid() })
 
 export const assignSalarySchema = z
   .object({
@@ -87,4 +113,6 @@ export const salaryHistoryQuerySchema = z.object({
 
 export type SalaryComponentInput = z.infer<typeof salaryComponentSchema>
 export type SalaryStructureInput = z.infer<typeof salaryStructureSchema>
+export type UpdateSalaryStructureInput = z.infer<typeof updateSalaryStructureSchema>
+export type StatutoryRateInput = z.infer<typeof statutoryRateSchema>
 export type AssignSalaryInput = z.infer<typeof assignSalarySchema>

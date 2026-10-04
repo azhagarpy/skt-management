@@ -26,6 +26,8 @@ function translatePostgresError(error: PostgresError): ApiError | null {
         users_email_unique: 'An account with this email already exists',
         employee_leave_balances_unique: 'A leave balance already exists for this type and year',
         payroll_payment_transactions_reference_unique: 'This payment reference number has already been used',
+        salary_structure_statutory_rates_from_unique: 'PF and ESI rates for this structure already change on this date',
+        salary_structure_statutory_rates_first_unique: 'This structure already has its first PF and ESI period',
       }
       const message = (error.constraint && friendly[error.constraint]) ?? 'This record already exists'
       return ApiError.conflict(message, error.constraint ? [{ message, constraint: error.constraint }] : [])

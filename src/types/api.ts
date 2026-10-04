@@ -677,6 +677,25 @@ export interface SalaryComponent {
   holidayExtraPay: boolean
 }
 
+/**
+ * One period of a structure's PF and ESI settings, in force from
+ * `effectiveFrom` until `effectiveTo`.
+ */
+export interface StatutoryRatePeriod {
+  id: string
+  /** Null for the first period, which covers every date before the next one. */
+  effectiveFrom: string | null
+  /** The last day in force; null while no later period has started. */
+  effectiveTo: string | null
+  pfEmployeeRate: number
+  pfEmployerRate: number
+  pfWageCeiling: number
+  pfEpsRate: number
+  esiEmployeeRate: number
+  esiEmployerRate: number
+  esiWageLimit: number
+}
+
 export interface SalaryStructure {
   id: string
   name: string
@@ -685,13 +704,10 @@ export interface SalaryStructure {
   salaryBasis: SalaryBasis
   currencyCode: string
   isActive: boolean
-  pfEmployeeRate: number
-  pfEmployerRate: number
-  pfWageCeiling: number
-  pfEpsRate: number
-  esiEmployeeRate: number
-  esiEmployerRate: number
-  esiWageLimit: number
+  /** PF and ESI periods, oldest first. */
+  statutoryRates: StatutoryRatePeriod[]
+  /** The PF and ESI period in force today. */
+  currentStatutoryRate: StatutoryRatePeriod | null
   components: {
     id: string
     salaryComponentId: string

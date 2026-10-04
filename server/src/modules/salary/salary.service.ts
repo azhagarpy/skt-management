@@ -1,13 +1,20 @@
 import { ApiError } from '../../utils/api-error.js'
 import { withTransaction } from '../../database/tx.js'
-import { addDays, type IsoDate } from '../../utils/dates.js'
+import { addDays, todayIso, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { assertCanManageEmployee, assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './salary.repository.js'
-import type { AssignSalaryInput, SalaryComponentInput, SalaryStructureInput } from './salary.validation.js'
+import { periodInForce, withEffectiveTo } from './statutory-rates.js'
+import type {
+  AssignSalaryInput,
+  SalaryComponentInput,
+  SalaryStructureInput,
+  StatutoryRateInput,
+  UpdateSalaryStructureInput,
+} from './salary.validation.js'
 
 // ---------------------------------------------------------------------------
 // Presenters
@@ -51,7 +58,28 @@ function summariseStructure(components: repository.StructureComponentRow[]) {
   }
 }
 
+export function presentStatutoryRate(row: repository.StatutoryRateRow, effectiveTo: IsoDate | null) {
+  return {
+    id: row.id,
+    /** Null for the first period, which covers every date before the next one. */
+    effectiveFrom: row.effective_from,
+    /** The last day in force; null while no later period has started. */
+    effectiveTo,
+    pfEmployeeRate: Number(row.pf_employee_rate),
+    pfEmployerRate: Number(row.pf_employer_rate),
+    pfWageCeiling: Number(row.pf_wage_ceiling),
+    pfEpsRate: Number(row.pf_eps_rate),
+    esiEmployeeRate: Number(row.esi_employee_rate),
+    esiEmployerRate: Number(row.esi_employer_rate),
+    esiWageLimit: Number(row.esi_wage_limit),
+  }
+}
+
 export function presentStructure(row: repository.SalaryStructureWithComponents) {
+  const statutoryRates = withEffectiveTo(row.statutory_rates).map(({ period, effectiveTo }) =>
+    presentStatutoryRate(period, effectiveTo),
+  )
+  const current = periodInForce(row.statutory_rates, todayIso())
   return {
     id: row.id,
     name: row.name,
@@ -60,13 +88,10 @@ export function presentStructure(row: repository.SalaryStructureWithComponents) 
     salaryBasis: row.salary_basis,
     currencyCode: row.currency_code,
     isActive: row.is_active,
-    pfEmployeeRate: Number(row.pf_employee_rate),
-    pfEmployerRate: Number(row.pf_employer_rate),
-    pfWageCeiling: Number(row.pf_wage_ceiling),
-    pfEpsRate: Number(row.pf_eps_rate),
-    esiEmployeeRate: Number(row.esi_employee_rate),
-    esiEmployerRate: Number(row.esi_employer_rate),
-    esiWageLimit: Number(row.esi_wage_limit),
+    /** PF and ESI periods, oldest first. */
+    statutoryRates,
+    /** The PF and ESI period in force today. */
+    currentStatutoryRate: statutoryRates.find((rate) => rate.id === current?.id) ?? null,
     components: row.components.map((component) => ({
       id: component.id,
       salaryComponentId: component.salary_component_id,
@@ -245,15 +270,15 @@ export async function createStructure(auth: AuthContext, input: SalaryStructureI
         salary_basis: input.salaryBasis,
         currency_code: input.currencyCode,
         is_active: input.isActive,
-        pf_employee_rate: input.pfEmployeeRate,
-        pf_employer_rate: input.pfEmployerRate,
-        pf_wage_ceiling: input.pfWageCeiling,
-        pf_eps_rate: input.pfEpsRate,
-        esi_employee_rate: input.esiEmployeeRate,
-        esi_employer_rate: input.esiEmployerRate,
-        esi_wage_limit: input.esiWageLimit,
         created_by: auth.userId,
       },
+      tx,
+    )
+
+    // The first period has no start date, so the structure has PF and ESI
+    // rates for any date until a dated change is added.
+    await repository.insertStatutoryRate(
+      { salary_structure_id: created.id, ...statutoryRateValues({ ...input, effectiveFrom: null }), created_by: auth.userId },
       tx,
     )
 
@@ -286,7 +311,7 @@ export async function createStructure(auth: AuthContext, input: SalaryStructureI
 export async function updateStructure(
   auth: AuthContext,
   id: string,
-  input: SalaryStructureInput,
+  input: UpdateSalaryStructureInput,
   context: AuditContext,
 ) {
   const existing = await repository.findStructure(id, auth.organizationId)
@@ -317,13 +342,6 @@ export async function updateStructure(
         salary_basis: input.salaryBasis,
         currency_code: input.currencyCode,
         is_active: input.isActive,
-        pf_employee_rate: input.pfEmployeeRate,
-        pf_employer_rate: input.pfEmployerRate,
-        pf_wage_ceiling: input.pfWageCeiling,
-        pf_eps_rate: input.pfEpsRate,
-        esi_employee_rate: input.esiEmployeeRate,
-        esi_employer_rate: input.esiEmployerRate,
-        esi_wage_limit: input.esiWageLimit,
       },
       tx,
     )
@@ -353,6 +371,156 @@ export async function updateStructure(
   })
 
   return structure ? presentStructure(structure) : null
+}
+
+// ---------------------------------------------------------------------------
+// PF and ESI rate periods
+// ---------------------------------------------------------------------------
+
+function statutoryRateValues(input: StatutoryRateInput) {
+  return {
+    effective_from: input.effectiveFrom,
+    pf_employee_rate: input.pfEmployeeRate,
+    pf_employer_rate: input.pfEmployerRate,
+    pf_wage_ceiling: input.pfWageCeiling,
+    pf_eps_rate: input.pfEpsRate,
+    esi_employee_rate: input.esiEmployeeRate,
+    esi_employer_rate: input.esiEmployerRate,
+    esi_wage_limit: input.esiWageLimit,
+  }
+}
+
+async function findStructureOrThrow(auth: AuthContext, structureId: string, db?: Parameters<typeof repository.findStructure>[2]) {
+  const structure = await repository.findStructure(structureId, auth.organizationId, db)
+  if (!structure) throw ApiError.notFound('Salary structure')
+  return structure
+}
+
+/** No two periods of a structure may start on the same date. */
+async function assertStartIsFree(
+  structureId: string,
+  effectiveFrom: IsoDate,
+  exceptRateId: string | null,
+  db: Parameters<typeof repository.findStatutoryRateStarting>[2],
+): Promise<void> {
+  const clash = await repository.findStatutoryRateStarting(structureId, effectiveFrom, db)
+  if (clash && clash.id !== exceptRateId) {
+    throw ApiError.businessRule(
+      `PF and ESI rates already change on ${effectiveFrom}. Edit that period instead, or pick another date.`,
+    )
+  }
+}
+
+/**
+ * Starts a new PF and ESI period from a date. The period before it now ends
+ * the day before; payroll for any run ending on or after the date uses the new
+ * rates once it is calculated. Approved runs keep the rates they were
+ * calculated with.
+ */
+export async function addStatutoryRate(
+  auth: AuthContext,
+  structureId: string,
+  input: StatutoryRateInput,
+  context: AuditContext,
+) {
+  const effectiveFrom = input.effectiveFrom
+  if (!effectiveFrom) throw ApiError.badRequest('Choose the date the new rates start from')
+
+  const structure = await withTransaction(async (tx) => {
+    await findStructureOrThrow(auth, structureId, tx)
+    await assertStartIsFree(structureId, effectiveFrom, null, tx)
+    const created = await repository.insertStatutoryRate(
+      { salary_structure_id: structureId, ...statutoryRateValues(input), created_by: auth.userId },
+      tx,
+    )
+    await recordAudit(
+      {
+        ...context,
+        action: 'STATUTORY_CONFIG_UPDATED',
+        entityType: 'salary_structure_statutory_rate',
+        entityId: created.id,
+        newValues: { structureId, ...presentStatutoryRate(created, null) },
+      },
+      tx,
+    )
+    return findStructureOrThrow(auth, structureId, tx)
+  })
+
+  return presentStructure(structure)
+}
+
+/**
+ * Changes a period's rates, and for a dated period its start date. The first
+ * period always covers everything before the next one, so it keeps no date.
+ */
+export async function updateStatutoryRate(
+  auth: AuthContext,
+  structureId: string,
+  rateId: string,
+  input: StatutoryRateInput,
+  context: AuditContext,
+) {
+  const structure = await withTransaction(async (tx) => {
+    await findStructureOrThrow(auth, structureId, tx)
+    const existing = await repository.findStatutoryRate(rateId, structureId, tx)
+    if (!existing) throw ApiError.notFound('PF and ESI rate period')
+
+    if (existing.effective_from === null && input.effectiveFrom !== null) {
+      throw ApiError.businessRule(
+        'The first period covers every date before the next change, so it has no start date. Add a new period to change the rates from a date.',
+      )
+    }
+    if (existing.effective_from !== null) {
+      if (!input.effectiveFrom) throw ApiError.badRequest('Choose the date these rates start from')
+      await assertStartIsFree(structureId, input.effectiveFrom, rateId, tx)
+    }
+
+    const updated = await repository.updateStatutoryRate(rateId, structureId, statutoryRateValues(input), tx)
+    if (!updated) throw ApiError.notFound('PF and ESI rate period')
+
+    await recordAudit(
+      {
+        ...context,
+        action: 'STATUTORY_CONFIG_UPDATED',
+        entityType: 'salary_structure_statutory_rate',
+        entityId: rateId,
+        oldValues: { structureId, ...presentStatutoryRate(existing, null) },
+        newValues: { structureId, ...presentStatutoryRate(updated, null) },
+      },
+      tx,
+    )
+    return findStructureOrThrow(auth, structureId, tx)
+  })
+
+  return presentStructure(structure)
+}
+
+/** Removes a dated period; the one before it runs on in its place. */
+export async function deleteStatutoryRate(auth: AuthContext, structureId: string, rateId: string, context: AuditContext) {
+  const structure = await withTransaction(async (tx) => {
+    await findStructureOrThrow(auth, structureId, tx)
+    const existing = await repository.findStatutoryRate(rateId, structureId, tx)
+    if (!existing) throw ApiError.notFound('PF and ESI rate period')
+    if (existing.effective_from === null) {
+      throw ApiError.businessRule('The first period cannot be removed: a structure always needs PF and ESI rates.')
+    }
+
+    await repository.deleteStatutoryRate(rateId, structureId, tx)
+
+    await recordAudit(
+      {
+        ...context,
+        action: 'STATUTORY_CONFIG_UPDATED',
+        entityType: 'salary_structure_statutory_rate',
+        entityId: rateId,
+        oldValues: { structureId, ...presentStatutoryRate(existing, null) },
+      },
+      tx,
+    )
+    return findStructureOrThrow(auth, structureId, tx)
+  })
+
+  return presentStructure(structure)
 }
 
 // ---------------------------------------------------------------------------

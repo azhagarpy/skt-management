@@ -20,13 +20,13 @@ import {
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
 import { EmployeeSelector, useSalaryStructures } from '../../components/forms/selectors'
-import type { SalaryComponent, SalaryStructure } from '../../types/api'
+import type { SalaryComponent, SalaryStructure, StatutoryRatePeriod } from '../../types/api'
 
 /**
  * Salary configuration: components, structures, and assigning a salary to an
- * employee. PF and ESI are a fixed rule (no wage ceiling for PF, no ESI above
- * Rs 21,000) with rates that live on each structure - there is no separate
- * statutory rule engine or payroll policy to configure.
+ * employee. PF and ESI rates, the PF wage ceiling and the ESI wage limit belong
+ * to each structure as dated periods - there is no separate statutory rule
+ * engine or payroll policy to configure.
  */
 export default function SalaryPage() {
   const { can } = useAuth()
@@ -140,8 +140,11 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
     setCreating(true)
   }
 
+  // A structure's PF and ESI rates are dated periods, edited in the PF, ESI &
+  // policy tab; the form sets them only for a new structure's first period.
   const openEdit = (structure: SalaryStructure): void => {
     setForm({
+      ...emptyStructureForm(),
       name: structure.name,
       code: structure.code,
       salaryBasis: structure.salaryBasis,
@@ -150,13 +153,6 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
         salaryComponentId: component.salaryComponentId,
         amount: String(component.amount),
       })),
-      pfEmployeeRate: String(structure.pfEmployeeRate),
-      pfEmployerRate: String(structure.pfEmployerRate),
-      pfWageCeiling: String(structure.pfWageCeiling),
-      pfEpsRate: String(structure.pfEpsRate),
-      esiEmployeeRate: String(structure.esiEmployeeRate),
-      esiEmployerRate: String(structure.esiEmployerRate),
-      esiWageLimit: String(structure.esiWageLimit),
     })
     setFieldErrors({})
     setEditing(structure)
@@ -183,13 +179,17 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
         salaryBasis: form.salaryBasis,
         currencyCode: 'INR',
         isActive: form.isActive,
-        pfEmployeeRate: Number(form.pfEmployeeRate) || 0,
-        pfEmployerRate: Number(form.pfEmployerRate) || 0,
-        pfWageCeiling: Number(form.pfWageCeiling) || 0,
-        pfEpsRate: Number(form.pfEpsRate) || 0,
-        esiEmployeeRate: Number(form.esiEmployeeRate) || 0,
-        esiEmployerRate: Number(form.esiEmployerRate) || 0,
-        esiWageLimit: Number(form.esiWageLimit) || 0,
+        ...(editing
+          ? {}
+          : {
+              pfEmployeeRate: Number(form.pfEmployeeRate) || 0,
+              pfEmployerRate: Number(form.pfEmployerRate) || 0,
+              pfWageCeiling: Number(form.pfWageCeiling) || 0,
+              pfEpsRate: Number(form.pfEpsRate) || 0,
+              esiEmployeeRate: Number(form.esiEmployeeRate) || 0,
+              esiEmployerRate: Number(form.esiEmployerRate) || 0,
+              esiWageLimit: Number(form.esiWageLimit) || 0,
+            }),
         components: form.rows
           .filter((row) => row.salaryComponentId)
           .map((row, index) => ({
@@ -437,59 +437,65 @@ function StructuresTab({ canManage }: { canManage: boolean }) {
             </span>
           </div>
 
-          <div>
-            <p className="field-label">PF and ESI rates</p>
-            <p className="subtle" style={{ marginTop: '0.2rem' }}>
-              PF has no wage ceiling and always applies. ESI applies, on both sides, only when this structure's gross is
-              Rs 21,000 or below.
+          {editing ? (
+            <p className="subtle">
+              PF and ESI rates change by date: add or edit them in the <strong>PF, ESI &amp; policy</strong> tab.
             </p>
-            <div className="grid grid-2" style={{ marginTop: '0.4rem' }}>
-              <Field label="PF - employee %" htmlFor="pf-employee-rate" error={fieldErrors.pfEmployeeRate}>
-                <Input
-                  id="pf-employee-rate"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="100"
-                  value={form.pfEmployeeRate}
-                  onChange={(event) => updateForm({ pfEmployeeRate: event.target.value }, 'pfEmployeeRate')}
-                />
-              </Field>
-              <Field label="PF - employer %" htmlFor="pf-employer-rate" error={fieldErrors.pfEmployerRate}>
-                <Input
-                  id="pf-employer-rate"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="100"
-                  value={form.pfEmployerRate}
-                  onChange={(event) => updateForm({ pfEmployerRate: event.target.value }, 'pfEmployerRate')}
-                />
-              </Field>
-              <Field label="ESI - employee %" htmlFor="esi-employee-rate" error={fieldErrors.esiEmployeeRate}>
-                <Input
-                  id="esi-employee-rate"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="100"
-                  value={form.esiEmployeeRate}
-                  onChange={(event) => updateForm({ esiEmployeeRate: event.target.value }, 'esiEmployeeRate')}
-                />
-              </Field>
-              <Field label="ESI - employer %" htmlFor="esi-employer-rate" error={fieldErrors.esiEmployerRate}>
-                <Input
-                  id="esi-employer-rate"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="100"
-                  value={form.esiEmployerRate}
-                  onChange={(event) => updateForm({ esiEmployerRate: event.target.value }, 'esiEmployerRate')}
-                />
-              </Field>
+          ) : (
+            <div>
+              <p className="field-label">PF and ESI rates</p>
+              <p className="subtle" style={{ marginTop: '0.2rem' }}>
+                The starting rates, with the statutory PF wage ceiling (Rs 15,000) and ESI wage limit (Rs 21,000). To
+                change any of them from a date, add a rate change in the PF, ESI &amp; policy tab.
+              </p>
+              <div className="grid grid-2" style={{ marginTop: '0.4rem' }}>
+                <Field label="PF - employee %" htmlFor="pf-employee-rate" error={fieldErrors.pfEmployeeRate}>
+                  <Input
+                    id="pf-employee-rate"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={form.pfEmployeeRate}
+                    onChange={(event) => updateForm({ pfEmployeeRate: event.target.value }, 'pfEmployeeRate')}
+                  />
+                </Field>
+                <Field label="PF - employer %" htmlFor="pf-employer-rate" error={fieldErrors.pfEmployerRate}>
+                  <Input
+                    id="pf-employer-rate"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={form.pfEmployerRate}
+                    onChange={(event) => updateForm({ pfEmployerRate: event.target.value }, 'pfEmployerRate')}
+                  />
+                </Field>
+                <Field label="ESI - employee %" htmlFor="esi-employee-rate" error={fieldErrors.esiEmployeeRate}>
+                  <Input
+                    id="esi-employee-rate"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={form.esiEmployeeRate}
+                    onChange={(event) => updateForm({ esiEmployeeRate: event.target.value }, 'esiEmployeeRate')}
+                  />
+                </Field>
+                <Field label="ESI - employer %" htmlFor="esi-employer-rate" error={fieldErrors.esiEmployerRate}>
+                  <Input
+                    id="esi-employer-rate"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={form.esiEmployerRate}
+                    onChange={(event) => updateForm({ esiEmployerRate: event.target.value }, 'esiEmployerRate')}
+                  />
+                </Field>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </Modal>
     </Card>
@@ -827,7 +833,11 @@ function AssignTab() {
 // ---------------------------------------------------------------------------
 
 interface RateForm {
-  structure: SalaryStructure
+  /** The period being edited; null for a new rate change. */
+  rateId: string | null
+  /** The first period has no start date: it covers every date before the next change. */
+  isFirst: boolean
+  effectiveFrom: string
   pfEmployeeRate: string
   pfEmployerRate: string
   pfWageCeiling: string
@@ -837,31 +847,66 @@ interface RateForm {
   esiWageLimit: string
 }
 
+function rateFormFrom(rate: StatutoryRatePeriod, changes: Partial<RateForm> = {}): RateForm {
+  return {
+    rateId: rate.id,
+    isFirst: rate.effectiveFrom === null,
+    effectiveFrom: rate.effectiveFrom ?? '',
+    pfEmployeeRate: String(rate.pfEmployeeRate),
+    pfEmployerRate: String(rate.pfEmployerRate),
+    pfWageCeiling: String(rate.pfWageCeiling),
+    pfEpsRate: String(rate.pfEpsRate),
+    esiEmployeeRate: String(rate.esiEmployeeRate),
+    esiEmployerRate: String(rate.esiEmployerRate),
+    esiWageLimit: String(rate.esiWageLimit),
+    ...changes,
+  }
+}
+
+/** "01 Apr 2026 → 30 Sep 2026", with the first period starting at "Start" and the latest running "onwards". */
+function periodLabel(rate: StatutoryRatePeriod): string {
+  return `${rate.effectiveFrom ? formatDate(rate.effectiveFrom) : 'Start'} → ${
+    rate.effectiveTo ? formatDate(rate.effectiveTo) : 'onwards'
+  }`
+}
+
+function errorText(error: Error): string {
+  return error instanceof ApiError && error.details.length > 0
+    ? error.details.map((detail) => detail.message).join('. ')
+    : error.message
+}
+
 /**
  * PF is deducted, on both sides, on the wage up to the PF wage ceiling; ESI
  * applies, on both sides, only when the structure's gross is at or below the
- * ESI wage limit. Both the ceiling/limit and the rates are configured here,
- * per structure.
+ * ESI wage limit. Rates, ceiling and limit change over time, so each structure
+ * keeps them as periods: each is in force from its date until the next one
+ * starts, and payroll uses the period in force on the last day of the run.
  */
 function PfEsiTab() {
   const toast = useToast()
   const queryClient = useQueryClient()
+  const [structureId, setStructureId] = useState<string | null>(null)
   const [rateForm, setRateForm] = useState<RateForm | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<StatutoryRatePeriod | null>(null)
 
   const { data, isFetching, error, refetch } = useQuery({
     queryKey: ['salary-structures', 'all'],
     queryFn: () => get<SalaryStructure[]>('/salary/structures', { activeOnly: 'false' }),
   })
 
+  const structure = data?.find((row) => row.id === structureId) ?? null
+
+  const closeModal = (): void => {
+    setStructureId(null)
+    setRateForm(null)
+    setDeleteTarget(null)
+  }
+
   const saveMutation = useMutation({
-    mutationFn: (values: RateForm) =>
-      put(`/salary/structures/${values.structure.id}`, {
-        name: values.structure.name,
-        code: values.structure.code,
-        description: values.structure.description,
-        salaryBasis: values.structure.salaryBasis,
-        currencyCode: values.structure.currencyCode,
-        isActive: values.structure.isActive,
+    mutationFn: (values: RateForm) => {
+      const payload = {
+        effectiveFrom: values.isFirst ? null : values.effectiveFrom,
         pfEmployeeRate: Number(values.pfEmployeeRate) || 0,
         pfEmployerRate: Number(values.pfEmployerRate) || 0,
         pfWageCeiling: Number(values.pfWageCeiling) || 0,
@@ -869,20 +914,27 @@ function PfEsiTab() {
         esiEmployeeRate: Number(values.esiEmployeeRate) || 0,
         esiEmployerRate: Number(values.esiEmployerRate) || 0,
         esiWageLimit: Number(values.esiWageLimit) || 0,
-        components: values.structure.components.map((component, index) => ({
-          salaryComponentId: component.salaryComponentId,
-          calculationType: component.calculationType,
-          amount: component.amount,
-          percentage: component.percentage,
-          displayOrder: component.displayOrder ?? index,
-        })),
-      }),
-    onSuccess: async () => {
-      toast.success('PF and ESI settings saved')
+      }
+      return values.rateId
+        ? put(`/salary/structures/${structureId}/statutory-rates/${values.rateId}`, payload)
+        : post(`/salary/structures/${structureId}/statutory-rates`, payload)
+    },
+    onSuccess: async (_, values) => {
+      toast.success(values.rateId ? 'PF and ESI rates updated' : 'Rate change added')
       setRateForm(null)
       await queryClient.invalidateQueries({ queryKey: ['salary-structures'] })
     },
-    onError: (mutationError: Error) => toast.error('Could not save the settings', mutationError.message),
+    onError: (mutationError: Error) => toast.error('Could not save the rates', errorText(mutationError)),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (rate: StatutoryRatePeriod) => del(`/salary/structures/${structureId}/statutory-rates/${rate.id}`),
+    onSuccess: async () => {
+      toast.success('Rate change removed')
+      setDeleteTarget(null)
+      await queryClient.invalidateQueries({ queryKey: ['salary-structures'] })
+    },
+    onError: (mutationError: Error) => toast.error('Could not remove the rate change', errorText(mutationError)),
   })
 
   const columns: Column<SalaryStructure>[] = [
@@ -900,21 +952,93 @@ function PfEsiTab() {
       key: 'pf',
       header: 'PF (employee / employer)',
       align: 'right',
-      render: (row) => (
-        <span className="numeric">
-          {row.pfEmployeeRate}% / {row.pfEmployerRate}%
-          <p className="subtle">Ceiling {formatCurrency(row.pfWageCeiling)}</p>
-        </span>
-      ),
+      render: (row) =>
+        row.currentStatutoryRate ? (
+          <span className="numeric">
+            {row.currentStatutoryRate.pfEmployeeRate}% / {row.currentStatutoryRate.pfEmployerRate}%
+            <p className="subtle">Ceiling {formatCurrency(row.currentStatutoryRate.pfWageCeiling)}</p>
+          </span>
+        ) : (
+          <span className="subtle">Not set</span>
+        ),
     },
     {
       key: 'esi',
       header: 'ESI (employee / employer)',
       align: 'right',
+      render: (row) =>
+        row.currentStatutoryRate ? (
+          <span className="numeric">
+            {row.currentStatutoryRate.esiEmployeeRate}% / {row.currentStatutoryRate.esiEmployerRate}%
+            <p className="subtle">Limit {formatCurrency(row.currentStatutoryRate.esiWageLimit)}</p>
+          </span>
+        ) : (
+          <span className="subtle">Not set</span>
+        ),
+    },
+    {
+      key: 'period',
+      header: 'In force',
+      hideOnMobile: true,
+      render: (row) => {
+        const current = row.currentStatutoryRate
+        const next = current ? row.statutoryRates[row.statutoryRates.findIndex((rate) => rate.id === current.id) + 1] : undefined
+        return (
+          <div>
+            {current?.effectiveFrom ? `Since ${formatDate(current.effectiveFrom)}` : 'From the start'}
+            {next?.effectiveFrom ? <p className="subtle">Changes on {formatDate(next.effectiveFrom)}</p> : null}
+          </div>
+        )
+      },
+    },
+    {
+      key: 'actions',
+      header: '',
+      align: 'right',
       render: (row) => (
+        <Button size="sm" variant="ghost" onClick={() => setStructureId(row.id)}>
+          Rates
+        </Button>
+      ),
+    },
+  ]
+
+  const rateColumns: Column<StatutoryRatePeriod>[] = [
+    {
+      key: 'period',
+      header: 'Period',
+      render: (rate) => (
+        <div>
+          {periodLabel(rate)}
+          {rate.id === structure?.currentStatutoryRate?.id ? (
+            <p>
+              <Badge tone="success">In force</Badge>
+            </p>
+          ) : null}
+        </div>
+      ),
+    },
+    {
+      key: 'pf',
+      header: 'PF',
+      align: 'right',
+      render: (rate) => (
         <span className="numeric">
-          {row.esiEmployeeRate}% / {row.esiEmployerRate}%
-          <p className="subtle">Limit {formatCurrency(row.esiWageLimit)}</p>
+          {rate.pfEmployeeRate}% / {rate.pfEmployerRate}%
+          <p className="subtle">
+            Ceiling {formatCurrency(rate.pfWageCeiling)} · EPS {rate.pfEpsRate}%
+          </p>
+        </span>
+      ),
+    },
+    {
+      key: 'esi',
+      header: 'ESI',
+      align: 'right',
+      render: (rate) => (
+        <span className="numeric">
+          {rate.esiEmployeeRate}% / {rate.esiEmployerRate}%
+          <p className="subtle">Limit {formatCurrency(rate.esiWageLimit)}</p>
         </span>
       ),
     },
@@ -922,33 +1046,29 @@ function PfEsiTab() {
       key: 'actions',
       header: '',
       align: 'right',
-      render: (row) => (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() =>
-            setRateForm({
-              structure: row,
-              pfEmployeeRate: String(row.pfEmployeeRate),
-              pfEmployerRate: String(row.pfEmployerRate),
-              pfWageCeiling: String(row.pfWageCeiling),
-              pfEpsRate: String(row.pfEpsRate),
-              esiEmployeeRate: String(row.esiEmployeeRate),
-              esiEmployerRate: String(row.esiEmployerRate),
-              esiWageLimit: String(row.esiWageLimit),
-            })
-          }
-        >
-          Edit
-        </Button>
+      render: (rate) => (
+        <div className="row" style={{ gap: '0.4rem', justifyContent: 'flex-end' }}>
+          <Button size="sm" variant="ghost" icon={<Pencil size={13} />} onClick={() => setRateForm(rateFormFrom(rate))}>
+            Edit
+          </Button>
+          {rate.effectiveFrom ? (
+            <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setDeleteTarget(rate)}>
+              Remove
+            </Button>
+          ) : null}
+        </div>
       ),
     },
   ]
 
+  // A new rate change starts from the latest period's values.
+  const latest = structure?.statutoryRates[structure.statutoryRates.length - 1]
+  const updateRate = (changes: Partial<RateForm>): void => setRateForm(rateForm ? { ...rateForm, ...changes } : null)
+
   return (
     <Card
       title="PF, ESI & policy"
-      description="PF is deducted, on both sides, on the wage up to the PF wage ceiling. ESI applies, on both sides, only when a structure's monthly gross (26 days' pay for a daily structure) is at or below the ESI wage limit, and is deducted on the wage up to that limit. Set each structure's rates, ceiling and limit here."
+      description="PF is deducted, on both sides, on the wage up to the PF wage ceiling. ESI applies, on both sides, only when a structure's monthly gross (26 days' pay for a daily structure) is at or below the ESI wage limit, and is deducted on the wage up to that limit. Rates change by date: each period is in force from its date until the next one starts, and payroll uses the period in force on the last day of the run."
       padded={false}
     >
       <DataTable
@@ -960,26 +1080,104 @@ function PfEsiTab() {
         onRetry={() => void refetch()}
         emptyTitle="No salary structures yet"
         emptyDescription="Create a structure in the Structures tab first."
-        caption="PF and ESI rates by structure"
+        caption="PF and ESI rates in force today, by structure"
       />
 
       <Modal
-        open={rateForm !== null}
-        title={rateForm ? `PF and ESI — ${rateForm.structure.name}` : ''}
-        onClose={() => setRateForm(null)}
+        open={structure !== null}
+        title={
+          structure
+            ? deleteTarget
+              ? `Remove rate change — ${structure.name}`
+              : rateForm
+                ? `${rateForm.rateId ? 'Edit rates' : 'Add a rate change'} — ${structure.name}`
+                : `PF and ESI rates — ${structure.name}`
+            : ''
+        }
+        description={
+          rateForm || deleteTarget
+            ? undefined
+            : 'Approved payroll keeps the rates it was calculated with; a run not yet approved picks up a change when it is calculated again.'
+        }
+        size="lg"
+        onClose={closeModal}
         footer={
-          <>
-            <Button variant="secondary" onClick={() => setRateForm(null)}>
-              Cancel
-            </Button>
-            <Button loading={saveMutation.isPending} onClick={() => rateForm && saveMutation.mutate(rateForm)}>
-              Save
-            </Button>
-          </>
+          deleteTarget ? (
+            <>
+              <Button variant="secondary" disabled={deleteMutation.isPending} onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(deleteTarget)}>
+                Remove
+              </Button>
+            </>
+          ) : rateForm ? (
+            <>
+              <Button variant="secondary" onClick={() => setRateForm(null)}>
+                Back
+              </Button>
+              <Button
+                loading={saveMutation.isPending}
+                disabled={!rateForm.isFirst && !rateForm.effectiveFrom}
+                onClick={() => saveMutation.mutate(rateForm)}
+              >
+                Save
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={closeModal}>
+                Close
+              </Button>
+              <Button
+                icon={<Plus size={14} />}
+                disabled={!latest}
+                onClick={() => latest && setRateForm(rateFormFrom(latest, { rateId: null, isFirst: false, effectiveFrom: '' }))}
+              >
+                Add rate change
+              </Button>
+            </>
+          )
         }
       >
+        {deleteTarget ? (
+          <p className="confirm-message">
+            Remove the rates starting {formatDate(deleteTarget.effectiveFrom)}? The period before it runs on in its place.
+            Approved payroll keeps the rates it was calculated with.
+          </p>
+        ) : null}
+
+        {structure && !rateForm && !deleteTarget ? (
+          <DataTable
+            columns={rateColumns}
+            rows={structure.statutoryRates}
+            rowKey={(rate) => rate.id}
+            emptyTitle="No PF and ESI rates yet"
+            caption={`PF and ESI rate periods for ${structure.name}`}
+          />
+        ) : null}
+
         {rateForm ? (
           <div className="stack">
+            {rateForm.isFirst ? (
+              <p className="subtle">
+                This is the first period: it covers every date before the next rate change, so it has no start date.
+              </p>
+            ) : (
+              <Field
+                label="Effective from"
+                htmlFor="rate-effective-from"
+                required
+                hint="These rates apply from this date until the next rate change; the period before ends the day before."
+              >
+                <Input
+                  id="rate-effective-from"
+                  type="date"
+                  value={rateForm.effectiveFrom}
+                  onChange={(event) => updateRate({ effectiveFrom: event.target.value })}
+                />
+              </Field>
+            )}
             <div className="grid grid-2">
               <Field label="PF - employee %" htmlFor="rate-pf-employee">
                 <Input
@@ -989,7 +1187,7 @@ function PfEsiTab() {
                   min="0"
                   max="100"
                   value={rateForm.pfEmployeeRate}
-                  onChange={(event) => setRateForm({ ...rateForm, pfEmployeeRate: event.target.value })}
+                  onChange={(event) => updateRate({ pfEmployeeRate: event.target.value })}
                 />
               </Field>
               <Field label="PF - employer %" htmlFor="rate-pf-employer">
@@ -1000,7 +1198,7 @@ function PfEsiTab() {
                   min="0"
                   max="100"
                   value={rateForm.pfEmployerRate}
-                  onChange={(event) => setRateForm({ ...rateForm, pfEmployerRate: event.target.value })}
+                  onChange={(event) => updateRate({ pfEmployerRate: event.target.value })}
                 />
               </Field>
               <Field
@@ -1014,7 +1212,7 @@ function PfEsiTab() {
                   step="0.01"
                   min="0"
                   value={rateForm.pfWageCeiling}
-                  onChange={(event) => setRateForm({ ...rateForm, pfWageCeiling: event.target.value })}
+                  onChange={(event) => updateRate({ pfWageCeiling: event.target.value })}
                 />
               </Field>
               <Field
@@ -1029,7 +1227,7 @@ function PfEsiTab() {
                   min="0"
                   max="100"
                   value={rateForm.pfEpsRate}
-                  onChange={(event) => setRateForm({ ...rateForm, pfEpsRate: event.target.value })}
+                  onChange={(event) => updateRate({ pfEpsRate: event.target.value })}
                 />
               </Field>
               <Field label="ESI - employee %" htmlFor="rate-esi-employee">
@@ -1040,7 +1238,7 @@ function PfEsiTab() {
                   min="0"
                   max="100"
                   value={rateForm.esiEmployeeRate}
-                  onChange={(event) => setRateForm({ ...rateForm, esiEmployeeRate: event.target.value })}
+                  onChange={(event) => updateRate({ esiEmployeeRate: event.target.value })}
                 />
               </Field>
               <Field label="ESI - employer %" htmlFor="rate-esi-employer">
@@ -1051,7 +1249,7 @@ function PfEsiTab() {
                   min="0"
                   max="100"
                   value={rateForm.esiEmployerRate}
-                  onChange={(event) => setRateForm({ ...rateForm, esiEmployerRate: event.target.value })}
+                  onChange={(event) => updateRate({ esiEmployerRate: event.target.value })}
                 />
               </Field>
               <Field
@@ -1065,13 +1263,14 @@ function PfEsiTab() {
                   step="0.01"
                   min="0"
                   value={rateForm.esiWageLimit}
-                  onChange={(event) => setRateForm({ ...rateForm, esiWageLimit: event.target.value })}
+                  onChange={(event) => updateRate({ esiWageLimit: event.target.value })}
                 />
               </Field>
             </div>
           </div>
         ) : null}
       </Modal>
+
     </Card>
   )
 }

@@ -24,6 +24,7 @@ import { buildCalendarContext, type CalendarContext } from '../calendar/calendar
 import * as attendanceRepository from '../attendance/attendance.repository.js'
 import * as leaveRepository from '../leave/leave.repository.js'
 import * as salaryRepository from '../salary/salary.repository.js'
+import { periodInForce } from '../salary/statutory-rates.js'
 import * as overtimeRepository from '../overtime/overtime.repository.js'
 import { listTaxDeductionsForPeriod } from '../tax/tax.module.js'
 import { loadSlabs } from '../tax/tax-report.js'
@@ -621,6 +622,18 @@ export async function calculateRun(
           continue
         }
 
+        // PF and ESI rates change over time: the run uses the period in force on
+        // its last day, the same date that picked the salary assignment.
+        const rates = periodInForce(structure.statutory_rates, periodEnd)
+        if (!rates) {
+          skipped.push({
+            employeeId: employee.id,
+            employeeCode: employee.employee_code,
+            reason: `${structure.name} has no PF and ESI rates for ${periodEnd}`,
+          })
+          continue
+        }
+
         const days = employeeDays(
           contextDates,
           calendar,
@@ -655,23 +668,24 @@ export async function calculateRun(
           exitTax: exitTaxByEmployee.get(employee.id) ?? null,
           lwf: lwfByEmployee.get(employee.id) ?? null,
           adjustments: employeeAdjustments,
-          // PF and ESI rates, and their wage ceiling/limit, live on the salary
-          // structure now, not on the employee or a separate statutory rule;
-          // only whether the employee is enrolled at all stays a per-employee flag.
+          // PF and ESI rates, and their wage ceiling/limit, come from the
+          // structure's period in force, not from the employee or a separate
+          // statutory rule; only whether the employee is enrolled at all stays a
+          // per-employee flag.
           pf: {
             applicable: employee.pf_applicable ?? false,
-            employeeRate: Number(structure.pf_employee_rate),
-            employerRate: Number(structure.pf_employer_rate),
-            wageLimitMinor: toMinor(structure.pf_wage_ceiling),
+            employeeRate: Number(rates.pf_employee_rate),
+            employerRate: Number(rates.pf_employer_rate),
+            wageLimitMinor: toMinor(rates.pf_wage_ceiling),
             // A member outside the Pension Scheme ("Pension applicable: No" on
             // their PF details) has no EPS: the whole employer share goes to EPF.
-            epsRate: employee.pension_applicable === false ? 0 : Number(structure.pf_eps_rate),
+            epsRate: employee.pension_applicable === false ? 0 : Number(rates.pf_eps_rate),
           },
           esi: {
             applicable: employee.esi_applicable ?? false,
-            employeeRate: Number(structure.esi_employee_rate),
-            employerRate: Number(structure.esi_employer_rate),
-            wageLimitMinor: toMinor(structure.esi_wage_limit),
+            employeeRate: Number(rates.esi_employee_rate),
+            employerRate: Number(rates.esi_employer_rate),
+            wageLimitMinor: toMinor(rates.esi_wage_limit),
           },
           policy,
         }
@@ -729,6 +743,9 @@ export async function calculateRun(
             calculation_snapshot: {
               policy,
               statutory: {
+                // Which of the structure's PF and ESI periods was used.
+                rateId: rates.id,
+                ratesEffectiveFrom: rates.effective_from,
                 pf: calculatorInput.pf,
                 esi: calculatorInput.esi,
               },

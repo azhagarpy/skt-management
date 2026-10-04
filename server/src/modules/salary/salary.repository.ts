@@ -28,23 +28,32 @@ export interface SalaryStructureRow {
   salary_basis: 'MONTHLY' | 'DAILY'
   currency_code: string
   is_active: boolean
-  // PF has no wage ceiling and always applies at these rates; ESI applies at
-  // these rates only when the structure's ESI wage is at or below the
-  // statutory eligibility limit (plan: simplified salary module, no
-  // organization-wide statutory rule engine).
+}
+
+/**
+ * One period of a structure's PF and ESI settings, in force from its start
+ * date until the day before the next period starts (statutory-rates.ts).
+ */
+export interface StatutoryRateRow {
+  id: string
+  salary_structure_id: string
+  /** Null for the structure's first period, which covers every date before the next one. */
+  effective_from: IsoDate | null
   pf_employee_rate: string
   pf_employer_rate: string
-  esi_employee_rate: string
-  esi_employer_rate: string
   /** PF is deducted on the wage up to this ceiling; zero means no cap. */
   pf_wage_ceiling: string
   /** Share of pf_employer_rate that goes to the Pension Scheme (EPS). */
   pf_eps_rate: string
+  esi_employee_rate: string
+  esi_employer_rate: string
   /**
    * ESI applies, on both sides, only when a standard month's wage is at or below
    * this limit, and is deducted on the wage capped at it.
    */
   esi_wage_limit: string
+  created_at: Date
+  updated_at: Date
 }
 
 export interface StructureComponentRow {
@@ -68,6 +77,8 @@ export interface StructureComponentRow {
 
 export interface SalaryStructureWithComponents extends SalaryStructureRow {
   components: StructureComponentRow[]
+  /** Every PF and ESI period, oldest first. */
+  statutory_rates: StatutoryRateRow[]
 }
 
 export interface SalaryAssignmentRow {
@@ -215,7 +226,22 @@ export async function listStructures(
     byStructure.set(component.salary_structure_id, list)
   }
 
-  return structures.map((structure) => ({ ...structure, components: byStructure.get(structure.id) ?? [] }))
+  const rates = await listStatutoryRates(
+    structures.map((structure) => structure.id),
+    db,
+  )
+  const ratesByStructure = new Map<string, StatutoryRateRow[]>()
+  for (const rate of rates) {
+    const list = ratesByStructure.get(rate.salary_structure_id) ?? []
+    list.push(rate)
+    ratesByStructure.set(rate.salary_structure_id, list)
+  }
+
+  return structures.map((structure) => ({
+    ...structure,
+    components: byStructure.get(structure.id) ?? [],
+    statutory_rates: ratesByStructure.get(structure.id) ?? [],
+  }))
 }
 
 export async function findStructure(
@@ -234,7 +260,8 @@ export async function findStructure(
     `${STRUCTURE_COMPONENT_SELECT} WHERE sc.salary_structure_id = $1 ORDER BY sc.display_order, c.display_order`,
     [id],
   )
-  return { ...structure, components }
+  const statutoryRates = await listStatutoryRates([id], db)
+  return { ...structure, components, statutory_rates: statutoryRates }
 }
 
 export async function insertStructure(
@@ -244,10 +271,8 @@ export async function insertStructure(
   const row = await queryOne<SalaryStructureRow>(
     db,
     `INSERT INTO salary_structures
-       (organization_id, name, code, description, salary_basis, currency_code, is_active,
-        pf_employee_rate, pf_employer_rate, esi_employee_rate, esi_employer_rate,
-        pf_wage_ceiling, pf_eps_rate, esi_wage_limit, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       (organization_id, name, code, description, salary_basis, currency_code, is_active, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       values.organization_id,
@@ -257,13 +282,6 @@ export async function insertStructure(
       values.salary_basis,
       values.currency_code,
       values.is_active,
-      values.pf_employee_rate,
-      values.pf_employer_rate,
-      values.esi_employee_rate,
-      values.esi_employer_rate,
-      values.pf_wage_ceiling,
-      values.pf_eps_rate,
-      values.esi_wage_limit,
       values.created_by ?? null,
     ],
   )
@@ -317,6 +335,98 @@ export async function replaceStructureComponents(
       ],
     )
   }
+}
+
+// ---------------------------------------------------------------------------
+// PF and ESI rate periods
+// ---------------------------------------------------------------------------
+
+export async function listStatutoryRates(structureIds: string[], db: Queryable = pool): Promise<StatutoryRateRow[]> {
+  if (structureIds.length === 0) return []
+  return queryRows<StatutoryRateRow>(
+    db,
+    `SELECT * FROM salary_structure_statutory_rates
+      WHERE salary_structure_id = ANY($1::uuid[])
+      ORDER BY salary_structure_id, effective_from NULLS FIRST`,
+    [structureIds],
+  )
+}
+
+export async function findStatutoryRate(
+  id: string,
+  structureId: string,
+  db: Queryable = pool,
+): Promise<StatutoryRateRow | null> {
+  return queryOne<StatutoryRateRow>(
+    db,
+    'SELECT * FROM salary_structure_statutory_rates WHERE id = $1 AND salary_structure_id = $2',
+    [id, structureId],
+  )
+}
+
+/** The structure's period starting on a date, or its undated first period when `effectiveFrom` is null. */
+export async function findStatutoryRateStarting(
+  structureId: string,
+  effectiveFrom: IsoDate | null,
+  db: Queryable = pool,
+): Promise<StatutoryRateRow | null> {
+  return queryOne<StatutoryRateRow>(
+    db,
+    `SELECT * FROM salary_structure_statutory_rates
+      WHERE salary_structure_id = $1 AND effective_from IS NOT DISTINCT FROM $2::date`,
+    [structureId, effectiveFrom],
+  )
+}
+
+export async function insertStatutoryRate(
+  values: Record<string, unknown>,
+  db: Queryable = pool,
+): Promise<StatutoryRateRow> {
+  const row = await queryOne<StatutoryRateRow>(
+    db,
+    `INSERT INTO salary_structure_statutory_rates
+       (salary_structure_id, effective_from, pf_employee_rate, pf_employer_rate, pf_wage_ceiling, pf_eps_rate,
+        esi_employee_rate, esi_employer_rate, esi_wage_limit, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING *`,
+    [
+      values.salary_structure_id,
+      values.effective_from ?? null,
+      values.pf_employee_rate,
+      values.pf_employer_rate,
+      values.pf_wage_ceiling,
+      values.pf_eps_rate,
+      values.esi_employee_rate,
+      values.esi_employer_rate,
+      values.esi_wage_limit,
+      values.created_by ?? null,
+    ],
+  )
+  return row as StatutoryRateRow
+}
+
+export async function updateStatutoryRate(
+  id: string,
+  structureId: string,
+  updates: Record<string, unknown>,
+  db: Queryable = pool,
+): Promise<StatutoryRateRow | null> {
+  const { assignments, params } = buildUpdate(updates, 3)
+  if (assignments.length === 0) return findStatutoryRate(id, structureId, db)
+  return queryOne<StatutoryRateRow>(
+    db,
+    `UPDATE salary_structure_statutory_rates SET ${assignments.join(', ')}
+      WHERE id = $1 AND salary_structure_id = $2 RETURNING *`,
+    [id, structureId, ...params],
+  )
+}
+
+export async function deleteStatutoryRate(id: string, structureId: string, db: Queryable = pool): Promise<boolean> {
+  const result = await db.query('DELETE FROM salary_structure_statutory_rates WHERE id = $1 AND salary_structure_id = $2', [
+    id,
+    structureId,
+  ])
+  return (result.rowCount ?? 0) > 0
 }
 
 /** True when any employee has ever been assigned this structure. */

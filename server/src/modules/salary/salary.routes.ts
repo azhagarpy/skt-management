@@ -14,9 +14,14 @@ import {
   assignSalarySchema,
   salaryComponentSchema,
   salaryStructureSchema,
+  statutoryRateParams,
+  statutoryRateSchema,
+  updateSalaryStructureSchema,
   type AssignSalaryInput,
   type SalaryComponentInput,
   type SalaryStructureInput,
+  type StatutoryRateInput,
+  type UpdateSalaryStructureInput,
 } from './salary.validation.js'
 
 const idParam = z.object({ id: z.string().uuid() })
@@ -117,16 +122,70 @@ salaryRouter.get(
 salaryRouter.put(
   '/structures/:id',
   requirePermissions(PERMISSIONS.SALARY_STRUCTURE_MANAGE),
-  validate({ params: idParam, body: salaryStructureSchema }),
+  validate({ params: idParam, body: updateSalaryStructureSchema }),
   asyncHandler(async (req, res) => {
     const auth = requireAuth(req)
     const data = await service.updateStructure(
       auth,
       req.params.id as string,
-      req.body as SalaryStructureInput,
+      req.body as UpdateSalaryStructureInput,
       auditContextFrom(req),
     )
     return sendSuccess(res, data, 'Salary structure updated successfully')
+  }),
+)
+
+// ---------------------------------------------------------------------------
+// PF and ESI rate periods of a structure. Each returns the whole structure,
+// so its timeline can be redrawn from the response.
+// ---------------------------------------------------------------------------
+
+salaryRouter.post(
+  '/structures/:id/statutory-rates',
+  requirePermissions(PERMISSIONS.SALARY_STRUCTURE_MANAGE),
+  validate({ params: idParam, body: statutoryRateSchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const data = await service.addStatutoryRate(
+      auth,
+      req.params.id as string,
+      req.body as StatutoryRateInput,
+      auditContextFrom(req),
+    )
+    return sendCreated(res, data, 'PF and ESI rates added')
+  }),
+)
+
+salaryRouter.put(
+  '/structures/:id/statutory-rates/:rateId',
+  requirePermissions(PERMISSIONS.SALARY_STRUCTURE_MANAGE),
+  validate({ params: statutoryRateParams, body: statutoryRateSchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const data = await service.updateStatutoryRate(
+      auth,
+      req.params.id as string,
+      req.params.rateId as string,
+      req.body as StatutoryRateInput,
+      auditContextFrom(req),
+    )
+    return sendSuccess(res, data, 'PF and ESI rates updated')
+  }),
+)
+
+salaryRouter.delete(
+  '/structures/:id/statutory-rates/:rateId',
+  requirePermissions(PERMISSIONS.SALARY_STRUCTURE_MANAGE),
+  validate({ params: statutoryRateParams }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const data = await service.deleteStatutoryRate(
+      auth,
+      req.params.id as string,
+      req.params.rateId as string,
+      auditContextFrom(req),
+    )
+    return sendSuccess(res, data, 'PF and ESI rate period removed')
   }),
 )
 
