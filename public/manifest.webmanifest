@@ -1,6 +1,6 @@
 {
-  "name": "SKTRANSPORT People & Payroll",
-  "short_name": "SKTRANSPORT",
+  "name": "SKT",
+  "short_name": "SKT",
   "description": "Employee management, attendance, leave, salary and payroll operations.",
   "start_url": "/",
   "scope": "/",

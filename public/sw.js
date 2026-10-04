@@ -12,7 +12,7 @@
  * (plan sections 53 and 64).
  */
 
-const VERSION = 'v1'
+const VERSION = 'v2'
 const SHELL_CACHE = `sktransport-shell-${VERSION}`
 const ASSET_CACHE = `sktransport-assets-${VERSION}`
 
