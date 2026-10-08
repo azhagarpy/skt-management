@@ -63,6 +63,12 @@ Each step depends on the ones above it.
    on the run's last day; approved runs keep the rates they were calculated with.
 8. **Employees → Add employee** — optionally creating a login at the same time.
 9. **Salary → Assign salary** — until this exists, payroll produces no line for that employee.
+   Tick any number of employees (filter by department or current structure, or select
+   everyone shown), choose the structure and the date it starts, then confirm. Any date
+   works: on the date an employee's assignment already starts, that assignment is changed;
+   inside an assignment, it ends the day before and the new one takes over; otherwise the
+   new one runs until the employee's next change. The confirmation lists what changes for
+   each employee and which payroll runs need calculating again.
 
 ---
 

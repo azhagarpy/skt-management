@@ -85,27 +85,30 @@ export const statutoryRateSchema = z.object({
 
 export const statutoryRateParams = z.object({ id: z.string().uuid(), rateId: z.string().uuid() })
 
-export const assignSalarySchema = z
-  .object({
-    salaryStructureId: z.string().uuid('A salary structure is required'),
-    effectiveFrom: isoDateSchema,
-    effectiveTo: isoDateSchema.nullish(),
-    /**
-     * Optional per-employee total: the monthly gross for a MONTHLY structure, or
-     * the daily rate for a DAILY one. Components are scaled proportionally.
-     */
-    overrideAmount: amountSchema.nullish(),
-    notes: z.string().trim().max(300).nullish(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.effectiveTo && value.effectiveTo < value.effectiveFrom) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['effectiveTo'],
-        message: 'The end date cannot be before the start date',
-      })
-    }
-  })
+/**
+ * A salary assignment starts on any date and runs until the employee's next
+ * assignment starts (assignment-plan.ts), so it takes no end date of its own.
+ */
+const assignmentFields = {
+  salaryStructureId: z.string().uuid('A salary structure is required'),
+  effectiveFrom: isoDateSchema,
+  /**
+   * Optional per-employee total: the monthly gross for a MONTHLY structure, or
+   * the daily rate for a DAILY one. Components are scaled proportionally.
+   */
+  overrideAmount: amountSchema.nullish(),
+  notes: z.string().trim().max(300).nullish(),
+}
+
+export const assignSalarySchema = z.object(assignmentFields)
+
+/** The same assignment for many employees at once. */
+export const bulkAssignSalarySchema = z.object({
+  employeeIds: z.array(z.string().uuid()).min(1, 'Select at least one employee').max(2000),
+  ...assignmentFields,
+})
+
+export const assignmentsOnDateQuery = z.object({ date: isoDateSchema.optional() })
 
 export const salaryHistoryQuerySchema = z.object({
   employeeId: z.union([z.literal('me'), z.string().uuid()]).optional(),
@@ -116,3 +119,4 @@ export type SalaryStructureInput = z.infer<typeof salaryStructureSchema>
 export type UpdateSalaryStructureInput = z.infer<typeof updateSalaryStructureSchema>
 export type StatutoryRateInput = z.infer<typeof statutoryRateSchema>
 export type AssignSalaryInput = z.infer<typeof assignSalarySchema>
+export type BulkAssignSalaryInput = z.infer<typeof bulkAssignSalarySchema>

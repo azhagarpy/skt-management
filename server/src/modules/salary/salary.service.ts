@@ -1,15 +1,22 @@
 import { ApiError } from '../../utils/api-error.js'
 import { withTransaction } from '../../database/tx.js'
-import { addDays, todayIso, type IsoDate } from '../../utils/dates.js'
+import { todayIso, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 import { recordAudit, type AuditContext } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
-import { assertCanManageEmployee, assertEmployeeInScope, resolveScope } from '../employees/employee-access.js'
+import {
+  assertCanManageEmployees,
+  assertEmployeeInScope,
+  resolveScope,
+  scopeClause,
+} from '../employees/employee-access.js'
 import type { AuthContext } from '../../types/express.js'
 import * as repository from './salary.repository.js'
+import { planAssignment } from './assignment-plan.js'
 import { periodInForce, withEffectiveTo } from './statutory-rates.js'
 import type {
   AssignSalaryInput,
+  BulkAssignSalaryInput,
   SalaryComponentInput,
   SalaryStructureInput,
   StatutoryRateInput,
@@ -551,73 +558,262 @@ export async function getSalaryHistory(auth: AuthContext, employeeId: string) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Assigning salaries
+//
+// An employee's assignments form a timeline. A new one can start on any date:
+// on the start date of an existing one it changes that one; inside one it
+// splits it; anywhere else it runs until the next one starts (assignment-plan.ts).
+// The same change can be made for many employees at once, and is previewed
+// first so the admin can confirm exactly what changes.
+// ---------------------------------------------------------------------------
+
+export type AssignmentAction = 'NEW' | 'REPLACE' | 'SPLIT' | 'UNCHANGED'
+
+function fullName(row: { first_name: string; middle_name: string | null; last_name: string | null }): string {
+  return [row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' ')
+}
+
+function amountOrNull(value: string | number | null | undefined): number | null {
+  return value === null || value === undefined ? null : Number(value)
+}
+
+export function presentEmployeeAssignment(row: repository.EmployeeAssignmentRow) {
+  return {
+    employeeId: row.employee_id,
+    employeeCode: row.employee_code,
+    employeeName: fullName(row),
+    employmentStatus: row.employment_status,
+    departmentId: row.department_id,
+    departmentName: row.department_name,
+    designationName: row.designation_name,
+    /** The assignment in force on the date asked about; null when there is none. */
+    assignment: row.assignment_id
+      ? {
+          id: row.assignment_id,
+          salaryStructureId: row.salary_structure_id,
+          structureName: row.structure_name,
+          salaryBasis: row.salary_basis,
+          effectiveFrom: row.effective_from,
+          effectiveTo: row.effective_to,
+          overrideAmount: amountOrNull(row.override_amount),
+        }
+      : null,
+  }
+}
+
+function assignScope(auth: AuthContext) {
+  return resolveScope(auth, { all: PERMISSIONS.SALARY_MANAGE, team: PERMISSIONS.SALARY_MANAGE_TEAM })
+}
+
+/** Everyone the caller may assign a salary to, with the structure each has on a date. */
+export async function listEmployeeAssignments(auth: AuthContext, onDate: IsoDate) {
+  const scope = assignScope(auth)
+  const rows = await repository.listEmployeeAssignmentsOn((start) => scopeClause(auth, scope, 'e', start), onDate)
+  // A supervisor cannot change their own salary, so they are not offered it.
+  return rows
+    .filter((row) => scope !== 'TEAM' || row.employee_id !== auth.employeeId)
+    .map(presentEmployeeAssignment)
+}
+
+async function assignableStructure(
+  auth: AuthContext,
+  structureId: string,
+  db?: Parameters<typeof repository.findStructure>[2],
+) {
+  const structure = await repository.findStructure(structureId, auth.organizationId, db)
+  if (!structure) throw ApiError.badRequest('The selected salary structure does not exist')
+  if (!structure.is_active) throw ApiError.businessRule('The selected salary structure is inactive')
+  return structure
+}
+
 /**
- * Assigns a salary from a date.
- *
- * The previous open assignment is closed the day before, so the history is a
- * continuous, non-overlapping timeline and old payroll keeps resolving to the
- * structure that was in force at the time (plan sections 21 and 32).
+ * What assigning does to one employee's timeline. Assigning the structure and
+ * amount the employee already has on that date changes nothing, so it is left
+ * alone rather than splitting a period into two identical ones.
  */
+function planFor(timeline: repository.SalaryAssignmentRow[], input: BulkAssignSalaryInput) {
+  const plan = planAssignment(timeline, input.effectiveFrom)
+  const unchanged =
+    plan.target !== null &&
+    plan.target.salary_structure_id === input.salaryStructureId &&
+    amountOrNull(plan.target.override_amount) === amountOrNull(input.overrideAmount)
+  return { plan, action: (unchanged ? 'UNCHANGED' : plan.kind) as AssignmentAction }
+}
+
+function byEmployee(rows: repository.SalaryAssignmentRow[]): Map<string, repository.SalaryAssignmentRow[]> {
+  const map = new Map<string, repository.SalaryAssignmentRow[]>()
+  for (const row of rows) map.set(row.employee_id, [...(map.get(row.employee_id) ?? []), row])
+  return map
+}
+
+const APPROVED_RUN_STATUSES = new Set(['APPROVED', 'LOCKED'])
+
+/**
+ * Shows, before anything is saved, what assigning a structure from a date
+ * does to each selected employee, and which payroll runs it reaches: payroll
+ * uses the assignment in force on a run's last day, so a run is reached when
+ * that day falls in the new period. Approved runs keep their figures; the
+ * others take the change when they are calculated.
+ */
+export async function previewAssignment(auth: AuthContext, input: BulkAssignSalaryInput) {
+  const scope = assignScope(auth)
+  const employeeIds = [...new Set(input.employeeIds)]
+  await assertCanManageEmployees(auth, employeeIds, scope)
+  const structure = await assignableStructure(auth, input.salaryStructureId)
+
+  const [timelines, employees, runs] = await Promise.all([
+    repository.listActiveAssignments(employeeIds).then(byEmployee),
+    repository.listEmployeeAssignmentsOn((start) => scopeClause(auth, scope, 'e', start), input.effectiveFrom),
+    repository.listRunsEndingFrom(auth.organizationId, input.effectiveFrom),
+  ])
+  const employeeById = new Map(employees.map((employee) => [employee.employee_id, employee]))
+
+  const reached = new Map<string, repository.PayrollRunReach>()
+  const rows = employeeIds.map((employeeId) => {
+    const employee = employeeById.get(employeeId)
+    const { plan, action } = planFor(timelines.get(employeeId) ?? [], input)
+    if (action !== 'UNCHANGED') {
+      for (const run of runs) {
+        if (plan.effectiveTo === null || run.period_end <= plan.effectiveTo) reached.set(`${run.year}-${run.month}`, run)
+      }
+    }
+    return {
+      employeeId,
+      employeeCode: employee?.employee_code ?? '',
+      employeeName: employee ? fullName(employee) : '',
+      action,
+      effectiveTo: plan.effectiveTo,
+      /** The assignment this one changes or splits; null when it starts a new period. */
+      current: plan.target
+        ? {
+            structureName: plan.target.structure_name ?? null,
+            effectiveFrom: plan.target.effective_from,
+            effectiveTo: plan.target.effective_to,
+            overrideAmount: amountOrNull(plan.target.override_amount),
+          }
+        : null,
+      /** For a split: the day the current assignment now ends. */
+      currentEndsOn: plan.kind === 'SPLIT' && action !== 'UNCHANGED' ? plan.targetEndsOn : null,
+    }
+  })
+
+  const reachedRuns = [...reached.values()].map((run) => ({ year: run.year, month: run.month, status: run.status }))
+  return {
+    structure: { id: structure.id, name: structure.name, salaryBasis: structure.salary_basis },
+    effectiveFrom: input.effectiveFrom,
+    overrideAmount: amountOrNull(input.overrideAmount),
+    employees: rows,
+    payroll: {
+      /** Not yet approved: they use the new structure once calculated again. */
+      toRecalculate: reachedRuns.filter((run) => !APPROVED_RUN_STATUSES.has(run.status)),
+      /** Approved or locked: they keep the figures they were approved with. */
+      approved: reachedRuns.filter((run) => APPROVED_RUN_STATUSES.has(run.status)),
+    },
+  }
+}
+
+/** Assigns one structure, from one date, to every selected employee, in one transaction. */
+export async function assignSalaries(auth: AuthContext, input: BulkAssignSalaryInput, context: AuditContext) {
+  const scope = assignScope(auth)
+  const employeeIds = [...new Set(input.employeeIds)]
+  await assertCanManageEmployees(auth, employeeIds, scope)
+
+  const results = await withTransaction(async (tx) => {
+    await assignableStructure(auth, input.salaryStructureId, tx)
+    const timelines = byEmployee(await repository.listActiveAssignments(employeeIds, tx, true))
+
+    const done: { employeeId: string; action: AssignmentAction; assignment: repository.SalaryAssignmentRow }[] = []
+    for (const employeeId of employeeIds) {
+      const { plan, action } = planFor(timelines.get(employeeId) ?? [], input)
+      if (action === 'UNCHANGED' && plan.target) {
+        done.push({ employeeId, action, assignment: plan.target })
+        continue
+      }
+
+      let assignment: repository.SalaryAssignmentRow | null
+      if (plan.kind === 'REPLACE') {
+        assignment = await repository.updateAssignment(
+          plan.target.id,
+          {
+            salary_structure_id: input.salaryStructureId,
+            override_amount: input.overrideAmount ?? null,
+            notes: input.notes ?? plan.target.notes,
+          },
+          tx,
+        )
+      } else {
+        // Shorten the split assignment before inserting, so the two never overlap.
+        if (plan.kind === 'SPLIT') {
+          await repository.updateAssignment(plan.target.id, { effective_to: plan.targetEndsOn }, tx)
+        }
+        assignment = await repository.insertAssignment(
+          {
+            organization_id: auth.organizationId,
+            employee_id: employeeId,
+            salary_structure_id: input.salaryStructureId,
+            effective_from: input.effectiveFrom,
+            effective_to: plan.effectiveTo,
+            override_amount: input.overrideAmount ?? null,
+            notes: input.notes ?? null,
+            created_by: auth.userId,
+          },
+          tx,
+        )
+      }
+      if (!assignment) throw ApiError.notFound('Salary assignment')
+
+      await recordAudit(
+        {
+          ...context,
+          action: plan.target ? 'SALARY_CHANGED' : 'SALARY_ASSIGNED',
+          entityType: 'employee_salary_assignment',
+          entityId: assignment.id,
+          oldValues: plan.target
+            ? {
+                structureId: plan.target.salary_structure_id,
+                effectiveFrom: plan.target.effective_from,
+                effectiveTo: plan.target.effective_to,
+                overrideAmount: plan.target.override_amount,
+              }
+            : undefined,
+          newValues: {
+            employeeId,
+            change: plan.kind,
+            structureId: input.salaryStructureId,
+            effectiveFrom: input.effectiveFrom,
+            effectiveTo: plan.effectiveTo,
+            overrideAmount: input.overrideAmount ?? null,
+            ...(plan.kind === 'SPLIT' ? { previousEndsOn: plan.targetEndsOn } : {}),
+          },
+        },
+        tx,
+      )
+      done.push({ employeeId, action, assignment })
+    }
+    return done
+  })
+
+  return {
+    assigned: results.filter((result) => result.action !== 'UNCHANGED').length,
+    unchanged: results.filter((result) => result.action === 'UNCHANGED').length,
+    results: results.map((result) => ({
+      employeeId: result.employeeId,
+      action: result.action,
+      assignment: presentAssignment(result.assignment),
+    })),
+  }
+}
+
+/** Assigns a salary to one employee from a date: the one-employee form of assignSalaries. */
 export async function assignSalary(
   auth: AuthContext,
   employeeId: string,
   input: AssignSalaryInput,
   context: AuditContext,
 ) {
-  const scope = resolveScope(auth, { all: PERMISSIONS.SALARY_MANAGE, team: PERMISSIONS.SALARY_MANAGE_TEAM })
-  await assertCanManageEmployee(auth, employeeId, scope)
-
-  const result = await withTransaction(async (tx) => {
-    const structure = await repository.findStructure(input.salaryStructureId, auth.organizationId, tx)
-    if (!structure) throw ApiError.badRequest('The selected salary structure does not exist')
-    if (!structure.is_active) throw ApiError.businessRule('The selected salary structure is inactive')
-
-    const open = await repository.findOpenAssignment(employeeId, tx)
-    if (open) {
-      if (input.effectiveFrom <= open.effective_from) {
-        throw ApiError.businessRule(
-          `A salary assignment already starts on ${open.effective_from}. The new one must start after that date.`,
-        )
-      }
-      await repository.closeAssignment(open.id, addDays(input.effectiveFrom, -1), tx)
-    }
-
-    const assignment = await repository.insertAssignment(
-      {
-        organization_id: auth.organizationId,
-        employee_id: employeeId,
-        salary_structure_id: input.salaryStructureId,
-        effective_from: input.effectiveFrom,
-        effective_to: input.effectiveTo ?? null,
-        override_amount: input.overrideAmount ?? null,
-        notes: input.notes ?? null,
-        created_by: auth.userId,
-      },
-      tx,
-    )
-
-    await recordAudit(
-      {
-        ...context,
-        action: open ? 'SALARY_CHANGED' : 'SALARY_ASSIGNED',
-        entityType: 'employee_salary_assignment',
-        entityId: assignment.id,
-        oldValues: open
-          ? { structureId: open.salary_structure_id, effectiveFrom: open.effective_from, overrideAmount: open.override_amount }
-          : undefined,
-        newValues: {
-          employeeId,
-          structureId: input.salaryStructureId,
-          effectiveFrom: input.effectiveFrom,
-          overrideAmount: input.overrideAmount ?? null,
-        },
-      },
-      tx,
-    )
-
-    return assignment
-  })
-
-  return presentAssignment(result)
+  const { results } = await assignSalaries(auth, { ...input, employeeIds: [employeeId] }, context)
+  const [result] = results
+  if (!result) throw ApiError.notFound('Salary assignment')
+  return result.assignment
 }
-

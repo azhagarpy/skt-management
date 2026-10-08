@@ -10,7 +10,11 @@ import { auditContextFrom } from '../audit/audit.service.js'
 import { PERMISSIONS } from '../auth/permissions.js'
 import { employeeIdParam } from '../employees/employees.validation.js'
 import * as service from './salary.service.js'
+import { todayIso, type IsoDate } from '../../utils/dates.js'
 import {
+  assignmentsOnDateQuery,
+  bulkAssignSalarySchema,
+  type BulkAssignSalaryInput,
   assignSalarySchema,
   salaryComponentSchema,
   salaryStructureSchema,
@@ -186,6 +190,46 @@ salaryRouter.delete(
       auditContextFrom(req),
     )
     return sendSuccess(res, data, 'PF and ESI rate period removed')
+  }),
+)
+
+// ---------------------------------------------------------------------------
+// Assigning salaries to many employees at once
+// ---------------------------------------------------------------------------
+
+const canAssign = requireAnyPermission(PERMISSIONS.SALARY_MANAGE, PERMISSIONS.SALARY_MANAGE_TEAM)
+
+/** Every employee the caller may assign to, with the structure each has on `date` (default today). */
+salaryRouter.get(
+  '/assignments',
+  canAssign,
+  validate({ query: assignmentsOnDateQuery }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const date = (req.query as { date?: IsoDate }).date ?? todayIso()
+    return sendSuccess(res, await service.listEmployeeAssignments(auth, date))
+  }),
+)
+
+/** What an assignment would change, per employee, without saving anything. */
+salaryRouter.post(
+  '/assignments/preview',
+  canAssign,
+  validate({ body: bulkAssignSalarySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    return sendSuccess(res, await service.previewAssignment(auth, req.body as BulkAssignSalaryInput))
+  }),
+)
+
+salaryRouter.post(
+  '/assignments',
+  canAssign,
+  validate({ body: bulkAssignSalarySchema }),
+  asyncHandler(async (req, res) => {
+    const auth = requireAuth(req)
+    const data = await service.assignSalaries(auth, req.body as BulkAssignSalaryInput, auditContextFrom(req))
+    return sendSuccess(res, data, `Salary assigned to ${data.assigned} employee${data.assigned === 1 ? '' : 's'}`)
   }),
 )
 

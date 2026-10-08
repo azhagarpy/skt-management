@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Pencil, Plus, Trash2 } from 'lucide-react'
 import { ApiError, del, get, post, put } from '../../lib/api'
-import { formatCurrency, formatDate, humanise } from '../../lib/format'
+import { formatCurrency, formatDate, formatMonth, humanise, todayIso } from '../../lib/format'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { useToast } from '../../app/providers/ToastProvider'
 import {
@@ -14,13 +14,21 @@ import {
   Input,
   Modal,
   PageHeader,
+  SearchInput,
   Select,
   StatusBadge,
   Tabs,
 } from '../../components/ui'
 import { DataTable, type Column } from '../../components/tables/DataTable'
-import { EmployeeSelector, useSalaryStructures } from '../../components/forms/selectors'
-import type { SalaryComponent, SalaryStructure, StatutoryRatePeriod } from '../../types/api'
+import { DepartmentMultiSelector, useSalaryStructures } from '../../components/forms/selectors'
+import type {
+  AssignmentAction,
+  AssignmentPreview,
+  EmployeeSalaryAssignment,
+  SalaryComponent,
+  SalaryStructure,
+  StatutoryRatePeriod,
+} from '../../types/api'
 
 /**
  * Salary configuration: components, structures, and assigning a salary to an
@@ -705,114 +713,422 @@ function ComponentsTab({ canManage }: { canManage: boolean }) {
 // Assigning a salary
 // ---------------------------------------------------------------------------
 
+interface AssignForm {
+  salaryStructureId: string
+  effectiveFrom: string
+  overrideAmount: string
+  notes: string
+}
+
+const emptyAssignForm: AssignForm = { salaryStructureId: '', effectiveFrom: '', overrideAmount: '', notes: '' }
+
+/** "Skilled - Daily, 01 Apr 2026 → 30 Sep 2026" or "… → ongoing". */
+function periodText(name: string | null, from: string, to: string | null): string {
+  return `${name ?? 'Unknown structure'}, ${formatDate(from)} → ${to ? formatDate(to) : 'ongoing'}`
+}
+
+const ACTION_LABEL: Record<AssignmentAction, { label: string; tone: 'info' | 'warning' | 'success' | 'neutral' }> = {
+  NEW: { label: 'New', tone: 'success' },
+  REPLACE: { label: 'Replaces', tone: 'warning' },
+  SPLIT: { label: 'Changes from date', tone: 'info' },
+  UNCHANGED: { label: 'No change', tone: 'neutral' },
+}
+
+/**
+ * Assigns a structure, from a date, to any number of employees at once: tick
+ * them in the table, choose the structure and date, then confirm what will
+ * change. A date that already starts an employee's assignment changes that
+ * assignment; any other date starts a new one that runs until their next
+ * change (assignment-plan.ts on the server).
+ */
 function AssignTab() {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { data: structures } = useSalaryStructures()
 
-  const [employeeId, setEmployeeId] = useState('')
-  const [form, setForm] = useState({ salaryStructureId: '', effectiveFrom: '', overrideAmount: '', notes: '' })
+  const [form, setForm] = useState<AssignForm>(emptyAssignForm)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  const [departmentIds, setDepartmentIds] = useState<string[]>([])
+  const [structureFilter, setStructureFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'CURRENT' | 'ALL'>('CURRENT')
+  const [preview, setPreview] = useState<AssignmentPreview | null>(null)
+  const [historyFor, setHistoryFor] = useState<EmployeeSalaryAssignment | null>(null)
 
-  const { data: history, refetch } = useQuery({
-    queryKey: ['employee', employeeId, 'salary'],
-    queryFn: () => get<{ assignments: { id: string; effectiveFrom: string; effectiveTo: string | null; structureName: string | null; overrideAmount: number | null; notes: string | null }[] }>(
-      `/employees/${employeeId}/salary`,
-    ),
-    enabled: Boolean(employeeId),
+  // The table shows the structure each employee has on the chosen date, or today.
+  const onDate = form.effectiveFrom || todayIso()
+
+  const { data, isFetching, error, refetch } = useQuery({
+    queryKey: ['salary-assignments', onDate],
+    queryFn: () => get<EmployeeSalaryAssignment[]>('/salary/assignments', { date: onDate }),
+    placeholderData: (previous) => previous,
   })
 
-  const mutation = useMutation({
-    mutationFn: () =>
-      post(`/employees/${employeeId}/salary`, {
-        salaryStructureId: form.salaryStructureId,
-        effectiveFrom: form.effectiveFrom,
-        overrideAmount: form.overrideAmount ? Number(form.overrideAmount) : null,
-        notes: form.notes || null,
-      }),
-    onSuccess: async () => {
-      toast.success('Salary assigned', 'The previous assignment has been closed, not overwritten.')
-      setForm({ salaryStructureId: '', effectiveFrom: '', overrideAmount: '', notes: '' })
-      await queryClient.invalidateQueries({ queryKey: ['employee', employeeId] })
-      await refetch()
-    },
-    onError: (mutationError: Error) => toast.error('Could not assign the salary', mutationError.message),
+  const { data: history, isFetching: historyLoading } = useQuery({
+    queryKey: ['employee', historyFor?.employeeId, 'salary'],
+    queryFn: () =>
+      get<{
+        assignments: {
+          id: string
+          effectiveFrom: string
+          effectiveTo: string | null
+          structureName: string | null
+          overrideAmount: number | null
+          notes: string | null
+        }[]
+      }>(`/employees/${historyFor?.employeeId}/salary`),
+    enabled: Boolean(historyFor),
   })
+
+  const query = search.trim().toLowerCase()
+  const rows = (data ?? []).filter((row) => {
+    if (statusFilter === 'CURRENT' && row.employmentStatus !== 'ACTIVE' && row.employmentStatus !== 'ON_NOTICE') return false
+    if (departmentIds.length > 0 && !departmentIds.includes(row.departmentId ?? '')) return false
+    if (structureFilter === 'NONE' && row.assignment) return false
+    if (structureFilter && structureFilter !== 'NONE' && row.assignment?.salaryStructureId !== structureFilter) return false
+    if (query && !row.employeeName.toLowerCase().includes(query) && !row.employeeCode.toLowerCase().includes(query)) return false
+    return true
+  })
+
+  const toggle = (employeeId: string): void =>
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(employeeId)) next.delete(employeeId)
+      else next.add(employeeId)
+      return next
+    })
+  const allShownSelected = rows.length > 0 && rows.every((row) => selected.has(row.employeeId))
+  const toggleAllShown = (): void =>
+    setSelected((current) => {
+      const next = new Set(current)
+      for (const row of rows) {
+        if (allShownSelected) next.delete(row.employeeId)
+        else next.add(row.employeeId)
+      }
+      return next
+    })
 
   const selectedStructure = structures?.find((structure) => structure.id === form.salaryStructureId)
+  const payload = () => ({
+    employeeIds: [...selected],
+    salaryStructureId: form.salaryStructureId,
+    effectiveFrom: form.effectiveFrom,
+    overrideAmount: form.overrideAmount ? Number(form.overrideAmount) : null,
+    notes: form.notes.trim() || null,
+  })
+
+  // Nothing is saved until the admin has seen, and confirmed, what changes.
+  const previewMutation = useMutation({
+    mutationFn: async () => (await post<AssignmentPreview>('/salary/assignments/preview', payload())).data,
+    onSuccess: setPreview,
+    onError: (mutationError: Error) => toast.error('Could not check the assignment', errorText(mutationError)),
+  })
+
+  const assignMutation = useMutation({
+    mutationFn: () => post<{ assigned: number; unchanged: number }>('/salary/assignments', payload()),
+    onSuccess: async (response) => {
+      const { assigned, unchanged } = response.data
+      toast.success(
+        `Salary assigned to ${assigned} employee${assigned === 1 ? '' : 's'}`,
+        unchanged > 0 ? `${unchanged} already had this structure and were left as they were.` : undefined,
+      )
+      setPreview(null)
+      setSelected(new Set())
+      await queryClient.invalidateQueries({ queryKey: ['salary-assignments'] })
+      await queryClient.invalidateQueries({ queryKey: ['employee'] })
+    },
+    onError: (mutationError: Error) => toast.error('Could not assign the salary', errorText(mutationError)),
+  })
+
+  const columns: Column<EmployeeSalaryAssignment>[] = [
+    {
+      key: 'select',
+      header: '',
+      width: '40px',
+      render: (row) => (
+        <input
+          type="checkbox"
+          checked={selected.has(row.employeeId)}
+          aria-label={`Select ${row.employeeName}`}
+          onClick={(event) => event.stopPropagation()}
+          onChange={() => toggle(row.employeeId)}
+        />
+      ),
+    },
+    {
+      key: 'employee',
+      header: 'Employee',
+      render: (row) => (
+        <div>
+          <strong>{row.employeeName}</strong>
+          <p className="subtle">
+            {row.employeeCode}
+            {row.employmentStatus !== 'ACTIVE' ? ` · ${humanise(row.employmentStatus)}` : ''}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: 'department',
+      header: 'Department',
+      hideOnMobile: true,
+      render: (row) => row.departmentName ?? <span className="subtle">—</span>,
+    },
+    {
+      key: 'structure',
+      header: `Structure on ${formatDate(onDate)}`,
+      render: (row) =>
+        row.assignment ? (
+          <div>
+            {row.assignment.structureName}
+            <p className="subtle">
+              {formatDate(row.assignment.effectiveFrom)} → {row.assignment.effectiveTo ? formatDate(row.assignment.effectiveTo) : 'ongoing'}
+              {row.assignment.overrideAmount !== null ? ` · ${formatCurrency(row.assignment.overrideAmount)}` : ''}
+            </p>
+          </div>
+        ) : (
+          <span className="subtle">Not assigned</span>
+        ),
+    },
+    {
+      key: 'history',
+      header: '',
+      align: 'right',
+      render: (row) => (
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={(event) => {
+            event.stopPropagation()
+            setHistoryFor(row)
+          }}
+        >
+          History
+        </Button>
+      ),
+    },
+  ]
+
+  const changes = preview?.employees.filter((employee) => employee.action !== 'UNCHANGED') ?? []
+  const counts = (preview?.employees ?? []).reduce<Partial<Record<AssignmentAction, number>>>(
+    (sum, employee) => ({ ...sum, [employee.action]: (sum[employee.action] ?? 0) + 1 }),
+    {},
+  )
+  const ready = selected.size > 0 && Boolean(form.salaryStructureId) && Boolean(form.effectiveFrom)
 
   return (
-    <div className="grid grid-2">
-      <Card title="Assign a salary" description="Historical assignments are preserved so old payroll stays reproducible.">
+    <div className="stack">
+      <Card
+        title="Assign a salary structure"
+        description="Tick the employees below, then choose the structure and the date it starts. A date on which an employee's assignment already starts changes that assignment; any other date starts a new one that runs until their next change."
+      >
         <div className="stack">
-          <Field label="Employee" htmlFor="assign-employee" required>
-            <EmployeeSelector id="assign-employee" value={employeeId} onChange={setEmployeeId} />
-          </Field>
+          <div className="grid grid-2">
+            <Field label="Salary structure" htmlFor="assign-structure" required>
+              <Select
+                id="assign-structure"
+                value={form.salaryStructureId}
+                onChange={(event) => setForm({ ...form, salaryStructureId: event.target.value })}
+              >
+                <option value="">Select a structure</option>
+                {(structures ?? []).map((structure) => (
+                  <option key={structure.id} value={structure.id}>
+                    {structure.name} ({humanise(structure.salaryBasis)})
+                  </option>
+                ))}
+              </Select>
+            </Field>
 
-          <Field label="Salary structure" htmlFor="assign-structure" required>
-            <Select
-              id="assign-structure"
-              value={form.salaryStructureId}
-              onChange={(event) => setForm({ ...form, salaryStructureId: event.target.value })}
+            <Field label="Effective from" htmlFor="assign-from" required hint="Any date, past or future.">
+              <Input
+                id="assign-from"
+                type="date"
+                value={form.effectiveFrom}
+                onChange={(event) => setForm({ ...form, effectiveFrom: event.target.value })}
+              />
+            </Field>
+
+            <Field
+              label={selectedStructure?.salaryBasis === 'DAILY' ? 'Daily rate (optional)' : 'Monthly gross (optional)'}
+              htmlFor="assign-amount"
+              hint={
+                selectedStructure
+                  ? `Leave blank to use the structure's total of ${formatCurrency(selectedStructure.summary.fixedGross)}. Applies to every selected employee.`
+                  : "Leave blank to use the structure's total."
+              }
             >
-              <option value="">Select a structure</option>
+              <Input
+                id="assign-amount"
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.overrideAmount}
+                onChange={(event) => setForm({ ...form, overrideAmount: event.target.value })}
+              />
+            </Field>
+
+            <Field label="Notes" htmlFor="assign-notes">
+              <Input id="assign-notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
+            </Field>
+          </div>
+
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <span className="muted">
+              {selected.size === 0
+                ? 'No employees selected yet.'
+                : `${selected.size} employee${selected.size === 1 ? '' : 's'} selected.`}
+            </span>
+            <Button loading={previewMutation.isPending} disabled={!ready} onClick={() => previewMutation.mutate()}>
+              Review and assign
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Employees" padded={false}>
+        <div className="filter-bar">
+          <SearchInput value={search} onChange={setSearch} placeholder="Employee name or code" />
+          <Field label="Department" htmlFor="assign-department">
+            <DepartmentMultiSelector id="assign-department" value={departmentIds} onChange={setDepartmentIds} />
+          </Field>
+          <Field label={`Structure on ${formatDate(onDate)}`} htmlFor="assign-structure-filter">
+            <Select id="assign-structure-filter" value={structureFilter} onChange={(event) => setStructureFilter(event.target.value)}>
+              <option value="">Any structure</option>
+              <option value="NONE">Not assigned</option>
               {(structures ?? []).map((structure) => (
                 <option key={structure.id} value={structure.id}>
-                  {structure.name} ({humanise(structure.salaryBasis)})
+                  {structure.name}
                 </option>
               ))}
             </Select>
           </Field>
-
-          <Field label="Effective from" htmlFor="assign-from" required hint="The previous assignment is closed the day before this date.">
-            <Input
-              id="assign-from"
-              type="date"
-              value={form.effectiveFrom}
-              onChange={(event) => setForm({ ...form, effectiveFrom: event.target.value })}
-            />
+          <Field label="Employees" htmlFor="assign-status-filter">
+            <Select
+              id="assign-status-filter"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as 'CURRENT' | 'ALL')}
+            >
+              <option value="CURRENT">Current employees</option>
+              <option value="ALL">Everyone</option>
+            </Select>
           </Field>
-
-          <Field
-            label={selectedStructure?.salaryBasis === 'DAILY' ? 'Daily rate' : 'Monthly gross'}
-            htmlFor="assign-amount"
-            hint={
-              selectedStructure
-                ? `Leave blank to use the structure total of ${formatCurrency(selectedStructure.summary.fixedGross)}. Components scale proportionally.`
-                : 'Leave blank to use the structure total.'
-            }
-          >
-            <Input
-              id="assign-amount"
-              type="number"
-              step="0.01"
-              min="0"
-              value={form.overrideAmount}
-              onChange={(event) => setForm({ ...form, overrideAmount: event.target.value })}
-            />
-          </Field>
-
-          <Field label="Notes" htmlFor="assign-notes">
-            <Input id="assign-notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
-          </Field>
-
-          <Button
-            loading={mutation.isPending}
-            disabled={!employeeId || !form.salaryStructureId || !form.effectiveFrom}
-            onClick={() => mutation.mutate()}
-          >
-            Assign salary
-          </Button>
+          <div className="filter-bar-actions">
+            <Button variant="secondary" size="sm" disabled={rows.length === 0} onClick={toggleAllShown}>
+              {allShownSelected ? `Unselect the ${rows.length} shown` : `Select the ${rows.length} shown`}
+            </Button>
+            {selected.size > 0 ? (
+              <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+                Clear selection ({selected.size})
+              </Button>
+            ) : null}
+          </div>
         </div>
+
+        <DataTable
+          columns={columns}
+          rows={rows}
+          rowKey={(row) => row.employeeId}
+          loading={isFetching}
+          error={error}
+          onRetry={() => void refetch()}
+          onRowClick={(row) => toggle(row.employeeId)}
+          emptyTitle="No employees match"
+          emptyDescription="Change the filters above to see more employees."
+          caption="Employees and their salary structure"
+        />
       </Card>
 
-      <Card title="Salary history" description={employeeId ? undefined : 'Select an employee to see their history.'}>
-        {history && history.assignments.length > 0 ? (
+      <Modal
+        open={preview !== null}
+        title="Confirm salary assignment"
+        size="lg"
+        onClose={() => !assignMutation.isPending && setPreview(null)}
+        footer={
+          <>
+            <Button variant="secondary" disabled={assignMutation.isPending} onClick={() => setPreview(null)}>
+              Cancel
+            </Button>
+            <Button loading={assignMutation.isPending} disabled={changes.length === 0} onClick={() => assignMutation.mutate()}>
+              {changes.length === 0
+                ? 'Nothing to change'
+                : `Assign to ${changes.length} employee${changes.length === 1 ? '' : 's'}`}
+            </Button>
+          </>
+        }
+      >
+        {preview ? (
+          <div className="stack">
+            <p>
+              <strong>{preview.structure.name}</strong> from <strong>{formatDate(preview.effectiveFrom)}</strong>
+              {preview.overrideAmount !== null
+                ? ` at ${formatCurrency(preview.overrideAmount)} ${preview.structure.salaryBasis === 'DAILY' ? 'per day' : 'per month'}`
+                : ''}
+              .
+            </p>
+
+            <div className="row" style={{ gap: '0.4rem', flexWrap: 'wrap' }}>
+              {(Object.keys(ACTION_LABEL) as AssignmentAction[])
+                .filter((action) => counts[action])
+                .map((action) => (
+                  <Badge key={action} tone={ACTION_LABEL[action].tone}>
+                    {ACTION_LABEL[action].label}: {counts[action]}
+                  </Badge>
+                ))}
+            </div>
+
+            {preview.payroll.toRecalculate.length > 0 ? (
+              <p className="alert alert-warning">
+                Payroll for {preview.payroll.toRecalculate.map((run) => formatMonth(run.year, run.month)).join(', ')} is
+                not approved yet: calculate it again to apply this change.
+              </p>
+            ) : null}
+            {preview.payroll.approved.length > 0 ? (
+              <p className="alert alert-info">
+                Payroll for {preview.payroll.approved.map((run) => formatMonth(run.year, run.month)).join(', ')} is already
+                approved and keeps the figures it was approved with.
+              </p>
+            ) : null}
+
+            <div className="breakdown-list" style={{ maxHeight: '22rem', overflowY: 'auto' }}>
+              {preview.employees.map((employee) => (
+                <div key={employee.employeeId} className="breakdown-row">
+                  <span>
+                    <strong>{employee.employeeName}</strong> <span className="subtle">{employee.employeeCode}</span>
+                    <p className="subtle">
+                      {employee.action === 'UNCHANGED'
+                        ? `Already on ${employee.current?.structureName ?? preview.structure.name} on this date.`
+                        : employee.action === 'REPLACE' && employee.current
+                          ? `Now: ${periodText(employee.current.structureName, employee.current.effectiveFrom, employee.current.effectiveTo)} — changed to ${preview.structure.name}.`
+                          : employee.action === 'SPLIT' && employee.current && employee.currentEndsOn
+                            ? `Now: ${periodText(employee.current.structureName, employee.current.effectiveFrom, employee.current.effectiveTo)} — ends ${formatDate(employee.currentEndsOn)}, then ${periodText(preview.structure.name, preview.effectiveFrom, employee.effectiveTo)}.`
+                            : `No structure on this date — ${periodText(preview.structure.name, preview.effectiveFrom, employee.effectiveTo)}.`}
+                    </p>
+                  </span>
+                  <Badge tone={ACTION_LABEL[employee.action].tone}>{ACTION_LABEL[employee.action].label}</Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={historyFor !== null}
+        title={historyFor ? `Salary history — ${historyFor.employeeName}` : ''}
+        onClose={() => setHistoryFor(null)}
+      >
+        {historyLoading && !history ? (
+          <p className="muted">Loading…</p>
+        ) : history && history.assignments.length > 0 ? (
           <div className="breakdown-list">
             {history.assignments.map((assignment) => (
               <div key={assignment.id} className="breakdown-row">
                 <span>
-                  {formatDate(assignment.effectiveFrom)} → {assignment.effectiveTo ? formatDate(assignment.effectiveTo) : 'current'}
-                  <p className="subtle">{assignment.structureName}</p>
+                  {formatDate(assignment.effectiveFrom)} → {assignment.effectiveTo ? formatDate(assignment.effectiveTo) : 'ongoing'}
+                  <p className="subtle">
+                    {assignment.structureName}
+                    {assignment.notes ? ` · ${assignment.notes}` : ''}
+                  </p>
                 </span>
                 <span className="numeric">
                   {assignment.overrideAmount === null ? 'Structure default' : formatCurrency(assignment.overrideAmount)}
@@ -821,9 +1137,9 @@ function AssignTab() {
             ))}
           </div>
         ) : (
-          <p className="muted">{employeeId ? 'No salary assigned yet.' : 'No employee selected.'}</p>
+          <p className="muted">No salary assigned yet.</p>
         )}
-      </Card>
+      </Modal>
     </div>
   )
 }

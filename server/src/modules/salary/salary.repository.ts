@@ -499,26 +499,110 @@ export async function findAssignmentsForDate(
   )
 }
 
-export async function findOpenAssignment(
-  employeeId: string,
+/**
+ * Each employee's active assignments, oldest first: their salary timeline.
+ * `forUpdate` locks the rows, so two changes to one employee's timeline wait
+ * for each other instead of both planning against the same rows.
+ */
+export async function listActiveAssignments(
+  employeeIds: string[],
   db: Queryable = pool,
-): Promise<SalaryAssignmentRow | null> {
-  return queryOne<SalaryAssignmentRow>(
+  forUpdate = false,
+): Promise<SalaryAssignmentRow[]> {
+  if (employeeIds.length === 0) return []
+  return queryRows<SalaryAssignmentRow>(
     db,
     `${ASSIGNMENT_SELECT}
-      WHERE a.employee_id = $1 AND a.status = 'ACTIVE' AND a.effective_to IS NULL
-      ORDER BY a.effective_from DESC
-      LIMIT 1`,
-    [employeeId],
+      WHERE a.employee_id = ANY($1::uuid[]) AND a.status = 'ACTIVE'
+      ORDER BY a.employee_id, a.effective_from
+      ${forUpdate ? 'FOR UPDATE OF a' : ''}`,
+    [employeeIds],
   )
 }
 
-/**
- * Closes the previous open assignment the day before the new one starts.
- * Historical rows are never overwritten (plan section 21).
- */
-export async function closeAssignment(id: string, effectiveTo: IsoDate, db: Queryable = pool): Promise<void> {
-  await db.query('UPDATE employee_salary_assignments SET effective_to = $2 WHERE id = $1', [id, effectiveTo])
+export async function updateAssignment(
+  id: string,
+  updates: Record<string, unknown>,
+  db: Queryable = pool,
+): Promise<SalaryAssignmentRow | null> {
+  const { assignments, params } = buildUpdate(updates, 2)
+  if (assignments.length === 0) return null
+  return queryOne<SalaryAssignmentRow>(
+    db,
+    `UPDATE employee_salary_assignments SET ${assignments.join(', ')} WHERE id = $1 RETURNING *`,
+    [id, ...params],
+  )
+}
+
+export interface EmployeeAssignmentRow {
+  employee_id: string
+  employee_code: string
+  first_name: string
+  middle_name: string | null
+  last_name: string | null
+  employment_status: string
+  department_id: string | null
+  department_name: string | null
+  designation_name: string | null
+  assignment_id: string | null
+  salary_structure_id: string | null
+  structure_name: string | null
+  salary_basis: 'MONTHLY' | 'DAILY' | null
+  effective_from: IsoDate | null
+  effective_to: IsoDate | null
+  override_amount: string | null
+}
+
+/** Every employee the caller may manage, with the assignment in force on a date (if any). */
+export async function listEmployeeAssignmentsOn(
+  scope: (startIndex: number) => { sql: string; params: unknown[] },
+  onDate: IsoDate,
+  db: Queryable = pool,
+): Promise<EmployeeAssignmentRow[]> {
+  const clause = scope(2)
+  return queryRows<EmployeeAssignmentRow>(
+    db,
+    `SELECT e.id AS employee_id, e.employee_code, e.first_name, e.middle_name, e.last_name, e.employment_status,
+            e.department_id, d.name AS department_name, g.name AS designation_name,
+            a.id AS assignment_id, a.salary_structure_id, s.name AS structure_name, s.salary_basis,
+            a.effective_from, a.effective_to, a.override_amount
+       FROM employees e
+       LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN designations g ON g.id = e.designation_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM employee_salary_assignments x
+          WHERE x.employee_id = e.id AND x.status = 'ACTIVE'
+            AND x.effective_from <= $1 AND (x.effective_to IS NULL OR x.effective_to >= $1)
+          ORDER BY x.effective_from DESC
+          LIMIT 1
+       ) a ON TRUE
+       LEFT JOIN salary_structures s ON s.id = a.salary_structure_id
+      WHERE ${clause.sql}
+      ORDER BY e.employee_code`,
+    [onDate, ...clause.params],
+  )
+}
+
+export interface PayrollRunReach {
+  year: number
+  month: number
+  status: string
+  period_end: IsoDate
+}
+
+/** Payroll runs ending on or after a date: the ones an assignment from that date can reach. */
+export async function listRunsEndingFrom(
+  organizationId: string,
+  fromDate: IsoDate,
+  db: Queryable = pool,
+): Promise<PayrollRunReach[]> {
+  return queryRows<PayrollRunReach>(
+    db,
+    `SELECT year, month, status, period_end FROM payroll_runs
+      WHERE organization_id = $1 AND period_end >= $2
+      ORDER BY period_end`,
+    [organizationId, fromDate],
+  )
 }
 
 export async function insertAssignment(

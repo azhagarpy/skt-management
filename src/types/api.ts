@@ -677,6 +677,54 @@ export interface SalaryComponent {
   holidayExtraPay: boolean
 }
 
+/** An employee with the salary assignment in force on the date asked about. */
+export interface EmployeeSalaryAssignment {
+  employeeId: string
+  employeeCode: string
+  employeeName: string
+  employmentStatus: string
+  departmentId: string | null
+  departmentName: string | null
+  designationName: string | null
+  assignment: {
+    id: string
+    salaryStructureId: string
+    structureName: string | null
+    salaryBasis: SalaryBasis | null
+    effectiveFrom: string
+    effectiveTo: string | null
+    overrideAmount: number | null
+  } | null
+}
+
+/**
+ * What an assignment does to an employee: REPLACE changes the assignment that
+ * already starts on the date, SPLIT ends the one in force the day before, NEW
+ * starts a period where there was none, UNCHANGED means they already have it.
+ */
+export type AssignmentAction = 'NEW' | 'REPLACE' | 'SPLIT' | 'UNCHANGED'
+
+export interface AssignmentPreview {
+  structure: { id: string; name: string; salaryBasis: SalaryBasis }
+  effectiveFrom: string
+  overrideAmount: number | null
+  employees: {
+    employeeId: string
+    employeeCode: string
+    employeeName: string
+    action: AssignmentAction
+    /** The new assignment's last day; null while ongoing. */
+    effectiveTo: string | null
+    current: { structureName: string | null; effectiveFrom: string; effectiveTo: string | null; overrideAmount: number | null } | null
+    /** For a split: the day the current assignment now ends. */
+    currentEndsOn: string | null
+  }[]
+  payroll: {
+    toRecalculate: { year: number; month: number; status: string }[]
+    approved: { year: number; month: number; status: string }[]
+  }
+}
+
 /**
  * One period of a structure's PF and ESI settings, in force from
  * `effectiveFrom` until `effectiveTo`.
