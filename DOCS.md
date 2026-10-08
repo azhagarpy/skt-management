@@ -59,8 +59,12 @@ Each step depends on the ones above it.
    ESI rates, the PF wage ceiling, the EPS share and the ESI wage limit are kept per
    structure as dated periods: each applies from its date until the next one starts (the
    first has no start date and covers everything before). To change a rate from a date,
-   open the structure's **Rates** and *Add rate change*. Payroll uses the period in force
-   on the run's last day; approved runs keep the rates they were calculated with.
+   open the structure's **Rates** and *Add rate change*. When a change falls inside a
+   payroll cycle, PF is split at it: the wages earned before the change are capped at the
+   old ceiling, those from it at the new one, each part is charged its own rate, and the
+   total is rounded once (e.g. 15,600 to 16 Sep capped at 15,000, plus 1,950 from 17 Sep =
+   a PF wage of 16,950). ESI uses the period in force on the run's last day, on the whole
+   month's wage. Approved runs keep the rates they were calculated with.
 8. **Employees → Add employee** — optionally creating a login at the same time.
 9. **Salary → Assign salary** — until this exists, payroll produces no line for that employee.
    Tick any number of employees (filter by department or current structure, or select

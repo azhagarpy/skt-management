@@ -11,7 +11,7 @@ import {
   type DayInput,
   type PolicyInput,
 } from './payroll.calculator.js'
-import { datesInMonth, weekdayOf, type IsoDate } from '../../utils/dates.js'
+import { datesBetween, datesInMonth, weekdayOf, type IsoDate } from '../../utils/dates.js'
 import { toMajor, toMinor } from '../../utils/money.js'
 
 /**
@@ -1508,5 +1508,162 @@ describe('calculatePayrollItem - paid offs', () => {
 
     expect(result.attendance.paidOffDays).toBe(0)
     expect(toMajor(result.grossEarningsMinor)).toBe(919 * 22)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PF settings changing inside the period
+// ---------------------------------------------------------------------------
+
+describe('calculatePayrollItem - PF ceiling changing mid-period', () => {
+  /**
+   * The September 2026 cycle, 21 Aug - 20 Sep, every day a working day (as
+   * SKT's calendar has it) except the Vinayakar Chaturthi holiday on 14 Sep.
+   * `paid` sets each date's status; any date not named is absent.
+   */
+  function cycleDays(statuses: Partial<Record<IsoDate, Partial<DayInput>>>): DayInput[] {
+    return datesBetween('2026-08-21', '2026-09-20').map((date) => ({
+      date,
+      dayKind: date === '2026-09-14' ? 'HOLIDAY' : 'WORKING',
+      status: 'ABSENT',
+      leaveIsPaid: null,
+      isEmployed: true,
+      ...(date === '2026-09-14' ? { holidayExtraPay: true, holidayName: 'Vinayakar Chaturthi' } : {}),
+      ...(statuses[date] ?? {}),
+    }))
+  }
+
+  /** Present on every listed date. */
+  function present(dates: IsoDate[]): Partial<Record<IsoDate, Partial<DayInput>>> {
+    return Object.fromEntries(dates.map((date) => [date, { status: 'PRESENT' }]))
+  }
+
+  const dailyStructure = (basic: number, da: number): ComponentInput[] => [
+    component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(basic), displayOrder: 1 }),
+    component({ code: 'DA', name: 'Dearness Allowance', amountMinor: toMinor(da), displayOrder: 2 }),
+  ]
+
+  // 15,000 up to 16 Sep, 25,000 from 17 Sep: the September 2026 change.
+  const ceilingChange = [
+    { from: '2026-04-01', employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
+    { from: '2026-09-17', employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(25_000), epsRate: 8.33 },
+  ]
+  const pf25k = { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(25_000), epsRate: 8.33 }
+
+  const amount = (result: ReturnType<typeof calculatePayrollItem>, code: string): number =>
+    toMajor(result.components.find((entry) => entry.code === code)?.amountMinor ?? 0)
+
+  it("matches the manual sheet for SENT0007: 15,600 to 16 Sep capped at 15,000, plus 1,950 from 17 Sep = 2,034", () => {
+    // Absent 21 Aug, 29 Aug, 6, 13 and 20 Sep; present every other day, the holiday included.
+    const worked = datesBetween('2026-08-21', '2026-09-20').filter(
+      (date) => !['2026-08-21', '2026-08-29', '2026-09-06', '2026-09-13', '2026-09-20'].includes(date),
+    )
+    const result = calculatePayrollItem(
+      baseInput({
+        period: { year: 2026, month: 9, start: '2026-08-21', end: '2026-09-20' },
+        employee: { id: 'emp-7', code: 'SENT0007', name: 'Balakrishnan M', salaryBasis: 'DAILY' },
+        days: cycleDays(present(worked)),
+        components: dailyStructure(410, 240),
+        pf: pf25k,
+        pfSegments: ceilingChange,
+        esi: { applicable: true, employeeRate: 0.75, employerRate: 3.25, wageLimitMinor: toMinor(21_000) },
+      }),
+    )
+
+    expect(toMajor(result.grossEarningsMinor)).toBe(17_550)
+    expect(result.pfParts.map((part) => [part.from, part.to, toMajor(part.wageMinor), toMajor(part.pfWageMinor)])).toEqual([
+      ['2026-08-21', '2026-09-16', 15_600, 15_000],
+      ['2026-09-17', '2026-09-20', 1_950, 1_950],
+    ])
+    expect(toMajor(result.pfWageMinor)).toBe(16_950)
+    expect(amount(result, 'PF_EMPLOYEE')).toBe(2_034)
+    // 8.33% of 16,950 = 1,411.94 -> 1,412; EPF is the rest of the employer's 2,034.
+    expect(amount(result, 'PF_EMPLOYER_EPS')).toBe(1_412)
+    expect(amount(result, 'PF_EMPLOYER_EPF')).toBe(622)
+    // ESI is not split: on the month's whole 17,550, as on the sheet.
+    expect(amount(result, 'ESI_EMPLOYEE')).toBe(132)
+    expect(result.components.find((entry) => entry.code === 'PF_EMPLOYEE')?.notes).toBe(
+      'PF wage 16950 = 15000 for 21 Aug 2026 to 16 Sep 2026 (wages 15600, capped at 15000) + 1950 for 17 Sep 2026 to 20 Sep 2026',
+    )
+  })
+
+  it('matches the manual sheet for SENT0037: 21.5 days and a holiday at 918, then 3 days = 2,130', () => {
+    // To 16 Sep: 20 working days, a half day and the holiday worked = 21.5 paid days, plus the holiday's extra day.
+    const firstPart = datesBetween('2026-08-22', '2026-09-12')
+    const result = calculatePayrollItem(
+      baseInput({
+        period: { year: 2026, month: 9, start: '2026-08-21', end: '2026-09-20' },
+        employee: { id: 'emp-37', code: 'SENT0037', name: 'Chinnadurai S', salaryBasis: 'DAILY' },
+        days: cycleDays({
+          ...present(firstPart.slice(0, 20)),
+          '2026-09-13': { status: 'HALF_DAY_LEAVE', leaveIsPaid: false },
+          '2026-09-14': { status: 'PRESENT' },
+          ...present(['2026-09-17', '2026-09-18', '2026-09-19']),
+        }),
+        components: dailyStructure(579, 339),
+        pf: pf25k,
+        pfSegments: ceilingChange,
+      }),
+    )
+
+    expect(result.pfParts.map((part) => [toMajor(part.wageMinor), toMajor(part.pfWageMinor)])).toEqual([
+      [20_655, 15_000],
+      [2_754, 2_754],
+    ])
+    expect(toMajor(result.pfWageMinor)).toBe(17_754)
+    // 12% of 17,754 = 2,130.48 -> 2,130.
+    expect(amount(result, 'PF_EMPLOYEE')).toBe(2_130)
+  })
+
+  it('charges each part its own rate when the rate itself changes: 8% then 9.5%', () => {
+    const result = calculatePayrollItem(
+      baseInput({
+        period: { year: 2026, month: 9, start: '2026-08-21', end: '2026-09-20' },
+        employee: { id: 'emp-1', code: 'EMP001', name: 'John Doe', salaryBasis: 'DAILY' },
+        days: cycleDays(present([...datesBetween('2026-09-01', '2026-09-10'), ...datesBetween('2026-09-17', '2026-09-20')])),
+        components: [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(1_000) })],
+        pf: { applicable: true, employeeRate: 9.5, employerRate: 9.5, wageLimitMinor: 0, epsRate: 0 },
+        pfSegments: [
+          { from: '2026-01-01', employeeRate: 8, employerRate: 8, wageLimitMinor: 0, epsRate: 0 },
+          { from: '2026-09-17', employeeRate: 9.5, employerRate: 9.5, wageLimitMinor: 0, epsRate: 0 },
+        ],
+      }),
+    )
+
+    // 10 days x 1,000 at 8% + 4 days x 1,000 at 9.5% = 800 + 380.
+    expect(amount(result, 'PF_EMPLOYEE')).toBe(1_180)
+    expect(amount(result, 'PF_EMPLOYER_EPF')).toBe(1_180)
+  })
+
+  it('uses only the parts that reach into the period', () => {
+    const result = calculatePayrollItem(
+      baseInput({
+        components: [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(26_400) })],
+        pf: { applicable: true, employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
+        pfSegments: [
+          { from: '2025-04-01', employeeRate: 10, employerRate: 10, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
+          { from: '2026-04-01', employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(15_000), epsRate: 8.33 },
+          { from: '2026-10-01', employeeRate: 12, employerRate: 12, wageLimitMinor: toMinor(25_000), epsRate: 8.33 },
+        ],
+      }),
+    )
+
+    // September 2026 lies wholly in the 1 Apr 2026 period: one part, 12% of the 15,000 ceiling.
+    expect(result.pfParts).toHaveLength(1)
+    expect(amount(result, 'PF_EMPLOYEE')).toBe(1_800)
+    expect(result.components.find((entry) => entry.code === 'PF_EMPLOYEE')?.notes).toBe('PF wage 15000')
+  })
+
+  it('rounds EPS once from the exact amount: 8.33% of 15,012 is 1,250.4996, so 1,250 - not 1,251', () => {
+    const result = calculatePayrollItem(
+      baseInput({
+        components: [component({ code: 'BASIC', name: 'Basic', amountMinor: toMinor(15_012) })],
+        pf: pf25k,
+      }),
+    )
+
+    expect(amount(result, 'PF_EMPLOYEE')).toBe(1_801)
+    expect(amount(result, 'PF_EMPLOYER_EPS')).toBe(1_250)
+    expect(amount(result, 'PF_EMPLOYER_EPF')).toBe(551)
   })
 })

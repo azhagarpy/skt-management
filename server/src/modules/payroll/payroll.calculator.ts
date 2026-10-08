@@ -7,7 +7,7 @@ import {
   roundHalfUp,
   type Minor,
 } from '../../utils/money.js'
-import { formatDayMonthYear, type IsoDate } from '../../utils/dates.js'
+import { addDays, formatDayMonthYear, type IsoDate } from '../../utils/dates.js'
 
 /**
  * The payroll calculation engine.
@@ -169,6 +169,21 @@ export interface StatutoryInput {
   epsRate?: number
 }
 
+/**
+ * PF settings for part of a payroll period. When a structure's PF rates or
+ * ceiling change inside the period, the period is split at the change: each
+ * part's wages are capped at that part's own ceiling and charged that part's
+ * rates, and the parts are added up (see `pfWageParts`).
+ */
+export interface PfSegmentInput {
+  /** The part's first day; it runs until the next part starts, or the period ends. */
+  from: IsoDate
+  employeeRate: number
+  employerRate: number
+  wageLimitMinor: Minor
+  epsRate: number
+}
+
 export interface PolicyInput {
   paidDaysBasis: 'CALENDAR_DAYS' | 'WORKING_DAYS' | 'ACTUAL_ATTENDANCE_DAYS'
   /** Total paid fraction of a half-day-leave day when the leave half is paid. */
@@ -213,6 +228,11 @@ export interface CalculatorInput {
   adjustments: AdjustmentInput[]
   /** PF is deducted on the structure's wage, capped at `pf.wageLimitMinor`. */
   pf: StatutoryInput
+  /**
+   * The PF settings by part of the period, when they change inside it. Absent
+   * or empty: `pf`'s rates and ceiling cover the whole period.
+   */
+  pfSegments?: PfSegmentInput[]
   /**
    * ESI applies only when a standard month's wage is at or below
    * `esi.wageLimitMinor`, and is then deducted on the wage capped at that limit.
@@ -288,8 +308,10 @@ export interface CalculatorOutput {
   employerContributionsMinor: Minor
   /** The wage PF/ESI were actually calculated on this run (0 when not applicable). */
   pfWageMinor: Minor
-  /** The ceiling that was in force for this run (0 when PF is not applicable). */
+  /** The ceiling in force on the period's last day (0 when PF is not applicable). */
   pfWageCeilingMinor: Minor
+  /** How the PF wage was made up, part by part; one part unless the PF settings changed mid-period. */
+  pfParts: PfPart[]
   esiWageMinor: Minor
   netSalaryMinor: Minor
   /** What the P.Tax on exit came to, for the tax module to record. Null when none was due. */
@@ -778,6 +800,146 @@ export function holidayWorkAmountsMinor(
   }
 }
 
+/** A holiday that pays extra to whoever works it, worked in full or for half a day. */
+function isHolidayWorked(day: DayInput): boolean {
+  return (
+    day.isEmployed &&
+    (day.status === 'PRESENT' || day.status === 'HALF_DAY_LEAVE') &&
+    day.dayKind === 'HOLIDAY' &&
+    Boolean(day.holidayExtraPay)
+  )
+}
+
+/** Holiday-work days in `days`: 1 for each holiday worked in full, 0.5 for half of one. */
+function holidayWorkedDaysIn(days: DayInput[]): number {
+  return days.filter(isHolidayWorked).reduce((total, day) => total + (day.status === 'PRESENT' ? 1 : 0.5), 0)
+}
+
+/**
+ * The statutory wage (structure earnings plus holiday work pay) earned over
+ * some of the period's days, valued exactly as the whole period is: the same
+ * daily rate, and for a monthly structure the whole period's payable days basis.
+ */
+function statutoryWageForDaysMinor(
+  days: DayInput[],
+  resolved: ResolvedComponent[],
+  salaryBasis: 'MONTHLY' | 'DAILY',
+  payableDaysBasis: number,
+  policy: PolicyInput,
+): Minor {
+  const summary = summariseAttendance(days, policy)
+  let totalMinor = 0
+  for (const entry of resolved) {
+    // An amount not prorated by attendance belongs to no day in particular.
+    if (entry.input.componentType !== 'EARNING' || !entry.input.prorate) continue
+    const paidDays = entry.input.holidayExtraPay ? summary.paidDays : roundDays(summary.paidDays - summary.paidHolidayDays)
+    totalMinor +=
+      salaryBasis === 'DAILY'
+        ? multiplyMinor(entry.fullAmountMinor, paidDays)
+        : prorateMinor(entry.fullAmountMinor, paidDays, payableDaysBasis)
+  }
+  const worked = holidayWorkedDaysIn(days)
+  if (worked > 0) {
+    totalMinor += earningsForDaysMinor(resolved, salaryBasis, worked, payableDaysBasis, (component) => component.holidayExtraPay)
+  }
+  return totalMinor
+}
+
+/** One part of the period with its own PF settings, and the PF wage it contributed. */
+export interface PfPart {
+  from: IsoDate
+  to: IsoDate
+  employeeRate: number
+  employerRate: number
+  epsRate: number
+  wageLimitMinor: Minor
+  /** The statutory wage earned in this part. */
+  wageMinor: Minor
+  /** That wage capped at this part's ceiling. */
+  pfWageMinor: Minor
+}
+
+/**
+ * Splits the period's statutory wage at each change of PF settings, and caps
+ * each part at its own ceiling - what the PF wage is when the ceiling changes
+ * mid-period (e.g. 15,000 up to 16 Sep and 25,000 from 17 Sep: the wages up to
+ * 16 Sep count up to 15,000, those from 17 Sep up to 25,000). A holiday's work
+ * pay belongs to the part the holiday falls in. Every part but the last is
+ * worked out from its own days; the last takes what is left of the period's
+ * total, so the parts always add up to it to the paisa (and an amount paid
+ * regardless of attendance lands there).
+ */
+function pfWageParts(
+  input: CalculatorInput,
+  resolved: ResolvedComponent[],
+  payableDaysBasis: number,
+  statutoryWageMinor: Minor,
+): PfPart[] {
+  const given: PfSegmentInput[] =
+    input.pfSegments && input.pfSegments.length > 0
+      ? [...input.pfSegments].sort((a, b) => a.from.localeCompare(b.from))
+      : [
+          {
+            from: input.period.start,
+            employeeRate: input.pf.employeeRate,
+            employerRate: input.pf.employerRate,
+            wageLimitMinor: input.pf.wageLimitMinor,
+            epsRate: input.pf.epsRate ?? 0,
+          },
+        ]
+  // Only the parts that reach into the period: the latest one starting by its
+  // first day, and every one starting after that, up to its last day.
+  const firstIndex = Math.max(
+    0,
+    given.reduce((found, segment, index) => (segment.from <= input.period.start ? index : found), -1),
+  )
+  const segments = given.slice(firstIndex).filter((segment) => segment.from <= input.period.end)
+
+  let allocatedMinor = 0
+  return segments.map((segment, index) => {
+    const next = segments[index + 1]
+    const from = index === 0 ? input.period.start : segment.from
+    const to = next ? addDays(next.from, -1) : input.period.end
+    const isLast = index === segments.length - 1
+    const wageMinor = Math.max(
+      0,
+      isLast
+        ? statutoryWageMinor - allocatedMinor
+        : statutoryWageForDaysMinor(
+            input.days.filter((day) => day.date >= from && day.date <= to),
+            resolved,
+            input.employee.salaryBasis,
+            payableDaysBasis,
+            input.policy,
+          ),
+    )
+    allocatedMinor += wageMinor
+    return {
+      from,
+      to,
+      employeeRate: segment.employeeRate,
+      employerRate: segment.employerRate,
+      epsRate: segment.epsRate,
+      wageLimitMinor: segment.wageLimitMinor,
+      wageMinor,
+      pfWageMinor: segment.wageLimitMinor > 0 ? minMinor(wageMinor, segment.wageLimitMinor) : wageMinor,
+    }
+  })
+}
+
+/**
+ * Σ wage × rate%, rounded once to the nearest whole rupee (.5 up), the way the
+ * PF return and a spreadsheet's ROUND do it. Worked in whole numbers - rates are
+ * stored to three decimals - so no floating-point error can tip a .5 the wrong
+ * way, and the exact amount is rounded once rather than first to paise.
+ */
+function rupeesOfPercent(parts: { wageMinor: Minor; rate: number }[]): Minor {
+  // paise x thousandths of a percent: / 1,000 / 100 gives paise, / 100 more rupees.
+  let scaled = 0
+  for (const part of parts) scaled += part.wageMinor * Math.round(part.rate * 1000)
+  return Math.floor((scaled + 5_000_000) / 10_000_000) * 100
+}
+
 // ---------------------------------------------------------------------------
 // The calculation
 // ---------------------------------------------------------------------------
@@ -921,14 +1083,8 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   // A component switched out of holiday extra pay (e.g. a special allowance
   // paid for the month's days only) is left out of that extra day.
   // ------------------------------------------------------------------
-  const holidaysWorked = input.days.filter(
-    (day) =>
-      day.isEmployed &&
-      (day.status === 'PRESENT' || day.status === 'HALF_DAY_LEAVE') &&
-      day.dayKind === 'HOLIDAY' &&
-      day.holidayExtraPay,
-  )
-  const holidayWorkedDays = holidaysWorked.reduce((total, day) => total + (day.status === 'PRESENT' ? 1 : 0.5), 0)
+  const holidaysWorked = input.days.filter(isHolidayWorked)
+  const holidayWorkedDays = holidayWorkedDaysIn(input.days)
   if (holidayWorkedDays > 0) {
     holidayWorkMinor = earningsForDaysMinor(
       resolved,
@@ -964,9 +1120,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
 
   // ------------------------------------------------------------------
   // Statutory contributions: PF is deducted on the structure's wage capped at
-  // the structure's PF wage ceiling. Employee PF, the employer share and EPS are
-  // each rounded to the nearest whole rupee (.5 and above up, below .5 down), and
-  // EPF is the remainder, so all three parts are whole rupees. ESI applies,
+  // the structure's PF wage ceiling - part by part when the ceiling or rates
+  // change inside the period (pfWageParts). Employee PF, the employer share and
+  // EPS are each worked out exactly and rounded once to the nearest whole rupee
+  // (.5 and above up, below .5 down), and EPF is the remainder, so all three
+  // parts are whole rupees. ESI applies,
   // on both sides, only when a standard month's wage (esiEligibilityWage) is at
   // or below the structure's ESI limit; it is then deducted on the month's wage
   // capped at that limit, and is always rounded UP to the next whole rupee.
@@ -982,15 +1140,30 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
   let statutoryDeductionsMinor = 0
   let pfWageMinor = 0
   let pfWageCeilingMinor = 0
+  let pfParts: PfPart[] = []
   let esiWageMinor = 0
 
   if (input.pf.applicable && statutoryWageMinor > 0) {
-    pfWageCeilingMinor = input.pf.wageLimitMinor
-    pfWageMinor =
-      input.pf.wageLimitMinor > 0 ? minMinor(statutoryWageMinor, input.pf.wageLimitMinor) : statutoryWageMinor
+    pfParts = pfWageParts(input, resolved, attendance.payableDaysBasis, statutoryWageMinor)
+    const lastPart = pfParts[pfParts.length - 1] as PfPart
+    pfWageCeilingMinor = lastPart.wageLimitMinor
+    pfWageMinor = pfParts.reduce((total, part) => total + part.pfWageMinor, 0)
     // EPFO contributions are always whole rupees, never paise, on every side.
-    const employeeMinor = roundToDecimals(percentOfMinor(pfWageMinor, input.pf.employeeRate), 0)
-    const employerMinor = roundToDecimals(percentOfMinor(pfWageMinor, input.pf.employerRate), 0)
+    const employeeMinor = rupeesOfPercent(pfParts.map((part) => ({ wageMinor: part.pfWageMinor, rate: part.employeeRate })))
+    const employerMinor = rupeesOfPercent(pfParts.map((part) => ({ wageMinor: part.pfWageMinor, rate: part.employerRate })))
+    // "PF wage 16950 = 15000 for 21 Aug 2026 to 16 Sep 2026 (wages 15600, capped at 15000) + 1950 for ..."
+    const pfWageNote =
+      pfParts.length === 1
+        ? `PF wage ${pfWageMinor / 100}`
+        : `PF wage ${pfWageMinor / 100} = ${pfParts
+            .map(
+              (part) =>
+                `${part.pfWageMinor / 100} for ${formatDayMonthYear(part.from)} to ${formatDayMonthYear(part.to)}` +
+                (part.pfWageMinor < part.wageMinor
+                  ? ` (wages ${part.wageMinor / 100}, capped at ${part.wageLimitMinor / 100})`
+                  : ''),
+            )
+            .join(' + ')}`
 
     if (employeeMinor > 0) {
       statutoryDeductionsMinor += employeeMinor
@@ -1002,11 +1175,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
         source: 'STATUTORY',
         fullAmountMinor: employeeMinor,
         amountMinor: employeeMinor,
-        percentage: input.pf.employeeRate,
+        percentage: lastPart.employeeRate,
         taxable: false,
         displayOrder: 700,
         referenceId: null,
-        notes: `PF wage ${pfWageMinor / 100}`,
+        notes: pfWageNote,
       })
     }
     if (employerMinor > 0) {
@@ -1017,8 +1190,11 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
       // rupee; EPF is what is left, so EPS + EPF always equals the employer
       // share. Rounding EPF on its own would push a 15,000 wage to 1,801
       // (1,250 + 551) instead of 1,800 and disagree with the EPFO return.
-      const epsRate = input.pf.epsRate ?? 0
-      const epsMinor = epsRate > 0 ? minMinor(roundToDecimals(percentOfMinor(pfWageMinor, epsRate), 0), employerMinor) : 0
+      const epsRate = lastPart.epsRate
+      const epsMinor = minMinor(
+        rupeesOfPercent(pfParts.map((part) => ({ wageMinor: part.pfWageMinor, rate: part.epsRate }))),
+        employerMinor,
+      )
       const epfMinor = employerMinor - epsMinor
 
       if (epsMinor > 0) {
@@ -1046,7 +1222,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
           source: 'STATUTORY',
           fullAmountMinor: epfMinor,
           amountMinor: epfMinor,
-          percentage: input.pf.employerRate - epsRate,
+          percentage: lastPart.employerRate - epsRate,
           taxable: false,
           displayOrder: 702,
           referenceId: null,
@@ -1242,6 +1418,7 @@ export function calculatePayrollItem(input: CalculatorInput): CalculatorOutput {
     employerContributionsMinor,
     pfWageMinor,
     pfWageCeilingMinor,
+    pfParts,
     esiWageMinor,
     netSalaryMinor,
     exitTax,

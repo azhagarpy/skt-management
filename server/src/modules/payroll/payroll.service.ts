@@ -24,7 +24,7 @@ import { buildCalendarContext, type CalendarContext } from '../calendar/calendar
 import * as attendanceRepository from '../attendance/attendance.repository.js'
 import * as leaveRepository from '../leave/leave.repository.js'
 import * as salaryRepository from '../salary/salary.repository.js'
-import { periodInForce } from '../salary/statutory-rates.js'
+import { periodInForce, withEffectiveTo } from '../salary/statutory-rates.js'
 import * as overtimeRepository from '../overtime/overtime.repository.js'
 import { listTaxDeductionsForPeriod } from '../tax/tax.module.js'
 import { loadSlabs } from '../tax/tax-report.js'
@@ -681,6 +681,22 @@ export async function calculateRun(
             // their PF details) has no EPS: the whole employer share goes to EPF.
             epsRate: employee.pension_applicable === false ? 0 : Number(rates.pf_eps_rate),
           },
+          // PF settings can change inside the run - a 25,000 ceiling from 17 Sep
+          // in a 21 Aug - 20 Sep run - so every period reaching into it becomes a
+          // part of it: each part's wages are capped at that part's own ceiling
+          // (pfWageParts). ESI takes the period in force on the run's last day.
+          pfSegments: withEffectiveTo(structure.statutory_rates)
+            .filter(
+              ({ period, effectiveTo }) =>
+                (period.effective_from ?? '') <= periodEnd && (effectiveTo === null || effectiveTo >= periodStart),
+            )
+            .map(({ period }) => ({
+              from: period.effective_from !== null && period.effective_from > periodStart ? period.effective_from : periodStart,
+              employeeRate: Number(period.pf_employee_rate),
+              employerRate: Number(period.pf_employer_rate),
+              wageLimitMinor: toMinor(period.pf_wage_ceiling),
+              epsRate: employee.pension_applicable === false ? 0 : Number(period.pf_eps_rate),
+            })),
           esi: {
             applicable: employee.esi_applicable ?? false,
             employeeRate: Number(rates.esi_employee_rate),
@@ -747,6 +763,9 @@ export async function calculateRun(
                 rateId: rates.id,
                 ratesEffectiveFrom: rates.effective_from,
                 pf: calculatorInput.pf,
+                // How the PF wage was made up, part by part (one part unless the
+                // PF settings changed inside the run).
+                pfParts: result.pfParts,
                 esi: calculatorInput.esi,
               },
               assignment: {
